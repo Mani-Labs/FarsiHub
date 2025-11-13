@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        SECURITY: HTTPS-only enforcement for all content domains
+        Issue: M9 - Prevent man-in-the-middle attacks
+
+        All content providers must serve content over HTTPS to protect:
+        - Video stream URLs from interception
+        - User viewing patterns from network observers
+        - Application from content substitution attacks
+    -->
+
+    <!-- Primary content domains - HTTPS enforced -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">farsiland.com</domain>
+        <domain includeSubdomains="true">farsiplex.com</domain>
+        <domain includeSubdomains="true">namakade.com</domain>
+    </domain-config>
+
+    <!-- CDN domains - HTTPS enforced -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">flnd.buzz</domain>
+        <domain includeSubdomains="true">d1.flnd.buzz</domain>
+        <domain includeSubdomains="true">d2.flnd.buzz</domain>
+    </domain-config>
+
+    <!-- WordPress API endpoint - HTTPS enforced -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">wp.farsiland.com</domain>
+    </domain-config>
+
+    <!-- Default: Block all cleartext traffic for any other domains -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- Trust system-installed CA certificates -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!--
+        Debug configuration for development/testing
+        Uncomment to allow user-installed CA certificates (e.g., Charles Proxy, mitmproxy)
+        WARNING: NEVER enable this in production builds!
+    -->
+    <!--
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+            <certificates src="system" />
+        </trust-anchors>
+    </debug-overrides>
+    -->
+</network-security-config>

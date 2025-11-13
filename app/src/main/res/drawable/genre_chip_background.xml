@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Focused + Selected state -->
+    <item android:state_focused="true" android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFF" />
+            <corners android:radius="30dp" />
+            <stroke android:width="4dp" android:color="#ffaa3f" />
+        </shape>
+    </item>
+
+    <!-- Focused state (not selected) -->
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#00FFFFFF" />
+            <corners android:radius="30dp" />
+            <stroke android:width="4dp" android:color="#ffaa3f" />
+        </shape>
+    </item>
+
+    <!-- Selected state (not focused) -->
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFF" />
+            <corners android:radius="30dp" />
+            <stroke android:width="2dp" android:color="#CCCCCC" />
+        </shape>
+    </item>
+
+    <!-- Default state (not focused, not selected) -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#00FFFFFF" />
+            <corners android:radius="30dp" />
+            <stroke android:width="2dp" android:color="#666666" />
+        </shape>
+    </item>
+
+</selector>

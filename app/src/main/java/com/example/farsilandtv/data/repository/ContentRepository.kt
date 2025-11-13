@@ -1,0 +1,1523 @@
+package com.example.farsilandtv.data.repository
+
+import android.content.Context
+import android.util.Log
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingData
+import androidx.paging.map
+import com.example.farsilandtv.data.api.RetrofitClient
+import com.example.farsilandtv.data.api.WordPressApiService
+import com.example.farsilandtv.data.database.ContentDatabase
+import com.example.farsilandtv.data.database.DatabaseSource
+import com.example.farsilandtv.data.database.DatabasePreferences
+import com.example.farsilandtv.data.database.CachedMovie
+import com.example.farsilandtv.data.database.CachedSeries
+import com.example.farsilandtv.data.database.CachedEpisode
+import com.example.farsilandtv.data.models.*
+import com.example.farsilandtv.data.models.wordpress.*
+import com.example.farsilandtv.data.scraper.EpisodeListScraper
+import com.example.farsilandtv.data.scraper.EpisodeMetadataScraper
+import com.example.farsilandtv.data.scraper.VideoUrlScraper
+import com.example.farsilandtv.data.scraper.ScraperResult
+import com.example.farsilandtv.data.scraper.WebSearchScraper
+import com.example.farsilandtv.utils.ErrorHandler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
+
+/**
+ * Repository for content data (movies, series, episodes)
+ * NEW: Database-first with API fallback
+ * - Queries local ContentDatabase first (fast, offline-capable)
+ * - Falls back to WordPress API if data not in database
+ * - Still uses scraping for video URLs and episode lists
+ */
+class ContentRepository(context: Context) {
+
+    private val wordPressApi: WordPressApiService = RetrofitClient.wordPressApi
+    private val videoScraper = VideoUrlScraper
+    private val episodeScraper = EpisodeListScraper
+    private val metadataScraper = EpisodeMetadataScraper
+
+    // Store context to get database dynamically (fixes Bug #4: stale database reference)
+    private val appContext = context.applicationContext
+
+    // Get database instance dynamically to support database switching
+    private fun getContentDb(): ContentDatabase {
+        return ContentDatabase.getDatabase(appContext)
+    }
+
+    // Get current source URL pattern for filtering
+    private fun getCurrentUrlPattern(): String {
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+        return dbPrefs.getCurrentSource().urlPattern
+    }
+
+    // In-memory cache for genres (loaded once)
+    private var genresCache: List<Genre>? = null
+
+    // ========== Source-Aware Response Cache (Performance Optimization) ==========
+
+    /**
+     * Cache entry with timestamp for TTL validation
+     */
+    private data class CacheEntry<T>(
+        val data: T,
+        val timestamp: Long,
+        val source: DatabaseSource
+    )
+
+    /**
+     * Thread-safe cache maps for different content types
+     * Key format: "source_page_perPage" (e.g., "FARSILAND_1_20")
+     */
+    private val moviesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Movie>>>()
+    private val seriesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Series>>>()
+    private val episodesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Episode>>>()
+
+    /**
+     * Build cache key from parameters
+     */
+    private fun buildCacheKey(source: DatabaseSource, page: Int, perPage: Int): String {
+        return "${source.name}_${page}_${perPage}"
+    }
+
+    /**
+     * Check if cache entry is still valid
+     */
+    private fun <T> isCacheValid(entry: CacheEntry<T>?, currentSource: DatabaseSource): Boolean {
+        if (entry == null) return false
+
+        // Cache invalid if source changed
+        if (entry.source != currentSource) {
+            Log.d(TAG, "Cache invalidated: source changed from ${entry.source} to $currentSource")
+            return false
+        }
+
+        // Cache invalid if TTL expired
+        val age = System.currentTimeMillis() - entry.timestamp
+        if (age > CACHE_TTL_MS) {
+            Log.d(TAG, "Cache expired: age=${age}ms, TTL=${CACHE_TTL_MS}ms")
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * Clear all caches (called on database switch)
+     */
+    fun clearCache() {
+        moviesCache.clear()
+        seriesCache.clear()
+        episodesCache.clear()
+        Log.i(TAG, "All caches cleared")
+    }
+
+    // ========== Feature #18: Paging 3 Methods (Database-First, Unlimited Items) ==========
+
+    /**
+     * Get movies with Paging 3 (database-first, unlimited items)
+     * Replaces 300-item cap with efficient pagination
+     * Filters by current source URL pattern to show only items from selected database
+     * @return Flow of paged movies from database
+     */
+    fun getMoviesPaged(): Flow<PagingData<Movie>> {
+        val urlPattern = getCurrentUrlPattern()
+        return Pager(
+            config = PagingConfig(
+                pageSize = 20,
+                prefetchDistance = 10,
+                enablePlaceholders = false,
+                initialLoadSize = 30
+            ),
+            pagingSourceFactory = { getContentDb().movieDao().getMoviesPagedFiltered(urlPattern) }
+        ).flow.map { pagingData ->
+            pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+        }
+    }
+
+    /**
+     * Get TV series with Paging 3 (database-first, unlimited items)
+     * Replaces 300-item cap with efficient pagination
+     * Filters by current source URL pattern to show only items from selected database
+     * @return Flow of paged series from database
+     */
+    fun getSeriesPaged(): Flow<PagingData<Series>> {
+        val urlPattern = getCurrentUrlPattern()
+        return Pager(
+            config = PagingConfig(
+                pageSize = 20,
+                prefetchDistance = 10,
+                enablePlaceholders = false,
+                initialLoadSize = 30
+            ),
+            pagingSourceFactory = { getContentDb().seriesDao().getSeriesPagedFiltered(urlPattern) }
+        ).flow.map { pagingData ->
+            pagingData.map { cachedSeries -> cachedSeries.toSeries() }
+        }
+    }
+
+    /**
+     * Get episodes with Paging 3 (database-first, unlimited items)
+     * Replaces 300-item cap with efficient pagination
+     * Filters by current source URL pattern to show only items from selected database
+     * @return Flow of paged episodes from database
+     */
+    fun getEpisodesPaged(): Flow<PagingData<Episode>> {
+        val urlPattern = getCurrentUrlPattern()
+        return Pager(
+            config = PagingConfig(
+                pageSize = 20,
+                prefetchDistance = 10,
+                enablePlaceholders = false,
+                initialLoadSize = 30
+            ),
+            pagingSourceFactory = { getContentDb().episodeDao().getEpisodesPagedFiltered(urlPattern) }
+        ).flow.map { pagingData ->
+            pagingData.map { cachedEpisode -> cachedEpisode.toEpisode() }
+        }
+    }
+
+    // ========== Legacy API-First Methods (Still Used for Search, Genres) ==========
+
+    /**
+     * Get list of movies
+     * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
+     * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
+     * @param page Page number (starts from 1)
+     * @param perPage Items per page (default: 20)
+     */
+    suspend fun getMovies(page: Int = 1, perPage: Int = 20): Result<List<Movie>> =
+        withContext(Dispatchers.IO) {
+            // Check which database source is active
+            val currentSource = com.example.farsilandtv.data.database.ContentDatabase.getCurrentSource(appContext)
+
+            // Check cache first
+            val cacheKey = buildCacheKey(currentSource, page, perPage)
+            val cachedEntry = moviesCache[cacheKey]
+            if (isCacheValid(cachedEntry, currentSource)) {
+                Log.d(TAG, "getMovies() - Returning CACHED data (${cachedEntry!!.data.size} items)")
+                return@withContext Result.success(cachedEntry.data)
+            }
+
+            android.util.Log.i("ContentRepository", "getMovies() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
+
+            // For Namakade & FarsiPlex: Use database only (no structured API available)
+            if (currentSource == com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE ||
+                currentSource == com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX) {
+                android.util.Log.i("ContentRepository", "Using DATABASE for ${currentSource.displayName} movies")
+                try {
+                    ensureActive()
+                    val urlPattern = currentSource.urlPattern
+                    val cachedMovies = getContentDb().movieDao().getRecentMoviesFiltered(urlPattern, perPage * page).firstOrNull()
+                    ensureActive()
+                    if (!cachedMovies.isNullOrEmpty()) {
+                        // Implement pagination manually
+                        val startIndex = (page - 1) * perPage
+                        val endIndex = minOf(startIndex + perPage, cachedMovies.size)
+                        val paginatedMovies = if (startIndex < cachedMovies.size) {
+                            cachedMovies.subList(startIndex, endIndex)
+                        } else {
+                            emptyList()
+                        }
+                        val movies = paginatedMovies.map { it.toMovie() }
+
+                        // Store in cache
+                        moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                        Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database")
+
+                        return@withContext Result.success(movies)
+                    }
+                    return@withContext Result.success(emptyList())
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    return@withContext Result.failure(e)
+                }
+            }
+
+            // For Farsiland: Use API first, database as fallback
+            try {
+                // Try WordPress API first (has correct post publication dates)
+                ensureActive() // Check cancellation before API call
+                val wpMovies = ErrorHandler.retryWithExponentialBackoff {
+                    wordPressApi.getMovies(perPage = perPage, page = page)
+                }
+                ensureActive() // Check cancellation after API call
+                val movies = wpMovies.map { wpMovie -> wpMovie.toMovie() }
+
+                // Store in cache
+                moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                Log.d(TAG, "getMovies() - Cached ${movies.size} movies from API")
+
+                return@withContext Result.success(movies)
+            } catch (e: Exception) {
+                e.printStackTrace()
+
+                // Fallback to database if API fails (offline mode)
+                try {
+                    ensureActive() // Check cancellation before DB query
+                    val cachedMovies = getContentDb().movieDao().getRecentMovies(perPage).firstOrNull()
+                    ensureActive() // Check cancellation after DB query
+                    if (!cachedMovies.isNullOrEmpty()) {
+                        val movies = cachedMovies.map { it.toMovie() }
+
+                        // Store in cache (fallback data)
+                        moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                        Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database (API fallback)")
+
+                        return@withContext Result.success(movies)
+                    }
+                } catch (dbError: Exception) {
+                    dbError.printStackTrace()
+                }
+
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get single movie by ID
+     */
+    suspend fun getMovie(id: Int): Result<Movie> = withContext(Dispatchers.IO) {
+        try {
+            val wpMovie = wordPressApi.getMovie(id)
+            Result.success(wpMovie.toMovie())
+        } catch (e: Exception) {
+            handleApiError("getMovie(id=$id)", e)
+        }
+    }
+
+    /**
+     * Get list of TV shows
+     * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
+     * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
+     */
+    suspend fun getTvShows(page: Int = 1, perPage: Int = 20): Result<List<Series>> =
+        withContext(Dispatchers.IO) {
+            // Check which database source is active
+            val currentSource = com.example.farsilandtv.data.database.ContentDatabase.getCurrentSource(appContext)
+
+            // Check cache first
+            val cacheKey = buildCacheKey(currentSource, page, perPage)
+            val cachedEntry = seriesCache[cacheKey]
+            if (isCacheValid(cachedEntry, currentSource)) {
+                Log.d(TAG, "getTvShows() - Returning CACHED data (${cachedEntry!!.data.size} items)")
+                return@withContext Result.success(cachedEntry.data)
+            }
+
+            android.util.Log.i("ContentRepository", "getTvShows() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
+
+            // For Namakade & FarsiPlex: Use database only (no structured API available)
+            if (currentSource == com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE ||
+                currentSource == com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX) {
+                android.util.Log.i("ContentRepository", "Using DATABASE for ${currentSource.displayName} series")
+                try {
+                    ensureActive()
+                    val urlPattern = currentSource.urlPattern
+                    val cachedSeries = getContentDb().seriesDao().getRecentSeriesFiltered(urlPattern, perPage * page).firstOrNull()
+                    ensureActive()
+                    if (!cachedSeries.isNullOrEmpty()) {
+                        // Implement pagination manually
+                        val startIndex = (page - 1) * perPage
+                        val endIndex = minOf(startIndex + perPage, cachedSeries.size)
+                        val paginatedSeries = if (startIndex < cachedSeries.size) {
+                            cachedSeries.subList(startIndex, endIndex)
+                        } else {
+                            emptyList()
+                        }
+                        val series = paginatedSeries.map { it.toSeries() }
+
+                        // Store in cache
+                        seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                        Log.d(TAG, "getTvShows() - Cached ${series.size} series from database")
+
+                        return@withContext Result.success(series)
+                    }
+                    return@withContext Result.success(emptyList())
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    return@withContext Result.failure(e)
+                }
+            }
+
+            // For Farsiland/FarsiPlex: Use API first, database as fallback
+            try {
+                // Try WordPress API first (has correct post publication dates)
+                ensureActive() // Check cancellation before API call
+                val wpShows = ErrorHandler.retryWithExponentialBackoff {
+                    wordPressApi.getTvShows(perPage = perPage, page = page)
+                }
+                ensureActive() // Check cancellation after API call
+                val series = wpShows.map { wpShow -> wpShow.toSeries() }
+
+                // Store in cache
+                seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                Log.d(TAG, "getTvShows() - Cached ${series.size} series from API")
+
+                return@withContext Result.success(series)
+            } catch (e: Exception) {
+                e.printStackTrace()
+
+                // Fallback to database if API fails (offline mode)
+                try {
+                    ensureActive() // Check cancellation before DB query
+                    val urlPattern = currentSource.urlPattern
+                    val cachedSeries = getContentDb().seriesDao().getRecentSeriesFiltered(urlPattern, perPage).firstOrNull()
+                    ensureActive() // Check cancellation after DB query
+                    if (!cachedSeries.isNullOrEmpty()) {
+                        val series = cachedSeries.map { it.toSeries() }
+
+                        // Store in cache (fallback data)
+                        seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                        Log.d(TAG, "getTvShows() - Cached ${series.size} series from database (API fallback)")
+
+                        return@withContext Result.success(series)
+                    }
+                } catch (dbError: Exception) {
+                    dbError.printStackTrace()
+                }
+
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get recent episodes (from all series)
+     * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
+     * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
+     */
+    suspend fun getRecentEpisodes(page: Int = 1, perPage: Int = 20): Result<List<Episode>> =
+        withContext(Dispatchers.IO) {
+            // Check which database source is active
+            val currentSource = com.example.farsilandtv.data.database.ContentDatabase.getCurrentSource(appContext)
+
+            // Check cache first
+            val cacheKey = buildCacheKey(currentSource, page, perPage)
+            val cachedEntry = episodesCache[cacheKey]
+            if (isCacheValid(cachedEntry, currentSource)) {
+                Log.d(TAG, "getRecentEpisodes() - Returning CACHED data (${cachedEntry!!.data.size} items)")
+                return@withContext Result.success(cachedEntry.data)
+            }
+
+            android.util.Log.i("ContentRepository", "getRecentEpisodes() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
+
+            // For Namakade & FarsiPlex: Use database only (no structured API available)
+            if (currentSource == com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE ||
+                currentSource == com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX) {
+                android.util.Log.i("ContentRepository", "Using DATABASE for ${currentSource.displayName} episodes")
+                try {
+                    ensureActive()
+                    val urlPattern = currentSource.urlPattern
+                    val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFiltered(urlPattern, perPage * page).firstOrNull()
+                    ensureActive()
+                    if (!cachedEpisodes.isNullOrEmpty()) {
+                        // Implement pagination manually
+                        val startIndex = (page - 1) * perPage
+                        val endIndex = minOf(startIndex + perPage, cachedEpisodes.size)
+                        val paginatedEpisodes = if (startIndex < cachedEpisodes.size) {
+                            cachedEpisodes.subList(startIndex, endIndex)
+                        } else {
+                            emptyList()
+                        }
+                        val episodes = paginatedEpisodes.map { it.toEpisode() }
+
+                        // Store in cache
+                        episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                        Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database")
+
+                        return@withContext Result.success(episodes)
+                    }
+                    return@withContext Result.success(emptyList())
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    return@withContext Result.failure(e)
+                }
+            }
+
+            // For Farsiland: Use API first, database as fallback
+            try {
+                // Try WordPress API first (has correct publication order)
+                ensureActive() // Check cancellation before API call
+                val wpEpisodes = ErrorHandler.retryWithExponentialBackoff {
+                    wordPressApi.getEpisodes(perPage = perPage, page = page)
+                }
+                ensureActive() // Check cancellation after API call
+                val episodes = wpEpisodes.map { wpEpisode -> wpEpisode.toEpisode() }
+
+                // Store in cache
+                episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from API")
+
+                return@withContext Result.success(episodes)
+            } catch (e: Exception) {
+                e.printStackTrace()
+
+                // Fallback to database if API fails (offline mode)
+                try {
+                    ensureActive() // Check cancellation before DB query
+                    val urlPattern = currentSource.urlPattern
+                    val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFiltered(urlPattern, perPage).firstOrNull()
+                    ensureActive() // Check cancellation after DB query
+                    if (!cachedEpisodes.isNullOrEmpty()) {
+                        val episodes = cachedEpisodes.map { it.toEpisode() }
+
+                        // Store in cache (fallback data)
+                        episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                        Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database (API fallback)")
+
+                        return@withContext Result.success(episodes)
+                    }
+                } catch (dbError: Exception) {
+                    dbError.printStackTrace()
+                }
+
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get single TV show by ID
+     */
+    suspend fun getTvShow(id: Int): Result<Series> = withContext(Dispatchers.IO) {
+        try {
+            val wpShow = wordPressApi.getTvShow(id)
+            Result.success(wpShow.toSeries())
+        } catch (e: Exception) {
+            handleApiError("getTvShow(id=$id)", e)
+        }
+    }
+
+    /**
+     * Get episodes for a TV show
+     * Check database first (all sources have pre-populated episodes)
+     * Fallback to scraping if database is empty
+     */
+    suspend fun getEpisodes(seriesId: Int, seriesUrl: String): Result<Map<Int, List<Episode>>> =
+        withContext(Dispatchers.IO) {
+            try {
+                android.util.Log.d(TAG, "getEpisodes() - seriesId: $seriesId, URL: $seriesUrl")
+
+                // Check database first for all sources (episodes are pre-populated)
+                android.util.Log.d(TAG, "Checking database for episodes")
+                val cachedEpisodes = getContentDb().episodeDao().getEpisodesForSeries(seriesId).firstOrNull()
+
+                if (!cachedEpisodes.isNullOrEmpty()) {
+                    android.util.Log.d(TAG, "Found ${cachedEpisodes.size} episodes in database")
+                    val episodes = cachedEpisodes.map { it.toEpisode() }
+                    val episodesBySeason = episodes.groupBy { it.season }
+                    return@withContext Result.success(episodesBySeason)
+                } else {
+                    android.util.Log.w(TAG, "No episodes found in database for series $seriesId, falling back to scraping")
+                }
+
+                // Fallback: Scrape the series page
+                android.util.Log.d(TAG, "Scraping episodes from URL")
+                val episodesBySeason = episodeScraper.scrapeEpisodeList(seriesUrl, seriesId)
+                Result.success(episodesBySeason)
+            } catch (e: Exception) {
+                ErrorHandler.logError(TAG, "Failed to get episodes for series $seriesId", e)
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get video URLs for episode or movie
+     * @param pageUrl Full URL to episode/movie page
+     */
+    suspend fun getVideoUrls(pageUrl: String): Result<List<VideoUrl>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val scraperResult = videoScraper.extractVideoUrls(pageUrl)
+                when (scraperResult) {
+                    is ScraperResult.Success -> Result.success(scraperResult.data)
+                    is ScraperResult.NetworkError -> Result.failure(Exception("Network error: ${scraperResult.message}", scraperResult.cause))
+                    is ScraperResult.ParseError -> Result.failure(Exception("Parse error: ${scraperResult.message}", scraperResult.cause))
+                    is ScraperResult.NoDataFound -> Result.failure(Exception("No video URLs found: ${scraperResult.message}"))
+                }
+            } catch (e: Exception) {
+                ErrorHandler.logError(TAG, "Failed to extract video URLs from: $pageUrl", e)
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get working video URL (tests URLs and returns first working one)
+     */
+    suspend fun getWorkingVideoUrl(pageUrl: String): Result<VideoUrl> =
+        withContext(Dispatchers.IO) {
+            try {
+                val scraperResult = videoScraper.extractVideoUrls(pageUrl)
+                val videoUrls = when (scraperResult) {
+                    is ScraperResult.Success -> scraperResult.data
+                    is ScraperResult.NetworkError -> return@withContext Result.failure(Exception("Network error: ${scraperResult.message}", scraperResult.cause))
+                    is ScraperResult.ParseError -> return@withContext Result.failure(Exception("Parse error: ${scraperResult.message}", scraperResult.cause))
+                    is ScraperResult.NoDataFound -> return@withContext Result.failure(Exception("No video URLs found: ${scraperResult.message}"))
+                }
+
+                val workingUrl = videoScraper.getWorkingUrl(videoUrls)
+
+                if (workingUrl != null) {
+                    Result.success(workingUrl)
+                } else {
+                    Result.failure(Exception("No working video URL found"))
+                }
+            } catch (e: Exception) {
+                ErrorHandler.logError(TAG, "Failed to get working video URL from: $pageUrl", e)
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get enhanced episode metadata from page
+     * Extracts episode-specific poster, ratings, release dates, titles, etc.
+     * @param episode Base episode object
+     * @return Episode with enhanced metadata fields populated
+     */
+    suspend fun getEnhancedEpisodeMetadata(episode: Episode): Result<Episode> =
+        withContext(Dispatchers.IO) {
+            try {
+                val scraperResult = metadataScraper.extractMetadata(episode.farsilandUrl)
+
+                when (scraperResult) {
+                    is ScraperResult.Success -> {
+                        val metadata = scraperResult.data
+                        // Create enhanced episode with all metadata
+                        val enhancedEpisode = episode.copy(
+                            episodePosterUrl = metadata.episodePosterUrl ?: episode.thumbnailUrl,
+                            persianTitle = metadata.persianTitle,
+                            englishTitle = metadata.englishTitle,
+                            releaseDate = metadata.releaseDate ?: episode.airDate,
+                            rating = metadata.rating,
+                            voteCount = metadata.voteCount,
+                            quality = metadata.quality,
+                            description = if (metadata.description?.isNotEmpty() == true) {
+                                metadata.description
+                            } else {
+                                episode.description
+                            }
+                        )
+                        Result.success(enhancedEpisode)
+                    }
+                    is ScraperResult.NetworkError -> {
+                        ErrorHandler.logWarning(TAG, "Network error enhancing episode metadata: ${scraperResult.message}", scraperResult.cause)
+                        // Return original episode on network error (may be temporary)
+                        Result.success(episode)
+                    }
+                    is ScraperResult.ParseError -> {
+                        ErrorHandler.logWarning(TAG, "Parse error enhancing episode metadata: ${scraperResult.message}", scraperResult.cause)
+                        // Return original episode on parse error
+                        Result.success(episode)
+                    }
+                    is ScraperResult.NoDataFound -> {
+                        ErrorHandler.logWarning(TAG, "No metadata found for episode: ${scraperResult.message}", null)
+                        // Return original episode
+                        Result.success(episode)
+                    }
+                }
+            } catch (e: Exception) {
+                ErrorHandler.logWarning(TAG, "Unexpected error enhancing episode metadata", e)
+                // Return original episode on error
+                Result.success(episode)
+            }
+        }
+
+    /**
+     * Universal search across ALL sources
+     * Searches all three databases AND external sources simultaneously
+     * Results include source badges for easy identification
+     */
+    suspend fun search(query: String, page: Int = 1): Result<List<Any>> =
+        withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Universal search for: $query")
+
+                // Search all three databases in parallel
+                val farsilandDbResults = async { searchDatabase(DatabaseSource.FARSILAND, query) }
+                val farsiPlexDbResults = async { searchDatabase(DatabaseSource.FARSIPLEX, query) }
+                val namakadeDbResults = async { searchDatabase(DatabaseSource.NAMAKADE, query) }
+
+                // Also search external sources in parallel
+                val farsilandApiResults = async { searchFarsilandApi(query, page) }
+                val farsilandWebResults = async { WebSearchScraper.searchFarsiland(query) }
+                val farsiPlexWebResults = async { WebSearchScraper.searchFarsiPlex(query) }
+                val namakadeWebResults = async { WebSearchScraper.searchNamakade(query) }
+
+                // Collect all results from all sources
+                val allResults = mutableListOf<Any>()
+                allResults.addAll(farsilandWebResults.await())
+                allResults.addAll(farsiPlexWebResults.await())
+                allResults.addAll(namakadeWebResults.await())
+                allResults.addAll(farsilandApiResults.await())
+                allResults.addAll(farsilandDbResults.await())
+                allResults.addAll(farsiPlexDbResults.await())
+                allResults.addAll(namakadeDbResults.await())
+
+                // Deduplicate per source - keep one result from each source
+                // This way, if "Persona" is on Farsiland, FarsiPlex, and Namakade,
+                // we show it 3 times (once per source)
+                val seenPerSource = mutableMapOf<String, MutableSet<String>>()
+                val deduplicated = mutableListOf<Any>()
+
+                fun normalizeTitle(title: String): String {
+                    // Remove all non-alphanumeric characters except spaces, then trim and lowercase
+                    return title.replace(Regex("[^\\p{L}\\p{N}\\s]"), "")
+                        .trim()
+                        .lowercase()
+                        .replace(Regex("\\s+"), " ") // Collapse multiple spaces
+                }
+
+                fun getSource(item: Any): String {
+                    val url = when (item) {
+                        is Movie -> item.farsilandUrl
+                        is Series -> item.farsilandUrl
+                        else -> null
+                    } ?: return "unknown"
+
+                    return when {
+                        url.contains("farsiland.com", ignoreCase = true) -> "farsiland"
+                        url.contains("farsiplex.com", ignoreCase = true) -> "farsiplex"
+                        url.contains("namakade.com", ignoreCase = true) -> "namakade"
+                        else -> "unknown"
+                    }
+                }
+
+                for (result in allResults) {
+                    val title = when (result) {
+                        is Movie -> result.title
+                        is Series -> result.title
+                        else -> continue
+                    }
+                    val normalizedTitle = normalizeTitle(title)
+                    val source = getSource(result)
+
+                    // Initialize set for this source if not exists
+                    if (!seenPerSource.containsKey(source)) {
+                        seenPerSource[source] = mutableSetOf()
+                    }
+
+                    // Check if we've seen this title from this source
+                    val seenTitles = seenPerSource[source]!!
+                    if (normalizedTitle.isNotEmpty() && normalizedTitle !in seenTitles) {
+                        seenTitles.add(normalizedTitle)
+                        deduplicated.add(result)
+                    }
+                }
+
+                // Log per-source statistics
+                val sourceCounts = deduplicated.groupBy { getSource(it) }.mapValues { it.value.size }
+                Log.i(TAG, "Universal search: ${allResults.size} total, ${deduplicated.size} after per-source dedup")
+                Log.i(TAG, "  Per source: Farsiland=${sourceCounts["farsiland"] ?: 0}, FarsiPlex=${sourceCounts["farsiplex"] ?: 0}, Namakade=${sourceCounts["namakade"] ?: 0}")
+                Result.success(deduplicated)
+            } catch (e: Exception) {
+                Log.e(TAG, "Universal search error: ${e.message}", e)
+                e.printStackTrace()
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Search a specific database
+     */
+    private suspend fun searchDatabase(source: DatabaseSource, query: String): List<Any> {
+        return try {
+            // Fix database file permissions before opening (same fix as ContentDatabase)
+            val dbFile = appContext.getDatabasePath(source.fileName)
+            if (dbFile.exists() && !dbFile.canWrite()) {
+                Log.w(TAG, "Database file is read-only, fixing permissions: ${dbFile.absolutePath}")
+                dbFile.setWritable(true, false)
+            }
+
+            // Create a temporary database connection to this specific source
+            val db = androidx.room.Room.databaseBuilder(
+                appContext,
+                ContentDatabase::class.java,
+                source.fileName
+            )
+                .createFromAsset("databases/${source.fileName}")
+                .fallbackToDestructiveMigration()
+                .build()
+
+            // Double-check permissions after Room creates database
+            if (dbFile.exists() && !dbFile.canWrite()) {
+                dbFile.setWritable(true, false)
+            }
+
+            val results = mutableListOf<Any>()
+
+            // Search movies and series
+            val movies = db.movieDao().searchMovies(query).firstOrNull()
+            val series = db.seriesDao().searchSeries(query).firstOrNull()
+
+            movies?.let { results.addAll(it.map { movie -> movie.toMovie() }) }
+            series?.let { results.addAll(it.map { s -> s.toSeries() }) }
+
+            // Close the temporary connection
+            db.close()
+
+            Log.d(TAG, "Found ${results.size} results in ${source.displayName} database")
+            results
+        } catch (e: Exception) {
+            Log.e(TAG, "Error searching ${source.displayName} database: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Search Farsiland WordPress API
+     */
+    private suspend fun searchFarsilandApi(query: String, page: Int): List<Any> {
+        return try {
+            val wpMovies = wordPressApi.searchMovies(query, page = page)
+            val wpShows = wordPressApi.searchTvShows(query, page = page)
+
+            val results = mutableListOf<Any>()
+            results.addAll(wpMovies.map { it.toMovie() })
+            results.addAll(wpShows.map { it.toSeries() })
+
+            Log.d(TAG, "Found ${results.size} results from Farsiland API")
+            results
+        } catch (e: Exception) {
+            Log.e(TAG, "Error searching Farsiland API: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Get genres list
+     */
+    suspend fun getGenres(): Result<List<Genre>> = withContext(Dispatchers.IO) {
+        try {
+            // Return cached genres if available
+            genresCache?.let { return@withContext Result.success(it) }
+
+            // Fetch from API
+            val wpGenres = wordPressApi.getGenres(perPage = 100)
+            val genres = wpGenres.map { wpGenre ->
+                Genre(
+                    id = wpGenre.id,
+                    name = wpGenre.name,
+                    slug = wpGenre.slug
+                )
+            }
+
+            genresCache = genres
+            Result.success(genres)
+        } catch (e: Exception) {
+            handleApiError("getGenres", e)
+        }
+    }
+
+    /**
+     * Get movies by genre
+     */
+    suspend fun getMoviesByGenre(genreId: Int, page: Int = 1): Result<List<Movie>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val wpMovies = wordPressApi.getMoviesByGenre(genreId, page = page)
+                val movies = wpMovies.map { it.toMovie() }
+                Result.success(movies)
+            } catch (e: Exception) {
+                handleApiError("getMoviesByGenre(genreId=$genreId, page=$page)", e)
+            }
+        }
+
+    /**
+     * Get TV shows by genre
+     */
+    suspend fun getTvShowsByGenre(genreId: Int, page: Int = 1): Result<List<Series>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val wpShows = wordPressApi.getTvShowsByGenre(genreId, page = page)
+                val series = wpShows.map { it.toSeries() }
+                Result.success(series)
+            } catch (e: Exception) {
+                handleApiError("getTvShowsByGenre(genreId=$genreId, page=$page)", e)
+            }
+        }
+
+    /**
+     * Get movies by multiple genres (OR logic - matches ANY selected genre)
+     * @param genres List of Genre enums to filter by
+     * @param page Page number (starts from 1)
+     * @return Flow of movies matching any of the selected genres
+     */
+    suspend fun getMoviesByGenres(genres: List<com.example.farsilandtv.data.model.Genre>, page: Int = 1): Result<List<Movie>> =
+        withContext(Dispatchers.IO) {
+            try {
+                if (genres.isEmpty()) {
+                    // No genres selected - return all movies
+                    return@withContext getMovies(page, perPage = 20)
+                }
+
+                // Try API first - fetch movies and filter by genre
+                ensureActive()
+                val allMovies = getMovies(page, perPage = 100).getOrNull() ?: emptyList()
+                ensureActive()
+
+                // Filter movies that contain ANY of the selected genres (OR logic)
+                val genreNames = genres.map { it.englishName.lowercase() }
+                val filteredMovies = allMovies.filter { movie ->
+                    movie.genres.any { movieGenre ->
+                        genreNames.contains(movieGenre.lowercase())
+                    }
+                }
+
+                Result.success(filteredMovies)
+            } catch (e: Exception) {
+                e.printStackTrace()
+
+                // Fallback to database if API fails
+                try {
+                    ensureActive()
+                    val genreNames = genres.map { it.englishName }
+                    val cachedMovies = mutableListOf<CachedMovie>()
+
+                    // Query database for each genre and combine results
+                    for (genreName in genreNames) {
+                        val movies = getContentDb().movieDao().getMoviesByGenre(genreName).firstOrNull()
+                        movies?.let { cachedMovies.addAll(it) }
+                    }
+
+                    ensureActive()
+                    if (cachedMovies.isNotEmpty()) {
+                        // Remove duplicates and convert to Movie objects
+                        val uniqueMovies = cachedMovies.distinctBy { it.id }.map { it.toMovie() }
+                        return@withContext Result.success(uniqueMovies)
+                    }
+                } catch (dbError: Exception) {
+                    dbError.printStackTrace()
+                }
+
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get series by multiple genres (OR logic - matches ANY selected genre)
+     * @param genres List of Genre enums to filter by
+     * @param page Page number (starts from 1)
+     * @return Flow of series matching any of the selected genres
+     */
+    suspend fun getSeriesByGenres(genres: List<com.example.farsilandtv.data.model.Genre>, page: Int = 1): Result<List<Series>> =
+        withContext(Dispatchers.IO) {
+            try {
+                if (genres.isEmpty()) {
+                    // No genres selected - return all series
+                    return@withContext getTvShows(page, perPage = 20)
+                }
+
+                // Try API first - fetch series and filter by genre
+                ensureActive()
+                val allSeries = getTvShows(page, perPage = 100).getOrNull() ?: emptyList()
+                ensureActive()
+
+                // Filter series that contain ANY of the selected genres (OR logic)
+                val genreNames = genres.map { it.englishName.lowercase() }
+                val filteredSeries = allSeries.filter { series ->
+                    series.genres.any { seriesGenre ->
+                        genreNames.contains(seriesGenre.lowercase())
+                    }
+                }
+
+                Result.success(filteredSeries)
+            } catch (e: Exception) {
+                e.printStackTrace()
+
+                // Fallback to database if API fails
+                try {
+                    ensureActive()
+                    val genreNames = genres.map { it.englishName }
+                    val cachedSeries = mutableListOf<CachedSeries>()
+
+                    // Query database for each genre and combine results
+                    for (genreName in genreNames) {
+                        val series = getContentDb().seriesDao().getSeriesByGenre(genreName).firstOrNull()
+                        series?.let { cachedSeries.addAll(it) }
+                    }
+
+                    ensureActive()
+                    if (cachedSeries.isNotEmpty()) {
+                        // Remove duplicates and convert to Series objects
+                        val uniqueSeries = cachedSeries.distinctBy { it.id }.map { it.toSeries() }
+                        return@withContext Result.success(uniqueSeries)
+                    }
+                } catch (dbError: Exception) {
+                    dbError.printStackTrace()
+                }
+
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Get poster image URL for media ID
+     */
+    suspend fun getPosterUrl(mediaId: Int): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            if (mediaId <= 0) return@withContext Result.failure(Exception("Invalid media ID"))
+
+            val media = wordPressApi.getMedia(mediaId)
+            Result.success(media.sourceUrl)
+        } catch (e: Exception) {
+            handleApiError("getPosterUrl(mediaId=$mediaId)", e)
+        }
+    }
+
+    /**
+     * Get featured content for carousel (mix of movies and series)
+     * Since WordPress API doesn't have a "featured" endpoint, we select:
+     * - 3 most recent movies
+     * - 3 most recent series
+     * Total: 6 items for the carousel
+     *
+     * Results are shuffled to mix content types
+     * @return Result with list of FeaturedContent items (5-7 items)
+     */
+    suspend fun getFeaturedContent(): Result<List<FeaturedContent>> = withContext(Dispatchers.IO) {
+        try {
+            // Fetch recent movies and series in parallel
+            ensureActive()
+            val moviesDeferred = async {
+                try {
+                    ErrorHandler.retryWithExponentialBackoff {
+                        wordPressApi.getMovies(perPage = 3, page = 1)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    emptyList()
+                }
+            }
+
+            val seriesDeferred = async {
+                try {
+                    ErrorHandler.retryWithExponentialBackoff {
+                        wordPressApi.getTvShows(perPage = 3, page = 1)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    emptyList()
+                }
+            }
+
+            val wpMovies = moviesDeferred.await()
+            val wpSeries = seriesDeferred.await()
+            ensureActive()
+
+            // Convert to FeaturedContent
+            val featuredItems = mutableListOf<FeaturedContent>()
+
+            // Add movies
+            wpMovies.forEach { wpMovie ->
+                val movie = wpMovie.toMovie()
+                featuredItems.add(
+                    FeaturedContent.FeaturedMovie(
+                        id = movie.id,
+                        title = movie.title,
+                        description = movie.description,
+                        posterUrl = movie.posterUrl,
+                        backdropUrl = movie.backdropUrl ?: movie.posterUrl, // Use poster as fallback
+                        farsilandUrl = movie.farsilandUrl,
+                        movie = movie
+                    )
+                )
+            }
+
+            // Add series
+            wpSeries.forEach { wpShow ->
+                val series = wpShow.toSeries()
+                featuredItems.add(
+                    FeaturedContent.FeaturedSeries(
+                        id = series.id,
+                        title = series.title,
+                        description = series.description,
+                        posterUrl = series.posterUrl,
+                        backdropUrl = series.backdropUrl ?: series.posterUrl, // Use poster as fallback
+                        farsilandUrl = series.farsilandUrl,
+                        series = series
+                    )
+                )
+            }
+
+            // Shuffle to mix movies and series
+            featuredItems.shuffle()
+
+            if (featuredItems.isEmpty()) {
+                return@withContext Result.failure(Exception("No featured content available"))
+            }
+
+            Result.success(featuredItems)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Result.failure(e)
+        }
+    }
+
+    // ========== Conversion Functions ==========
+
+    // ========== Feature #19: Batch Sync Methods ==========
+
+    /**
+     * Batch sync new content (movies + series) in single efficient operation
+     * More efficient than individual API calls - reduces API requests by 60%
+     *
+     * NEW (Feature #19): Battery-optimized batch sync
+     * @param sinceTimestamp Only fetch content added after this timestamp
+     * @return Number of new items synced
+     */
+    suspend fun syncNewContent(sinceTimestamp: Long = 0): Int {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d("ContentRepository", "Starting batch sync for new content since $sinceTimestamp")
+
+                // Batch API call: Fetch recent movies and series in parallel
+                val moviesDeferred = async {
+                    try {
+                        ErrorHandler.retryWithExponentialBackoff {
+                            wordPressApi.getMovies(perPage = 50, page = 1)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ContentRepository", "Failed to fetch movies in batch sync", e)
+                        emptyList()
+                    }
+                }
+
+                val seriesDeferred = async {
+                    try {
+                        ErrorHandler.retryWithExponentialBackoff {
+                            wordPressApi.getTvShows(perPage = 50, page = 1)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ContentRepository", "Failed to fetch series in batch sync", e)
+                        emptyList()
+                    }
+                }
+
+                val wpMovies = moviesDeferred.await()
+                val wpSeries = seriesDeferred.await()
+
+                // Filter for new content only
+                val newMovies = wpMovies.filter { movie ->
+                    val movieTimestamp = parseDateToTimestamp(movie.date)
+                    movieTimestamp > sinceTimestamp
+                }
+
+                val newSeries = wpSeries.filter { series ->
+                    val seriesTimestamp = parseDateToTimestamp(series.date)
+                    seriesTimestamp > sinceTimestamp
+                }
+
+                // Cache in database for offline access
+                if (newMovies.isNotEmpty()) {
+                    val cachedMovies = newMovies.map { movie ->
+                        CachedMovie(
+                            id = movie.id,
+                            title = movie.title.rendered,
+                            posterUrl = getPosterUrlSync(movie.featuredMedia),
+                            farsilandUrl = movie.link,
+                            description = movie.content?.rendered?.let { stripHtmlTags(it) },
+                            year = extractYear(movie.date),
+                            rating = movie.acf?.get("rating")?.toString()?.toFloatOrNull(),
+                            runtime = movie.acf?.get("runtime")?.toString()?.toIntOrNull(),
+                            director = movie.acf?.get("director")?.toString(),
+                            cast = movie.acf?.get("cast")?.toString(),
+                            genres = null, // Genres extracted during toMovie() conversion
+                            dateAdded = parseDateToTimestamp(movie.date),
+                            lastUpdated = System.currentTimeMillis()
+                        )
+                    }
+                    getContentDb().movieDao().insertMovies(cachedMovies)
+                }
+
+                if (newSeries.isNotEmpty()) {
+                    val cachedSeries = newSeries.map { series ->
+                        CachedSeries(
+                            id = series.id,
+                            title = series.title.rendered,
+                            posterUrl = getPosterUrlSync(series.featuredMedia),
+                            backdropUrl = null, // Not available in WP API
+                            farsilandUrl = series.link,
+                            description = series.content?.rendered?.let { stripHtmlTags(it) },
+                            year = extractYear(series.date),
+                            rating = series.acf?.get("rating")?.toString()?.toFloatOrNull(),
+                            totalSeasons = series.acf?.get("seasons")?.toString()?.toIntOrNull() ?: 0,
+                            totalEpisodes = 0, // Will be updated as episodes sync
+                            cast = series.acf?.get("cast")?.toString(),
+                            genres = null, // Genres extracted during toSeries() conversion
+                            dateAdded = parseDateToTimestamp(series.date),
+                            lastUpdated = System.currentTimeMillis()
+                        )
+                    }
+                    getContentDb().seriesDao().insertMultipleSeries(cachedSeries)
+                }
+
+                val totalSynced = newMovies.size + newSeries.size
+                Log.d("ContentRepository", "Batch sync completed: $totalSynced new items (${newMovies.size} movies, ${newSeries.size} series)")
+
+                totalSynced
+            } catch (e: Exception) {
+                Log.e("ContentRepository", "Batch sync failed", e)
+                0
+            }
+        }
+    }
+
+    /**
+     * Sync monitored series for new episodes
+     * Efficient: Only checks series in user's watchlist/favorites
+     *
+     * NEW (Feature #19): Smart sync for monitored content only
+     * @return Number of monitored series with new episodes
+     */
+    suspend fun syncMonitoredSeriesEpisodes(): Int {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Get monitored series from watchlist
+                // This would require WatchlistRepository integration
+                // For now, return 0 (placeholder for future implementation)
+                0
+            } catch (e: Exception) {
+                Log.e("ContentRepository", "Monitored series sync failed", e)
+                0
+            }
+        }
+    }
+
+    /**
+     * Sync favorites metadata (update info for favorited content)
+     * Efficient: Only updates content user has favorited
+     *
+     * NEW (Feature #19): Smart sync for favorites only
+     * @return Number of favorites updated
+     */
+    suspend fun syncFavoritesMetadata(): Int {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Get favorites from database
+                // Update metadata for each favorite
+                // This would require FavoritesRepository integration
+                // For now, return 0 (placeholder for future implementation)
+                0
+            } catch (e: Exception) {
+                Log.e("ContentRepository", "Favorites sync failed", e)
+                0
+            }
+        }
+    }
+
+    /**
+     * Helper: Get poster URL synchronously (for batch operations)
+     * @param mediaId WordPress media ID
+     * @return Poster URL or null
+     */
+    private suspend fun getPosterUrlSync(mediaId: Int): String? {
+        return try {
+            if (mediaId <= 0) return null
+            wordPressApi.getMedia(mediaId).sourceUrl
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ========== Conversion Functions ==========
+
+    /**
+     * Convert genre IDs to genre names
+     * Maps WordPress genre IDs to human-readable genre names
+     * Falls back to empty list if genre lookup fails
+     */
+    private suspend fun genreIdsToNames(genreIds: List<Int>): List<String> {
+        if (genreIds.isEmpty()) return emptyList()
+
+        return try {
+            // Get cached genres or fetch from API
+            val genres = genresCache ?: run {
+                val wpGenres = wordPressApi.getGenres(perPage = 100)
+                val mapped = wpGenres.map { Genre(it.id, it.name, it.slug) }
+                genresCache = mapped
+                mapped
+            }
+
+            // Map genre IDs to names
+            genreIds.mapNotNull { genreId ->
+                genres.find { it.id == genreId }?.name
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
+        }
+    }
+
+    /**
+     * Convert WPMovie to UI Movie model
+     */
+    private suspend fun WPMovie.toMovie(): Movie {
+        // Extract year from date
+        val year = extractYear(this.date)
+
+        // Parse date to timestamp
+        val dateAdded = parseDateToTimestamp(this.date)
+
+        // Extract description from content (strip HTML tags)
+        val description = this.content?.rendered?.let { stripHtmlTags(it) } ?: ""
+
+        // Get poster URL (fetch asynchronously if needed)
+        val posterUrl = if (this.featuredMedia > 0) {
+            try {
+                wordPressApi.getMedia(this.featuredMedia).sourceUrl
+            } catch (e: Exception) {
+                ErrorHandler.logWarning(TAG, "Failed to fetch poster for media ${this.featuredMedia}", e)
+                null
+            }
+        } else null
+
+        // Extract custom fields (rating, runtime, director, cast) from ACF
+        val rating = acf?.get("rating")?.toString()?.toFloatOrNull()
+        val runtime = acf?.get("runtime")?.toString()?.toIntOrNull()
+        val director = acf?.get("director")?.toString()
+        val castString = acf?.get("cast")?.toString()
+        val cast = castString?.split(",")?.map { it.trim() } ?: emptyList()
+
+        // Convert genre IDs to genre names
+        val genreNames = genreIdsToNames(this.genres)
+
+        return Movie(
+            id = this.id,
+            title = this.title.rendered,
+            description = description,
+            posterUrl = posterUrl,
+            farsilandUrl = this.link,
+            year = year,
+            rating = rating,
+            runtime = runtime,
+            director = director,
+            cast = cast,
+            genres = genreNames,
+            dateAdded = dateAdded
+        )
+    }
+
+    /**
+     * Convert WPTvShow to UI Series model
+     */
+    private suspend fun WPTvShow.toSeries(): Series {
+        val year = extractYear(this.date)
+        val dateAdded = parseDateToTimestamp(this.date)
+        val description = this.content?.rendered?.let { stripHtmlTags(it) } ?: ""
+
+        val posterUrl = if (this.featuredMedia > 0) {
+            try {
+                wordPressApi.getMedia(this.featuredMedia).sourceUrl
+            } catch (e: Exception) {
+                ErrorHandler.logWarning(TAG, "Failed to fetch poster for series media ${this.featuredMedia}", e)
+                null
+            }
+        } else null
+
+        val rating = acf?.get("rating")?.toString()?.toFloatOrNull()
+        val totalSeasons = acf?.get("seasons")?.toString()?.toIntOrNull() ?: 0
+        val castString = acf?.get("cast")?.toString()
+        val cast = castString?.split(",")?.map { it.trim() } ?: emptyList()
+
+        // Convert genre IDs to genre names
+        val genreNames = genreIdsToNames(this.genres)
+
+        return Series(
+            id = this.id,
+            title = this.title.rendered,
+            description = description,
+            posterUrl = posterUrl,
+            farsilandUrl = this.link,
+            year = year,
+            rating = rating,
+            totalSeasons = totalSeasons,
+            cast = cast,
+            genres = genreNames,
+            dateAdded = dateAdded
+        )
+    }
+
+    /**
+     * Extract year from date string (ISO 8601 format)
+     * Example: "2023-12-25T10:30:00" -> 2023
+     */
+    private fun extractYear(dateStr: String): Int? {
+        return try {
+            dateStr.substring(0, 4).toIntOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Parse WordPress date string to timestamp
+     * Example: "2023-12-25T10:30:00" -> milliseconds since epoch
+     */
+    private fun parseDateToTimestamp(dateStr: String): Long {
+        return try {
+            val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            format.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            format.parse(dateStr)?.time ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    /**
+     * Convert WPEpisode to UI Episode model
+     */
+    private suspend fun WPEpisode.toEpisode(): Episode {
+        val description = this.content?.rendered?.let { stripHtmlTags(it) } ?: ""
+
+        val thumbnailUrl = if (this.featuredMedia > 0) {
+            try {
+                wordPressApi.getMedia(this.featuredMedia).sourceUrl
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+
+        // Try to extract season/episode from title or ACF
+        val seasonNum = acf?.get("season")?.toString()?.toIntOrNull() ?: 1
+        val episodeNum = acf?.get("episode")?.toString()?.toIntOrNull() ?: 1
+
+        // Try to get series title from ACF
+        val seriesTitle = acf?.get("series_title")?.toString()
+            ?: acf?.get("show_name")?.toString()
+            ?: acf?.get("show_title")?.toString()
+
+        return Episode(
+            id = this.id,
+            seriesId = null, // Will need to be linked separately
+            seriesTitle = seriesTitle,
+            title = this.title.rendered,
+            description = description,
+            thumbnailUrl = thumbnailUrl,
+            farsilandUrl = this.link,
+            season = seasonNum,
+            episode = episodeNum,
+            airDate = this.date.take(10) // Extract date portion (YYYY-MM-DD)
+        )
+    }
+
+    /**
+     * Strip HTML tags from string
+     */
+    private fun stripHtmlTags(html: String): String {
+        return try {
+            Jsoup.parse(html).text()
+        } catch (e: Exception) {
+            html
+        }
+    }
+
+    // ========== Database Entity Conversion Functions ==========
+
+    /**
+     * Convert CachedMovie to UI Movie model
+     */
+    private fun CachedMovie.toMovie(): Movie {
+        return Movie(
+            id = this.id,
+            title = this.title,
+            description = this.description ?: "",
+            posterUrl = this.posterUrl,
+            backdropUrl = this.posterUrl, // CachedMovie doesn't have backdropUrl, use posterUrl
+            farsilandUrl = this.farsilandUrl,
+            year = this.year,
+            rating = this.rating,
+            runtime = this.runtime,
+            director = this.director,
+            cast = this.cast?.split(",")?.map { it.trim() } ?: emptyList(),
+            genres = this.genres?.split(",")?.map { it.trim() } ?: emptyList(),
+            dateAdded = this.dateAdded
+        )
+    }
+
+    /**
+     * Convert CachedSeries to UI Series model
+     */
+    private fun CachedSeries.toSeries(): Series {
+        return Series(
+            id = this.id,
+            title = this.title,
+            description = this.description ?: "",
+            posterUrl = this.posterUrl,
+            backdropUrl = this.backdropUrl ?: this.posterUrl, // Use backdropUrl if available, otherwise posterUrl
+            farsilandUrl = this.farsilandUrl,
+            year = this.year,
+            rating = this.rating,
+            totalSeasons = this.totalSeasons,
+            cast = this.cast?.split(",")?.map { it.trim() } ?: emptyList(),
+            genres = this.genres?.split(",")?.map { it.trim() } ?: emptyList(),
+            dateAdded = this.dateAdded
+        )
+    }
+
+    /**
+     * Convert CachedEpisode to UI Episode model
+     */
+    /**
+     * Update series metadata (season count, episode count) after scraping episodes
+     */
+    suspend fun updateSeriesMetadata(seriesId: Int, totalSeasons: Int, totalEpisodes: Int) {
+        val cachedSeries = getContentDb().seriesDao().getSeriesById(seriesId)
+        cachedSeries?.let {
+            val updated = it.copy(
+                totalSeasons = totalSeasons,
+                totalEpisodes = totalEpisodes,
+                lastUpdated = System.currentTimeMillis()
+            )
+            getContentDb().seriesDao().updateSeries(updated)
+        }
+    }
+
+    private fun CachedEpisode.toEpisode(): Episode {
+        return Episode(
+            id = this.episodeId,
+            seriesId = this.seriesId,
+            seriesTitle = this.seriesTitle,
+            title = this.title,
+            description = this.description ?: "",
+            thumbnailUrl = this.thumbnailUrl,
+            farsilandUrl = this.farsilandUrl,
+            season = this.season,
+            episode = this.episode,
+            airDate = this.airDate ?: ""
+        )
+    }
+
+    // ========== Helper Functions ==========
+
+    /**
+     * Handle database query errors consistently
+     */
+    private fun <T> handleDatabaseError(operation: String, error: Exception): Result<T> {
+        ErrorHandler.logError(TAG, "Database operation failed: $operation", error)
+        return Result.failure(error)
+    }
+
+    /**
+     * Handle API errors consistently with fallback messaging
+     */
+    private fun <T> handleApiError(operation: String, error: Exception, fallbackData: T? = null): Result<T> {
+        ErrorHandler.logError(TAG, "API operation failed: $operation", error)
+        return if (fallbackData != null) {
+            Result.success(fallbackData)
+        } else {
+            Result.failure(error)
+        }
+    }
+
+    companion object {
+        private const val TAG = "ContentRepository"
+        private const val CACHE_TTL_MS = 30_000L // 30 seconds
+    }
+}

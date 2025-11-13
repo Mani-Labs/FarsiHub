@@ -1,0 +1,18 @@
+<resources>
+    <color name="background_gradient_start">#000000</color>
+    <color name="background_gradient_end">#DDDDDD</color>
+    <color name="fastlane_background">#0096a6</color>
+    <color name="search_opaque">#ffaa3f</color>
+    <color name="selected_background">#ffaa3f</color>
+    <color name="default_background">#3d3d3d</color>
+    <color name="splash_background">#1A237E</color>
+
+    <!-- Notification colors (Feature #9) -->
+    <color name="notification_color">#0096a6</color>
+
+    <!-- Source badge colors -->
+    <color name="source_farsiland">#FF5252</color>      <!-- Red for Farsiland -->
+    <color name="source_farsiplex">#448AFF</color>      <!-- Blue for FarsiPlex -->
+    <color name="source_namakade">#69F0AE</color>       <!-- Green for Namakade -->
+    <color name="source_unknown">#9E9E9E</color>        <!-- Gray for unknown -->
+</resources>

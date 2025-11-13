@@ -1,0 +1,55 @@
+<resources>
+    <string name="app_name">FarsiHub</string>
+    <string name="browse_title">FarsiHub</string>
+    <string name="related_movies">Related Videos</string>
+    <string name="grid_view">Grid View</string>
+    <string name="error_fragment">Error Fragment</string>
+    <string name="personal_settings">Personal Settings</string>
+    <string name="watch_trailer_1">Watch trailer</string>
+    <string name="watch_trailer_2">FREE</string>
+    <string name="rent_1">Rent By Day</string>
+    <string name="rent_2">From $1.99</string>
+    <string name="buy_1">Buy and Own</string>
+    <string name="buy_2">AT $9.99</string>
+    <string name="movie">Movie</string>
+
+    <!-- Error messages -->
+    <string name="error_fragment_message">An error occurred</string>
+    <string name="dismiss_error">Dismiss</string>
+
+    <!-- Search -->
+    <string name="search_title">Search Movies and TV Shows</string>
+    <string name="search_hint">Search FarsiHub</string>
+    <string name="no_results">No results found</string>
+
+    <!-- Notifications (Feature #9) -->
+    <string name="default_notification_channel_id">farsiland_default</string>
+    <string name="notification_new_episode_title">New Episode Available</string>
+    <string name="notification_new_season_title">New Season Available</string>
+    <string name="notification_weekly_digest_title">Weekly Content Summary</string>
+
+    <!-- M3 FIX: Navigation & Exit Messages -->
+    <string name="exit_prompt">Press back again to exit</string>
+
+    <!-- M3 FIX: Video Player Messages -->
+    <string name="network_connection_lost">Network connection lost. Playback paused.</string>
+    <string name="network_connection_restored">Network connection restored</string>
+    <string name="switched_to_quality">Switched to %s</string>
+    <string name="no_video_urls_found">No video URLs found. The page may not contain video links.\n\nDetails: %s</string>
+
+    <!-- M3 FIX: Error Messages with Formatting -->
+    <string name="error_loading_episodes">Error loading episodes: %s</string>
+    <string name="error_loading_playlists">Error loading playlists: %s</string>
+    <string name="error_loading_playlist_items">Error loading items: %s</string>
+    <string name="error_generic">Error: %s</string>
+    <string name="error_loading_saved_position">Error loading saved position</string>
+
+    <!-- M3 FIX: Database Source Switching -->
+    <string name="switched_to_database_source">Switched to %s</string>
+
+    <!-- M3 FIX: Scraper Messages -->
+    <string name="no_data_found_scraper">No video URLs found on page. HTML structure may have changed.</string>
+    <string name="network_error_scraper">Network error: %s</string>
+    <string name="parse_error_scraper">Parse error: %s</string>
+    <string name="no_video_urls_repository">No video URLs found: %s</string>
+</resources>

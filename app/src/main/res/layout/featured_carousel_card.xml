@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="800dp"
+    android:layout_height="300dp"
+    android:layout_marginTop="-100dp"
+    android:layout_marginStart="80dp"
+    android:focusable="true"
+    android:focusableInTouchMode="true">
+
+    <!-- Backdrop Image -->
+    <ImageView
+        android:id="@+id/featured_backdrop"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        tools:src="@drawable/default_background" />
+
+    <!-- Content Container (bottom section) -->
+    <LinearLayout
+        android:id="@+id/content_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <!-- Title -->
+        <TextView
+            android:id="@+id/featured_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:shadowColor="#80000000"
+            android:shadowDx="2"
+            android:shadowDy="2"
+            android:shadowRadius="4"
+            android:maxLines="2"
+            android:ellipsize="end"
+            tools:text="Featured Movie Title" />
+
+        <!-- Description -->
+        <TextView
+            android:id="@+id/featured_description"
+            android:layout_width="800dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            android:alpha="0.9"
+            android:shadowColor="#80000000"
+            android:shadowDx="1"
+            android:shadowDy="1"
+            android:shadowRadius="3"
+            android:maxLines="2"
+            android:ellipsize="end"
+            tools:text="Description of the featured content goes here. This is a brief overview of the movie or series." />
+
+    </LinearLayout>
+
+    <!-- Focus indicator border -->
+    <View
+        android:id="@+id/focus_border"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/featured_focus_border"
+        android:visibility="gone" />
+
+</FrameLayout>

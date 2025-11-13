@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Feature #21: Enhanced focus indicator for better visual feedback -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Focused state with thick border -->
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent"/>
+            <stroke
+                android:width="4dp"
+                android:color="#E91E63"/>
+            <corners android:radius="8dp"/>
+        </shape>
+    </item>
+
+    <!-- Default state - no border -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent"/>
+            <stroke
+                android:width="0dp"
+                android:color="@android:color/transparent"/>
+        </shape>
+    </item>
+</selector>

@@ -1,0 +1,19 @@
+<resources>
+
+    <style name="Theme.FarsilandTV" parent="@style/Theme.Leanback" />
+
+    <!-- Splash screen theme -->
+    <style name="Theme.FarsilandTV.Splash" parent="Theme.FarsilandTV">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">false</item>
+    </style>
+
+    <!-- Fullscreen theme for video player using AppCompat -->
+    <style name="Theme.VideoPlayer" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+    </style>
+</resources>

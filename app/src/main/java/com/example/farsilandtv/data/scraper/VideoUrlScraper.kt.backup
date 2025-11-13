@@ -1,0 +1,593 @@
+package com.example.farsilandtv.data.scraper
+
+import com.example.farsilandtv.data.api.RetrofitClient
+import com.example.farsilandtv.data.models.VideoUrl
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.Request
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+
+/**
+ * HTML scraper for extracting video URLs from Farsiland.com episode/movie pages
+ *
+ * KEY DISCOVERY: Video URLs are in HTML microdata:
+ * <link itemprop="contentUrl" href="https://d1.flnd.buzz/series/shoghal/01.1080.mp4">
+ *
+ * NO AUTHENTICATION REQUIRED - URLs are publicly accessible in HTML!
+ */
+object VideoUrlScraper {
+
+    private const val TAG = "VideoUrlScraper"
+    private val httpClient = RetrofitClient.getHttpClient()
+
+    /**
+     * Extract video URLs from episode or movie page
+     *
+     * @param pageUrl Full URL to episode/movie page (e.g., https://farsiland.com/series/shoghal/s01e01/)
+     * @return List of VideoUrl objects sorted by quality (1080p first)
+     *
+     * Example HTML structure:
+     * <link itemprop="contentUrl" href="https://d1.flnd.buzz/series/shoghal/01.1080.mp4">
+     * <link itemprop="contentUrl" href="https://d1.flnd.buzz/series/shoghal/01.720.mp4">
+     * <link itemprop="contentUrl" href="https://d1.flnd.buzz/series/shoghal/01.480.mp4">
+     */
+    suspend fun extractVideoUrls(pageUrl: String): List<VideoUrl> = withContext(Dispatchers.IO) {
+        try {
+            android.util.Log.d(TAG, "========================================")
+            android.util.Log.d(TAG, "extractVideoUrls() called")
+            android.util.Log.d(TAG, "Page URL: $pageUrl")
+
+            // Fetch HTML content
+            android.util.Log.d(TAG, "Fetching HTML content...")
+            val html = fetchHtml(pageUrl)
+            android.util.Log.d(TAG, "HTML fetched. Length: ${html.length} characters")
+
+            // Parse HTML with Jsoup
+            android.util.Log.d(TAG, "Parsing HTML with Jsoup...")
+            val doc = Jsoup.parse(html)
+
+            // Extract video URLs from microdata
+            android.util.Log.d(TAG, "Extracting video URLs from microdata...")
+            val videoUrls = extractFromMicrodata(doc)
+
+            if (videoUrls.isNotEmpty()) {
+                android.util.Log.d(TAG, "SUCCESS: Found ${videoUrls.size} URLs from microdata")
+                android.util.Log.d(TAG, "========================================")
+                return@withContext videoUrls
+            }
+
+            android.util.Log.w(TAG, "No URLs found in microdata, trying download forms...")
+
+            // Try download form extraction
+            android.util.Log.d(TAG, "Attempting download form extraction...")
+            val downloadUrls = extractFromDownloadForms(doc)
+            if (downloadUrls.isNotEmpty()) {
+                android.util.Log.d(TAG, "SUCCESS: Found ${downloadUrls.size} URLs from download forms")
+                android.util.Log.d(TAG, "========================================")
+                return@withContext downloadUrls
+            }
+
+            android.util.Log.w(TAG, "No URLs found in download forms, searching for direct MP4 links...")
+
+            // Try searching for direct MP4 links in HTML
+            android.util.Log.d(TAG, "Attempting direct MP4 link extraction...")
+            val directUrls = extractDirectMp4Links(doc)
+            if (directUrls.isNotEmpty()) {
+                android.util.Log.d(TAG, "SUCCESS: Found ${directUrls.size} direct MP4 URLs")
+                android.util.Log.d(TAG, "========================================")
+                return@withContext directUrls
+            }
+
+            android.util.Log.w(TAG, "No direct MP4 links found, trying pattern generation...")
+
+            // Fallback: Try pattern generation if scraping failed
+            android.util.Log.d(TAG, "Attempting URL pattern generation...")
+            val fallbackUrls = tryGenerateUrls(pageUrl)
+            if (fallbackUrls.isNotEmpty()) {
+                android.util.Log.d(TAG, "SUCCESS: Generated ${fallbackUrls.size} URLs from pattern")
+                android.util.Log.d(TAG, "========================================")
+                return@withContext fallbackUrls
+            }
+
+            // No URLs found
+            android.util.Log.e(TAG, "FAILED: No video URLs found via any extraction method")
+            android.util.Log.e(TAG, "========================================")
+            emptyList()
+
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "========================================")
+            android.util.Log.e(TAG, "EXCEPTION in extractVideoUrls", e)
+            android.util.Log.e(TAG, "Page URL: $pageUrl")
+            android.util.Log.e(TAG, "Exception: ${e.message}")
+            e.printStackTrace()
+            android.util.Log.e(TAG, "========================================")
+            emptyList()
+        }
+    }
+
+    /**
+     * Extract video URLs from HTML microdata
+     * Looks for: <link itemprop="contentUrl" href="...mp4">
+     */
+    private fun extractFromMicrodata(doc: Document): List<VideoUrl> {
+        val videoUrls = mutableListOf<VideoUrl>()
+
+        // Find all <link itemprop="contentUrl"> elements
+        val contentUrlElements = doc.select("link[itemprop=contentUrl]")
+
+        for (element in contentUrlElements) {
+            val href = element.attr("href")
+
+            // Only process MP4 URLs
+            if (href.isNotEmpty() && href.contains(".mp4", ignoreCase = true)) {
+                val quality = VideoUrl.extractQuality(href)
+                val mirror = VideoUrl.extractMirror(href)
+
+                videoUrls.add(
+                    VideoUrl(
+                        url = href,
+                        quality = quality,
+                        mirror = mirror
+                    )
+                )
+            }
+        }
+
+        // Sort by quality (1080p first)
+        return videoUrls.sortedWith(
+            compareByDescending<VideoUrl> {
+                when (it.quality) {
+                    "1080p" -> 3
+                    "720p" -> 2
+                    "480p" -> 1
+                    else -> 0
+                }
+            }
+        )
+    }
+
+    /**
+     * Extract video URLs from download forms
+     * Looks for: <form id="dlform1" action="https://farsiland.com/get/" method="post">
+     *            <input type="hidden" name="fileid" value="..."/>
+     * Then POSTs the fileid to /get/ to get the actual video URL
+     */
+    private suspend fun extractFromDownloadForms(doc: Document): List<VideoUrl> {
+        try {
+            android.util.Log.d(TAG, "Looking for download forms...")
+
+            // Find all download forms
+            val downloadForms = doc.select("form[action*='/get/']")
+            if (downloadForms.isEmpty()) {
+                android.util.Log.d(TAG, "No download forms found")
+                return emptyList()
+            }
+
+            android.util.Log.d(TAG, "Found ${downloadForms.size} download forms")
+            val videoUrls = mutableListOf<VideoUrl>()
+
+            for (form in downloadForms) {
+                try {
+                    // Get the fileid from hidden input
+                    val fileidInput = form.select("input[name=fileid]").firstOrNull()
+                    if (fileidInput == null) {
+                        android.util.Log.d(TAG, "Form has no fileid input")
+                        continue
+                    }
+
+                    val fileid = fileidInput.attr("value")
+                    if (fileid.isEmpty()) {
+                        android.util.Log.d(TAG, "Form has empty fileid")
+                        continue
+                    }
+
+                    android.util.Log.d(TAG, "Found fileid: $fileid")
+
+                    // POST to /get/ with the fileid
+                    val videoUrl = postToGetEndpoint(fileid)
+                    if (videoUrl.isNotEmpty()) {
+                        val quality = VideoUrl.extractQuality(videoUrl)
+                        val mirror = VideoUrl.extractMirror(videoUrl)
+
+                        videoUrls.add(
+                            VideoUrl(
+                                url = videoUrl,
+                                quality = quality,
+                                mirror = mirror
+                            )
+                        )
+                        android.util.Log.d(TAG, "Got video URL from fileid: $videoUrl")
+                    }
+
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "Error processing form", e)
+                }
+            }
+
+            if (videoUrls.isNotEmpty()) {
+                android.util.Log.d(TAG, "SUCCESS: Found ${videoUrls.size} video URLs from download forms")
+                return videoUrls.sortedWith(
+                    compareByDescending<VideoUrl> {
+                        when (it.quality) {
+                            "1080p" -> 3
+                            "720p" -> 2
+                            "480p" -> 1
+                            else -> 0
+                        }
+                    }
+                )
+            }
+
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error extracting from download forms", e)
+        }
+
+        return emptyList()
+    }
+
+    /**
+     * POST fileid to /get/ endpoint to get actual video URL
+     */
+    private suspend fun postToGetEndpoint(fileid: String): String = withContext(Dispatchers.IO) {
+        try {
+            android.util.Log.d(TAG, "POSTing fileid to /get/: $fileid")
+
+            // Create form body
+            val formBody = okhttp3.FormBody.Builder()
+                .add("fileid", fileid)
+                .build()
+
+            val request = Request.Builder()
+                .url("https://farsiland.com/get/")
+                .post(formBody)
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+
+            if (response.isSuccessful) {
+                val responseBody = response.body?.string() ?: ""
+                response.close()
+
+                android.util.Log.d(TAG, "Got response from /get/ (length: ${responseBody.length})")
+
+                // Parse the HTML response to find download link
+                val getDoc = Jsoup.parse(responseBody)
+
+                // Look for download link in the response
+                val downloadLink = getDoc.select("a:contains(Download)").firstOrNull()?.attr("href")
+                if (!downloadLink.isNullOrEmpty() && downloadLink.contains(".mp4", ignoreCase = true)) {
+                    android.util.Log.d(TAG, "Found download link: $downloadLink")
+                    return@withContext downloadLink
+                }
+
+                // Try alternative: look for any MP4 link in response
+                val mp4Regex = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
+                val match = mp4Regex.find(responseBody)
+                if (match != null) {
+                    android.util.Log.d(TAG, "Found MP4 URL in response: ${match.value}")
+                    return@withContext match.value
+                }
+
+                android.util.Log.w(TAG, "No MP4 URL found in /get/ response")
+            } else {
+                android.util.Log.w(TAG, "POST to /get/ failed: HTTP ${response.code}")
+                response.close()
+            }
+
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error posting to /get/", e)
+        }
+
+        return@withContext ""
+    }
+
+    /**
+     * Follow a redirect URL to get the final video URL
+     * Uses POST method as the form requires
+     */
+    private suspend fun followRedirect(redirectUrl: String): String = withContext(Dispatchers.IO) {
+        try {
+            android.util.Log.d(TAG, "Following redirect with POST...")
+
+            // Create empty POST body
+            val emptyBody = okhttp3.RequestBody.create(null, ByteArray(0))
+
+            val request = Request.Builder()
+                .url(redirectUrl)
+                .post(emptyBody)
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+
+            if (response.isSuccessful) {
+                // Get the final URL after following redirects
+                val finalUrl = response.request.url.toString()
+                android.util.Log.d(TAG, "POST redirect final URL: $finalUrl")
+
+                // Also check response body for video URLs
+                val responseBody = response.body?.string() ?: ""
+                response.close()
+
+                // If final URL is different from redirect URL, it worked
+                if (finalUrl != redirectUrl && finalUrl.contains(".mp4", ignoreCase = true)) {
+                    return@withContext finalUrl
+                }
+
+                // Otherwise, try to extract URL from response body (JavaScript or HTML)
+                if (responseBody.contains(".mp4", ignoreCase = true)) {
+                    android.util.Log.d(TAG, "Searching for MP4 URL in POST response body...")
+                    android.util.Log.d(TAG, "Response body (first 500 chars): ${responseBody.take(500)}")
+
+                    // Look for MP4 URLs in various formats
+                    val patterns = listOf(
+                        Regex("""https?://[^\s"'<>()]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE), // Standard URL
+                        Regex("""['"]([^'"]*\.mp4[^'"]*)['"]""", RegexOption.IGNORE_CASE), // Quoted string
+                        Regex("""location\.href\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE), // JavaScript redirect
+                        Regex("""window\.location\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE), // Window location
+                        Regex("""src\s*[:=]\s*['"]([^'"]*\.mp4[^'"]*)['"]""", RegexOption.IGNORE_CASE) // src attribute
+                    )
+
+                    for (pattern in patterns) {
+                        val match = pattern.find(responseBody)
+                        if (match != null) {
+                            val url = if (match.groupValues.size > 1) match.groupValues[1] else match.value
+                            if (url.contains(".mp4", ignoreCase = true)) {
+                                android.util.Log.d(TAG, "Found MP4 URL via pattern: $url")
+                                return@withContext url.trim().removeSurrounding("\"", "\"").removeSurrounding("'", "'")
+                            }
+                        }
+                    }
+                }
+
+                return@withContext finalUrl
+            }
+
+            android.util.Log.w(TAG, "POST redirect failed: HTTP ${response.code}")
+            response.close()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error following redirect", e)
+        }
+
+        return@withContext ""
+    }
+
+    /**
+     * Extract any direct MP4 URLs from HTML (links, scripts, etc.)
+     */
+    private fun extractDirectMp4Links(doc: Document): List<VideoUrl> {
+        try {
+            android.util.Log.d(TAG, "Searching for direct MP4 links in HTML...")
+            val videoUrls = mutableListOf<VideoUrl>()
+
+            // Search in all <a> tags
+            val links = doc.select("a[href*=.mp4]")
+            for (link in links) {
+                val href = link.attr("href")
+                if (href.contains(".mp4", ignoreCase = true) &&
+                    (href.startsWith("http://") || href.startsWith("https://"))) {
+
+                    val quality = VideoUrl.extractQuality(href)
+                    val mirror = VideoUrl.extractMirror(href)
+
+                    videoUrls.add(VideoUrl(url = href, quality = quality, mirror = mirror))
+                    android.util.Log.d(TAG, "Found MP4 link: $href")
+                }
+            }
+
+            // Search in all <source> tags
+            val sources = doc.select("source[src*=.mp4]")
+            for (source in sources) {
+                val src = source.attr("src")
+                if (src.contains(".mp4", ignoreCase = true) &&
+                    (src.startsWith("http://") || src.startsWith("https://"))) {
+
+                    val quality = VideoUrl.extractQuality(src)
+                    val mirror = VideoUrl.extractMirror(src)
+
+                    videoUrls.add(VideoUrl(url = src, quality = quality, mirror = mirror))
+                    android.util.Log.d(TAG, "Found MP4 source: $src")
+                }
+            }
+
+            // Search in scripts for MP4 URLs
+            val scripts = doc.select("script")
+            for (script in scripts) {
+                val scriptContent = script.html()
+                // Look for URLs in JavaScript
+                val mp4Regex = Regex("""https?://[^\s"']+\.mp4""", RegexOption.IGNORE_CASE)
+                val matches = mp4Regex.findAll(scriptContent)
+
+                for (match in matches) {
+                    val url = match.value
+                    val quality = VideoUrl.extractQuality(url)
+                    val mirror = VideoUrl.extractMirror(url)
+
+                    videoUrls.add(VideoUrl(url = url, quality = quality, mirror = mirror))
+                    android.util.Log.d(TAG, "Found MP4 in script: $url")
+                }
+            }
+
+            if (videoUrls.isNotEmpty()) {
+                android.util.Log.d(TAG, "Found ${videoUrls.size} direct MP4 links")
+                return videoUrls.sortedWith(
+                    compareByDescending<VideoUrl> {
+                        when (it.quality) {
+                            "1080p" -> 3
+                            "720p" -> 2
+                            "480p" -> 1
+                            else -> 0
+                        }
+                    }
+                )
+            }
+
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error extracting direct MP4 links", e)
+        }
+
+        return emptyList()
+    }
+
+    /**
+     * Fallback: Generate URLs using CDN pattern
+     * Pattern: https://{mirror}/series/{slug}/{episode}.{quality}.mp4
+     *
+     * Example URL: https://farsiland.com/series/shoghal/s01e01/
+     * Generates:
+     * - https://d1.flnd.buzz/series/shoghal/01.1080.mp4
+     * - https://d1.flnd.buzz/series/shoghal/01.720.mp4
+     * - https://d1.flnd.buzz/series/shoghal/01.480.mp4
+     */
+    private fun tryGenerateUrls(pageUrl: String): List<VideoUrl> {
+        try {
+            // Extract series slug and episode number from URL
+            // Pattern: https://farsiland.com/series/{slug}/s{season}e{episode}/
+            val regex = Regex("""/series/([^/]+)/s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
+            val match = regex.find(pageUrl)
+
+            if (match != null) {
+                val slug = match.groupValues[1]
+                val season = match.groupValues[2].toIntOrNull() ?: 1
+                val episode = match.groupValues[3].toIntOrNull() ?: 1
+
+                return generateVideoUrls(slug, season, episode)
+            }
+
+            // Try movie pattern: https://farsiland.com/movies/{slug}/
+            val movieRegex = Regex("""/movies/([^/]+)""", RegexOption.IGNORE_CASE)
+            val movieMatch = movieRegex.find(pageUrl)
+
+            if (movieMatch != null) {
+                val slug = movieMatch.groupValues[1]
+                return generateMovieUrls(slug)
+            }
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return emptyList()
+    }
+
+    /**
+     * Generate video URLs for a series episode
+     * Uses both mirrors (d1.flnd.buzz, d2.flnd.buzz)
+     */
+    fun generateVideoUrls(seriesSlug: String, season: Int, episode: Int): List<VideoUrl> {
+        val episodeNum = String.format("%02d", episode)
+        val mirrors = listOf("d1.flnd.buzz", "d2.flnd.buzz")
+        val qualities = listOf("1080", "720", "480")
+
+        val videoUrls = mutableListOf<VideoUrl>()
+
+        for (mirror in mirrors) {
+            for (quality in qualities) {
+                val url = "https://$mirror/series/$seriesSlug/$episodeNum.$quality.mp4"
+                videoUrls.add(
+                    VideoUrl(
+                        url = url,
+                        quality = "${quality}p",
+                        mirror = mirror
+                    )
+                )
+            }
+        }
+
+        // Sort by quality (1080p first), then by mirror (d1 first)
+        return videoUrls.sortedWith(
+            compareByDescending<VideoUrl> {
+                when (it.quality) {
+                    "1080p" -> 3
+                    "720p" -> 2
+                    "480p" -> 1
+                    else -> 0
+                }
+            }.thenByDescending { it.mirror == "d1.flnd.buzz" }
+        )
+    }
+
+    /**
+     * Generate video URLs for a movie
+     * Pattern: https://{mirror}/movies/{slug}/{quality}.mp4
+     */
+    private fun generateMovieUrls(movieSlug: String): List<VideoUrl> {
+        val mirrors = listOf("d1.flnd.buzz", "d2.flnd.buzz")
+        val qualities = listOf("1080", "720", "480")
+
+        val videoUrls = mutableListOf<VideoUrl>()
+
+        for (mirror in mirrors) {
+            for (quality in qualities) {
+                val url = "https://$mirror/movies/$movieSlug/$quality.mp4"
+                videoUrls.add(
+                    VideoUrl(
+                        url = url,
+                        quality = "${quality}p",
+                        mirror = mirror
+                    )
+                )
+            }
+        }
+
+        return videoUrls.sortedWith(
+            compareByDescending<VideoUrl> {
+                when (it.quality) {
+                    "1080p" -> 3
+                    "720p" -> 2
+                    "480p" -> 1
+                    else -> 0
+                }
+            }.thenByDescending { it.mirror == "d1.flnd.buzz" }
+        )
+    }
+
+    /**
+     * Fetch HTML content from URL
+     */
+    private suspend fun fetchHtml(url: String): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .build()
+
+        val response = httpClient.newCall(request).execute()
+
+        if (!response.isSuccessful) {
+            throw Exception("HTTP ${response.code}: ${response.message}")
+        }
+
+        response.body?.string() ?: throw Exception("Empty response body")
+    }
+
+    /**
+     * Verify if a video URL is accessible
+     * Sends HEAD request to check if URL returns 200 OK
+     */
+    suspend fun verifyVideoUrl(url: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .head() // HEAD request to avoid downloading entire file
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            response.isSuccessful
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Get working video URL from a list
+     * Tests each URL and returns the first working one
+     */
+    suspend fun getWorkingUrl(videoUrls: List<VideoUrl>): VideoUrl? {
+        for (videoUrl in videoUrls) {
+            if (verifyVideoUrl(videoUrl.url)) {
+                return videoUrl
+            }
+        }
+        return null
+    }
+}
