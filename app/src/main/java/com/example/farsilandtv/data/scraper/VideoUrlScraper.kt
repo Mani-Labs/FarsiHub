@@ -340,6 +340,14 @@ object VideoUrlScraper {
             val response = httpClient.newCall(request).execute()
 
             if (response.isSuccessful) {
+                // OOM Protection: Check content size before loading into memory
+                val contentLength = response.body?.contentLength() ?: 0
+                if (contentLength > 5_000_000) { // 5MB limit
+                    android.util.Log.w(TAG, "Response too large: $contentLength bytes, skipping")
+                    response.close()
+                    return@withContext emptyList()
+                }
+
                 val body = response.body?.string() ?: ""
                 response.close()
 
@@ -1066,16 +1074,18 @@ object VideoUrlScraper {
             val response = httpClient.newCall(request).execute()
 
             if (response.isSuccessful) {
+                // OOM Protection: Check content size BEFORE loading into memory
+                val contentLength = response.body?.contentLength() ?: 0
+                if (contentLength > 5_000_000) { // 5MB limit
+                    android.util.Log.w(TAG, "Response too large: $contentLength bytes, skipping")
+                    response.close()
+                    return@withContext emptyList()
+                }
+
                 val responseBody = response.body?.string() ?: ""
                 response.close()
 
                 android.util.Log.d(TAG, "Got response from /get/ (length: ${responseBody.length})")
-
-                // SECURITY: Protect against ReDoS with size limit and timeout
-                if (responseBody.length > 10_000_000) { // 10MB max
-                    android.util.Log.w(TAG, "Response too large for regex parsing: ${responseBody.length} bytes")
-                    return@withContext emptyList()
-                }
 
                 // Extract ALL MP4 URLs from response (both d1 and d2 mirrors)
                 // SECURITY: Use timeout-protected regex execution
@@ -1127,18 +1137,24 @@ object VideoUrlScraper {
                 val finalUrl = response.request.url.toString()
                 android.util.Log.d(TAG, "POST redirect final URL: $finalUrl")
 
+                // OOM Protection: Check content size BEFORE loading into memory
+                val contentLength = response.body?.contentLength() ?: 0
+                if (contentLength > 5_000_000) { // 5MB limit
+                    android.util.Log.w(TAG, "Response too large: $contentLength bytes, skipping body parse")
+                    response.close()
+                    return@withContext if (finalUrl != redirectUrl && finalUrl.contains(".mp4", ignoreCase = true)) {
+                        finalUrl
+                    } else {
+                        ""
+                    }
+                }
+
                 // Also check response body for video URLs
                 val responseBody = response.body?.string() ?: ""
                 response.close()
 
                 // If final URL is different from redirect URL, it worked
                 if (finalUrl != redirectUrl && finalUrl.contains(".mp4", ignoreCase = true)) {
-                    return@withContext finalUrl
-                }
-
-                // Protect against ReDoS - limit input size before regex
-                if (responseBody.length > 10_000_000) { // 10MB max
-                    android.util.Log.w(TAG, "Response too large for regex parsing: ${responseBody.length} bytes")
                     return@withContext finalUrl
                 }
 

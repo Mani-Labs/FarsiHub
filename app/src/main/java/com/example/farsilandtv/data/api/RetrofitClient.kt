@@ -7,15 +7,12 @@ import okhttp3.Cache
 import okhttp3.CacheControl
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
-import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import java.io.File
-import java.net.InetAddress
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -55,18 +52,9 @@ object RetrofitClient {
     }
 
     /**
-     * DNS Cache for faster repeated requests
-     * Caches DNS lookups to avoid repeated DNS resolution overhead
+     * DNS Cache REMOVED - Permanent caching breaks CDN IP rotation
+     * Android OS handles DNS caching correctly with proper TTL
      */
-    private val dnsCache = object : Dns {
-        private val cache = ConcurrentHashMap<String, List<InetAddress>>()
-
-        override fun lookup(hostname: String): List<InetAddress> {
-            return cache.getOrPut(hostname) {
-                Dns.SYSTEM.lookup(hostname)
-            }
-        }
-    }
 
     /**
      * Connection Pool for efficient connection reuse
@@ -106,7 +94,7 @@ object RetrofitClient {
             // Performance optimizations (2025-11-10)
             .connectionPool(connectionPool)  // 10 idle connections for faster reuse
             .dispatcher(dispatcher)          // 10 requests/host for parallel loading
-            .dns(dnsCache)                   // Cache DNS lookups
+            // DNS cache removed - Android OS handles this correctly with TTL
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))  // Enable HTTP/2
 
             // Logging interceptor (logs all requests/responses in debug builds)
@@ -159,13 +147,24 @@ object RetrofitClient {
             .addInterceptor { chain ->
                 var request = chain.request()
 
-                // Check if network is available
+                // Check if network is available (modern API for Android 6.0+)
                 val isNetworkAvailable = try {
                     val connectivityManager = FarsilandApp.instance.getSystemService(
                         android.content.Context.CONNECTIVITY_SERVICE
                     ) as android.net.ConnectivityManager
-                    val activeNetwork = connectivityManager.activeNetworkInfo
-                    activeNetwork?.isConnectedOrConnecting == true
+
+                    // Use modern API (Android M+)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                        val activeNetwork = connectivityManager.activeNetwork
+                        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+                        capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                    } else {
+                        // Fallback for older devices (API < 23)
+                        @Suppress("DEPRECATION")
+                        val activeNetworkInfo = connectivityManager.activeNetworkInfo
+                        @Suppress("DEPRECATION")
+                        activeNetworkInfo?.isConnectedOrConnecting == true
+                    }
                 } catch (e: Exception) {
                     true // Assume network available if check fails
                 }
