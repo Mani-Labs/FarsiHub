@@ -21,6 +21,15 @@ class WatchlistRepository(context: Context) {
     private val seriesDao = database.monitoredSeriesDao()
     private val episodeDao = database.episodeProgressDao()
 
+    companion object {
+        private const val TAG = "WatchlistRepository"
+
+        // P0 FIX: Issue #2 - Unified completion threshold (matches PlaybackRepository)
+        // Changed from 0.90f (90%) to 0.95f (95%) to eliminate dual source of truth
+        // This prevents UI contradictions where watchlist shows "Completed" but continue watching shows "Resume"
+        private const val COMPLETION_THRESHOLD = 0.95f
+    }
+
     // ========== Movie Watchlist (Manual Bookmarks) ==========
 
     /**
@@ -98,7 +107,8 @@ class WatchlistRepository(context: Context) {
         // Use database.withTransaction for proper transaction handling with suspend functions
         // @Transaction only works on DAO methods, not Repository methods
         database.withTransaction {
-            val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.90f
+            // P0 FIX: Issue #2 - Use unified COMPLETION_THRESHOLD (95%, was 90%)
+            val isCompleted = duration > 0 && (position.toFloat() / duration) >= COMPLETION_THRESHOLD
 
             val existing = movieDao.getMovie(movieId)
             if (existing == null) {
@@ -248,7 +258,8 @@ class WatchlistRepository(context: Context) {
         // Use database.withTransaction for proper transaction handling with suspend functions
         // @Transaction only works on DAO methods, not Repository methods
         database.withTransaction {
-            val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.90f
+            // P0 FIX: Issue #2 - Use unified COMPLETION_THRESHOLD (95%, was 90%)
+            val isCompleted = duration > 0 && (position.toFloat() / duration) >= COMPLETION_THRESHOLD
 
             val existing = episodeDao.getEpisodeProgress(episodeId)
             if (existing == null) {
@@ -332,10 +343,23 @@ class WatchlistRepository(context: Context) {
     // ========== Continue Watching ==========
 
     /**
-     * Remove movie from continue watching (deletes all progress)
+     * P1 FIX: Issue #5 - Remove movie from continue watching without deleting bookmarks
+     * Previous code: deleteMovieById() deleted entire row → user lost bookmark!
+     * Fixed: Check if movie is bookmarked, if so reset progress only, else delete
      */
     suspend fun removeMovieFromContinueWatching(movieId: Int) {
-        movieDao.deleteMovieById(movieId)
+        val movie = movieDao.getMovie(movieId)
+        if (movie != null && movie.isInWatchlist) {
+            // Movie is bookmarked - keep it but reset progress
+            Log.d(TAG, "Movie $movieId is bookmarked, resetting progress only (preserving bookmark)")
+            movieDao.updateProgress(movieId, position = 0, duration = movie.totalDuration)
+            movieDao.updateLastWatched(movieId, lastWatched = 0)
+            movieDao.updateCompleted(movieId, isCompleted = false)
+        } else {
+            // Not bookmarked - safe to delete entirely
+            Log.d(TAG, "Movie $movieId not bookmarked, deleting from continue watching")
+            movieDao.deleteMovieById(movieId)
+        }
     }
 
     /**

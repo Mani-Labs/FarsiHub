@@ -95,6 +95,15 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    // P0 FIX: Issue #1 - Save playback state for restoration after onStop()
+    // Prevents crash when user presses Home button and returns
+    private data class PlaybackState(
+        val position: Long,
+        val videoUrl: String,
+        val wasPlaying: Boolean
+    )
+    private var savedPlaybackState: PlaybackState? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -518,29 +527,55 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * Try mirror CDN if primary fails
+     * P2 FIX: Issue #10 - Try mirror CDN using availableQualities list
+     * Previous code: Hardcoded replace("d1.flnd.buzz", "d2.flnd.buzz") failed for other CDNs
+     * Fixed: Use availableQualities list which contains all mirrors from scraper
      */
     private fun tryMirrorCDN() {
         if (hasTriedMirror) return
 
         hasTriedMirror = true
-        val mirrorUrl = currentVideoUrl.replace("d1.flnd.buzz", "d2.flnd.buzz")
 
-        Log.d(TAG, "Retrying with mirror CDN: $mirrorUrl")
-        Toast.makeText(this, "Retrying with backup server...", Toast.LENGTH_SHORT).show()
+        // Find mirror URL from availableQualities list
+        // Scraper provides multiple URLs with different mirrors for same quality
+        val currentQuality = availableQualities.getOrNull(currentQualityIndex)
+        val mirrorQuality = availableQualities.find {
+            // Find alternative URL with same quality but different domain
+            it.quality == currentQuality?.quality && it.url != currentVideoUrl
+        }
 
-        // Get current position before switching
-        val currentPosition = player?.currentPosition ?: 0L
-        val wasPlaying = player?.isPlaying ?: false
+        if (mirrorQuality != null) {
+            Log.d(TAG, "Found mirror URL: ${mirrorQuality.url}")
+            Toast.makeText(this, "Retrying with backup server...", Toast.LENGTH_SHORT).show()
 
-        // Play from mirror CDN at same position
-        currentVideoUrl = mirrorUrl
-        val mediaItem = MediaItem.fromUri(mirrorUrl)
-        player?.apply {
-            setMediaItem(mediaItem)
-            seekTo(currentPosition)
-            prepare()
-            playWhenReady = wasPlaying
+            // Get current position before switching
+            val currentPosition = player?.currentPosition ?: 0L
+            val wasPlaying = player?.isPlaying ?: false
+
+            // Play from mirror CDN at same position
+            currentVideoUrl = mirrorQuality.url
+            val mediaItem = MediaItem.fromUri(mirrorQuality.url)
+            player?.apply {
+                setMediaItem(mediaItem)
+                seekTo(currentPosition)
+                prepare()
+                playWhenReady = wasPlaying
+            }
+        } else {
+            // Fallback to old hardcoded behavior if no mirror in list
+            Log.w(TAG, "No mirror found in availableQualities, trying hardcoded d1→d2 replacement")
+            val mirrorUrl = currentVideoUrl.replace("d1.flnd.buzz", "d2.flnd.buzz")
+            if (mirrorUrl != currentVideoUrl) {
+                currentVideoUrl = mirrorUrl
+                val mediaItem = MediaItem.fromUri(mirrorUrl)
+                player?.apply {
+                    setMediaItem(mediaItem)
+                    seekTo(player?.currentPosition ?: 0L)
+                    prepare()
+                }
+            } else {
+                showError("No backup server available for this video")
+            }
         }
     }
 
@@ -746,7 +781,9 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * Show quality selection dialog
+     * P2 FIX: Issue #12 - Capture position at selection time, not dialog open time
+     * Previous code: Position captured when dialog opens → 15s later user selects → video jumps back 15s
+     * Fixed: Capture position when user clicks option → preserves exact playback position
      */
     private fun showQualitySelector() {
         if (availableQualities.isEmpty()) {
@@ -755,12 +792,14 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
 
         val qualityNames = availableQualities.map { it.quality }.toTypedArray()
-        val currentPosition = player?.currentPosition ?: 0L
 
         AlertDialog.Builder(this)
             .setTitle("Select Quality")
             .setSingleChoiceItems(qualityNames, currentQualityIndex) { dialog, which ->
                 if (which != currentQualityIndex) {
+                    // P2 FIX: Capture position HERE (at selection time), not at dialog open time
+                    // This prevents time jumps if user takes time deciding
+                    val currentPosition = player?.currentPosition ?: 0L
                     switchQuality(which, currentPosition)
                 }
                 dialog.dismiss()
@@ -828,18 +867,75 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        // H12 FIX: Release cache in onStop() to prevent file handle leak
-        // If Activity is killed without onDestroy(), cache will still be released
+        // P0 FIX: Issue #1 - Save playback state and release BOTH player and cache
+        // This prevents crash when user returns after pressing Home button
+        // Previously: cache was released but player remained alive → crash when player accessed closed cache
+
+        // Save current playback state for restoration in onStart()
+        player?.let {
+            savedPlaybackState = PlaybackState(
+                position = it.currentPosition,
+                videoUrl = currentVideoUrl,
+                wasPlaying = it.isPlaying
+            )
+            Log.d(TAG, "Saved playback state: position=${it.currentPosition}ms, playing=${it.isPlaying}")
+        }
+
+        // Stop position tracking to prevent battery drain
+        positionHandler.removeCallbacks(positionSaveRunnable)
+
+        // Save position to database immediately
+        saveCurrentPosition()
+
+        // Release BOTH player and cache together (prevents crash)
+        player?.release()
+        player = null
         cache?.release()
         cache = null
+
+        Log.d(TAG, "Player and cache released in onStop()")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // P0 FIX: Issue #1 - Restore player and cache if released in onStop()
+        // This handles the case when user returns after pressing Home button
+
+        if (player == null && savedPlaybackState != null) {
+            Log.d(TAG, "Re-initializing player after onStop(), restoring state")
+
+            // Re-initialize player and cache
+            initializePlayer()
+
+            // Restore playback from saved state
+            val state = savedPlaybackState!!
+            val mediaItem = MediaItem.fromUri(state.videoUrl)
+            player?.apply {
+                setMediaItem(mediaItem)
+                seekTo(state.position)
+                prepare()
+                playWhenReady = state.wasPlaying
+            }
+
+            // Restart position tracking
+            if (state.wasPlaying) {
+                startPositionTracking()
+            }
+
+            Log.d(TAG, "Player restored: position=${state.position}ms, playing=${state.wasPlaying}")
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // P0 FIX: Issue #1 - Simplified onDestroy() since player and cache already released in onStop()
+
         // Stop position tracking
         positionHandler.removeCallbacks(positionSaveRunnable)
+
         // Save final position
         saveCurrentPosition()
+
         // M6 FIX: Unregister network callback to prevent memory leak
         networkCallback?.let {
             try {
@@ -850,12 +946,15 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
         }
         networkCallback = null
-        // Release player
+
+        // Defensive cleanup (player and cache should already be null from onStop)
         player?.release()
         player = null
-        // Defensive: release cache again in case onStop wasn't called
         cache?.release()
         cache = null
+
+        // Clear saved state
+        savedPlaybackState = null
     }
 
     companion object {

@@ -90,35 +90,34 @@ class FarsilandApp : Application() {
                 } catch (e: Exception) {
                     Log.e(TAG, "CRITICAL: Content database initialization failed: ${e.message}", e)
 
-                    // RECOVERY: Migration failure likely - delete corrupted database and retry once
+                    // P2 FIX: Issue #13 - Force process restart instead of risky in-place recovery
+                    // Previous code: delete() → immediate re-open() → unstable if delete failed or connection leaked
+                    // Fixed: Delete files, restart process for clean slate (Android will recreate from assets)
                     try {
-                        Log.w(TAG, "Attempting database recovery: deleting corrupted database files")
+                        Log.w(TAG, "Attempting database recovery: deleting corrupted files and restarting app")
                         withContext(Dispatchers.IO) {
                             // Delete all database files
                             val dbPath = applicationContext.getDatabasePath("content.db")
                             val walFile = applicationContext.getDatabasePath("content.db-wal")
                             val shmFile = applicationContext.getDatabasePath("content.db-shm")
 
-                            dbPath?.delete()
-                            walFile?.delete()
-                            shmFile?.delete()
+                            val deletedMain = dbPath?.delete() ?: false
+                            val deletedWal = walFile?.delete() ?: false
+                            val deletedShm = shmFile?.delete() ?: false
 
-                            Log.i(TAG, "Database files deleted, retrying initialization...")
+                            Log.i(TAG, "Database cleanup: main=$deletedMain, wal=$deletedWal, shm=$deletedShm")
 
-                            // Retry initialization
-                            val db = ContentDatabase.getDatabase(applicationContext)
-                            val currentSource = ContentDatabase.getCurrentSource(applicationContext)
-                            val movieCount = db.movieDao().getMovieCount()
-
-                            Log.i(TAG, "Database recovery successful! Loaded $movieCount movies")
-
+                            // Don't mark as initialized - next launch will recreate from assets
+                            // Force process restart for clean state
                             withContext(Dispatchers.Main) {
-                                prefs.edit().putBoolean("content_db_initialized", true).apply()
+                                Log.i(TAG, "Restarting app process for clean database initialization...")
+                                android.os.Process.killProcess(android.os.Process.myPid())
                             }
                         }
                     } catch (recoveryError: Exception) {
-                        Log.e(TAG, "FATAL: Database recovery failed. User must clear app data.", recoveryError)
-                        // Don't mark as initialized - will show error on next launch
+                        Log.e(TAG, "FATAL: Database recovery failed completely", recoveryError)
+                        Log.e(TAG, "User must manually clear app data: Settings → Apps → FarsiPlex → Clear Data")
+                        // Process will likely be unstable - let Android handle the crash
                     }
                 }
             }
@@ -166,11 +165,16 @@ class FarsilandApp : Application() {
             flexInterval = (hours / 3).coerceAtLeast(1) // Flex window = 1/3 of interval, min 1 hour
             flexUnit = TimeUnit.HOURS
         } else {
-            // For < 60 minutes, use MINUTES (WorkManager minimum is 15 minutes)
-            interval = syncIntervalMinutes
+            // P3 FIX: Issue #14 - Enforce WorkManager's 15-minute minimum for periodic work
+            // WorkManager silently clamps values below 15 minutes, so we validate and warn
+            interval = syncIntervalMinutes.coerceAtLeast(15)
             timeUnit = TimeUnit.MINUTES
-            flexInterval = (syncIntervalMinutes / 3).coerceAtLeast(5) // Min 5-minute flex
+            flexInterval = (interval / 3).coerceAtLeast(5) // Use validated interval for flex calculation
             flexUnit = TimeUnit.MINUTES
+
+            if (syncIntervalMinutes < 15) {
+                Log.w(TAG, "Sync interval ${syncIntervalMinutes}min is below WorkManager minimum, using 15 min instead")
+            }
         }
 
         val syncWorkRequest = PeriodicWorkRequestBuilder<ContentSyncWorker>(
@@ -232,10 +236,16 @@ class FarsilandApp : Application() {
             flexInterval = (hours / 3).coerceAtLeast(1)
             flexUnit = TimeUnit.HOURS
         } else {
-            interval = syncIntervalMinutes
+            // P3 FIX: Issue #14 - Enforce WorkManager's 15-minute minimum for periodic work
+            // WorkManager silently clamps values below 15 minutes, so we validate and warn
+            interval = syncIntervalMinutes.coerceAtLeast(15)
             timeUnit = TimeUnit.MINUTES
-            flexInterval = (syncIntervalMinutes / 3).coerceAtLeast(5)
+            flexInterval = (interval / 3).coerceAtLeast(5) // Use validated interval for flex calculation
             flexUnit = TimeUnit.MINUTES
+
+            if (syncIntervalMinutes < 15) {
+                Log.w(TAG, "FarsiPlex sync interval ${syncIntervalMinutes}min is below WorkManager minimum, using 15 min instead")
+            }
         }
 
         val syncWorkRequest = PeriodicWorkRequestBuilder<com.example.farsilandtv.data.sync.FarsiPlexSyncWorker>(
