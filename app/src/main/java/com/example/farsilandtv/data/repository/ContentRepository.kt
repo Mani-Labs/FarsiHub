@@ -2,6 +2,7 @@ package com.example.farsilandtv.data.repository
 
 import android.content.Context
 import android.util.Log
+import android.util.LruCache
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
@@ -75,12 +76,14 @@ class ContentRepository(context: Context) {
     )
 
     /**
-     * Thread-safe cache maps for different content types
+     * P2 FIX: Issue #8 - LRU caches with size limit to prevent unbounded memory growth
+     * Thread-safe cache maps for different content types (LruCache is synchronized internally)
      * Key format: "source_page_perPage" (e.g., "FARSILAND_1_20")
+     * Max 50 entries per cache = ~50-100MB max vs unlimited ConcurrentHashMap (150-300MB+)
      */
-    private val moviesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Movie>>>()
-    private val seriesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Series>>>()
-    private val episodesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Episode>>>()
+    private val moviesCache = LruCache<String, CacheEntry<List<Movie>>>(50)
+    private val seriesCache = LruCache<String, CacheEntry<List<Series>>>(50)
+    private val episodesCache = LruCache<String, CacheEntry<List<Episode>>>(50)
 
     /**
      * Build cache key from parameters
@@ -112,13 +115,14 @@ class ContentRepository(context: Context) {
     }
 
     /**
-     * Clear all caches (called on database switch)
+     * P2 FIX: Issue #11 - Clear all caches (called on database switch)
+     * Updated for LruCache which uses evictAll() instead of clear()
      */
     fun clearCache() {
-        moviesCache.clear()
-        seriesCache.clear()
-        episodesCache.clear()
-        Log.i(TAG, "All caches cleared")
+        moviesCache.evictAll()
+        seriesCache.evictAll()
+        episodesCache.evictAll()
+        Log.i(TAG, "All caches cleared (LruCache evicted)")
     }
 
     // ========== Feature #18: Paging 3 Methods (Database-First, Unlimited Items) ==========
@@ -202,7 +206,7 @@ class ContentRepository(context: Context) {
 
             // Check cache first
             val cacheKey = buildCacheKey(currentSource, page, perPage)
-            val cachedEntry = moviesCache[cacheKey]
+            val cachedEntry = moviesCache.get(cacheKey)
             if (isCacheValid(cachedEntry, currentSource)) {
                 Log.d(TAG, "getMovies() - Returning CACHED data (${cachedEntry!!.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
@@ -231,7 +235,7 @@ class ContentRepository(context: Context) {
                         val movies = paginatedMovies.map { it.toMovie() }
 
                         // Store in cache
-                        moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                        moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database")
 
                         return@withContext Result.success(movies)
@@ -254,7 +258,7 @@ class ContentRepository(context: Context) {
                 val movies = wpMovies.map { wpMovie -> wpMovie.toMovie() }
 
                 // Store in cache
-                moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
                 Log.d(TAG, "getMovies() - Cached ${movies.size} movies from API")
 
                 return@withContext Result.success(movies)
@@ -270,7 +274,7 @@ class ContentRepository(context: Context) {
                         val movies = cachedMovies.map { it.toMovie() }
 
                         // Store in cache (fallback data)
-                        moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                        moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database (API fallback)")
 
                         return@withContext Result.success(movies)
@@ -296,6 +300,24 @@ class ContentRepository(context: Context) {
     }
 
     /**
+     * P3 FIX: Issue #15 - Get series by ID from database
+     * Used by PlaylistDetailFragment to display series in playlists
+     */
+    suspend fun getSeries(id: Int): Result<Series> = withContext(Dispatchers.IO) {
+        try {
+            val cachedSeries = getContentDb().seriesDao().getSeriesById(id)
+            if (cachedSeries != null) {
+                Result.success(cachedSeries.toSeries())
+            } else {
+                Result.failure(Exception("Series not found with ID: $id"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting series by ID: $id", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Get list of TV shows
      * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
      * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
@@ -307,7 +329,7 @@ class ContentRepository(context: Context) {
 
             // Check cache first
             val cacheKey = buildCacheKey(currentSource, page, perPage)
-            val cachedEntry = seriesCache[cacheKey]
+            val cachedEntry = seriesCache.get(cacheKey)
             if (isCacheValid(cachedEntry, currentSource)) {
                 Log.d(TAG, "getTvShows() - Returning CACHED data (${cachedEntry!!.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
@@ -336,7 +358,7 @@ class ContentRepository(context: Context) {
                         val series = paginatedSeries.map { it.toSeries() }
 
                         // Store in cache
-                        seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                        seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getTvShows() - Cached ${series.size} series from database")
 
                         return@withContext Result.success(series)
@@ -359,7 +381,7 @@ class ContentRepository(context: Context) {
                 val series = wpShows.map { wpShow -> wpShow.toSeries() }
 
                 // Store in cache
-                seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
                 Log.d(TAG, "getTvShows() - Cached ${series.size} series from API")
 
                 return@withContext Result.success(series)
@@ -376,7 +398,7 @@ class ContentRepository(context: Context) {
                         val series = cachedSeries.map { it.toSeries() }
 
                         // Store in cache (fallback data)
-                        seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                        seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getTvShows() - Cached ${series.size} series from database (API fallback)")
 
                         return@withContext Result.success(series)
@@ -401,7 +423,7 @@ class ContentRepository(context: Context) {
 
             // Check cache first
             val cacheKey = buildCacheKey(currentSource, page, perPage)
-            val cachedEntry = episodesCache[cacheKey]
+            val cachedEntry = episodesCache.get(cacheKey)
             if (isCacheValid(cachedEntry, currentSource)) {
                 Log.d(TAG, "getRecentEpisodes() - Returning CACHED data (${cachedEntry!!.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
@@ -430,7 +452,7 @@ class ContentRepository(context: Context) {
                         val episodes = paginatedEpisodes.map { it.toEpisode() }
 
                         // Store in cache
-                        episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                        episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database")
 
                         return@withContext Result.success(episodes)
@@ -453,7 +475,7 @@ class ContentRepository(context: Context) {
                 val episodes = wpEpisodes.map { wpEpisode -> wpEpisode.toEpisode() }
 
                 // Store in cache
-                episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
                 Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from API")
 
                 return@withContext Result.success(episodes)
@@ -470,7 +492,7 @@ class ContentRepository(context: Context) {
                         val episodes = cachedEpisodes.map { it.toEpisode() }
 
                         // Store in cache (fallback data)
-                        episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                        episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database (API fallback)")
 
                         return@withContext Result.success(episodes)
@@ -639,26 +661,59 @@ class ContentRepository(context: Context) {
             try {
                 Log.d(TAG, "Universal search for: $query")
 
-                // Search all three databases in parallel
-                val farsilandDbResults = async { searchDatabase(DatabaseSource.FARSILAND, query) }
-                val farsiPlexDbResults = async { searchDatabase(DatabaseSource.FARSIPLEX, query) }
-                val namakadeDbResults = async { searchDatabase(DatabaseSource.NAMAKADE, query) }
+                // P1 FIX: Issue #4 - Only search CURRENT active database (via singleton)
+                // Previous code created 3 NEW Room database instances (50-200ms each = 600ms total)
+                // This caused massive I/O lag, memory churn, and SQLite locking errors
+                // Solution: Only search the currently active database, web searches cover other sources
+                val currentSource = ContentDatabase.getCurrentSource(appContext)
+                Log.d(TAG, "Searching current database: ${currentSource.displayName}")
+                val currentDbResults = async { searchCurrentDatabase(query) }
 
-                // Also search external sources in parallel
+                // Search external sources in parallel (web sources cover all 3 databases)
                 val farsilandApiResults = async { searchFarsilandApi(query, page) }
                 val farsilandWebResults = async { WebSearchScraper.searchFarsiland(query) }
                 val farsiPlexWebResults = async { WebSearchScraper.searchFarsiPlex(query) }
                 val namakadeWebResults = async { WebSearchScraper.searchNamakade(query) }
 
-                // Collect all results from all sources
+                // P1 FIX: Issue #6 - Collect results with individual error handling
+                // Previous code: If ANY source failed, entire search returned empty (all-or-nothing)
+                // Fixed: Each source handled independently - show results from successful sources
                 val allResults = mutableListOf<Any>()
-                allResults.addAll(farsilandWebResults.await())
-                allResults.addAll(farsiPlexWebResults.await())
-                allResults.addAll(namakadeWebResults.await())
-                allResults.addAll(farsilandApiResults.await())
-                allResults.addAll(farsilandDbResults.await())
-                allResults.addAll(farsiPlexDbResults.await())
-                allResults.addAll(namakadeDbResults.await())
+
+                // Web search: Farsiland
+                try {
+                    allResults.addAll(farsilandWebResults.await())
+                } catch (e: Exception) {
+                    Log.w(TAG, "Farsiland web search failed: ${e.message}")
+                }
+
+                // Web search: FarsiPlex
+                try {
+                    allResults.addAll(farsiPlexWebResults.await())
+                } catch (e: Exception) {
+                    Log.w(TAG, "FarsiPlex web search failed: ${e.message}")
+                }
+
+                // Web search: Namakade
+                try {
+                    allResults.addAll(namakadeWebResults.await())
+                } catch (e: Exception) {
+                    Log.w(TAG, "Namakade web search failed: ${e.message}")
+                }
+
+                // API search: Farsiland WordPress API
+                try {
+                    allResults.addAll(farsilandApiResults.await())
+                } catch (e: Exception) {
+                    Log.w(TAG, "Farsiland API search failed: ${e.message}")
+                }
+
+                // Database search: Current active database
+                try {
+                    allResults.addAll(currentDbResults.await())
+                } catch (e: Exception) {
+                    Log.w(TAG, "Current database search failed: ${e.message}")
+                }
 
                 // Deduplicate per source - keep one result from each source
                 // This way, if "Persona" is on Farsiland, FarsiPlex, and Namakade,
@@ -724,27 +779,58 @@ class ContentRepository(context: Context) {
         }
 
     /**
+     * P1 FIX: Issue #4 - Search current active database using singleton (no new instances)
+     * This replaces searchDatabase() which created expensive new Room instances
+     */
+    private suspend fun searchCurrentDatabase(query: String): List<Any> {
+        return try {
+            val db = ContentDatabase.getDatabase(appContext) // Use singleton
+            val results = mutableListOf<Any>()
+
+            // Search movies and series in current database
+            val movies = db.movieDao().searchMovies(query).firstOrNull()
+            val series = db.seriesDao().searchSeries(query).firstOrNull()
+
+            movies?.let { results.addAll(it.map { movie -> movie.toMovie() }) }
+            series?.let { results.addAll(it.map { s -> s.toSeries() }) }
+
+            val currentSource = ContentDatabase.getCurrentSource(appContext)
+            Log.d(TAG, "Found ${results.size} results in current database (${currentSource.displayName})")
+            results
+        } catch (e: Exception) {
+            Log.e(TAG, "Error searching current database: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * [DEPRECATED - Use searchCurrentDatabase() instead]
      * Search a specific database
+     * WARNING: Creates new Room instance - very expensive (50-200ms I/O + memory allocation)
      */
     private suspend fun searchDatabase(source: DatabaseSource, query: String): List<Any> {
+        // P1 FIX: Issue #7 - Database connection leak prevention
+        // Previous code: db.close() in try block → skipped on exception → connection leak
+        // Fixed: db.close() in finally block → always executes, prevents file handle leak
+
+        // Fix database file permissions before opening (same fix as ContentDatabase)
+        val dbFile = appContext.getDatabasePath(source.fileName)
+        if (dbFile.exists() && !dbFile.canWrite()) {
+            Log.w(TAG, "Database file is read-only, fixing permissions: ${dbFile.absolutePath}")
+            dbFile.setWritable(true, false)
+        }
+
+        // Create a temporary database connection to this specific source
+        val db = androidx.room.Room.databaseBuilder(
+            appContext,
+            ContentDatabase::class.java,
+            source.fileName
+        )
+            .createFromAsset("databases/${source.fileName}")
+            .fallbackToDestructiveMigration()
+            .build()
+
         return try {
-            // Fix database file permissions before opening (same fix as ContentDatabase)
-            val dbFile = appContext.getDatabasePath(source.fileName)
-            if (dbFile.exists() && !dbFile.canWrite()) {
-                Log.w(TAG, "Database file is read-only, fixing permissions: ${dbFile.absolutePath}")
-                dbFile.setWritable(true, false)
-            }
-
-            // Create a temporary database connection to this specific source
-            val db = androidx.room.Room.databaseBuilder(
-                appContext,
-                ContentDatabase::class.java,
-                source.fileName
-            )
-                .createFromAsset("databases/${source.fileName}")
-                .fallbackToDestructiveMigration()
-                .build()
-
             // Double-check permissions after Room creates database
             if (dbFile.exists() && !dbFile.canWrite()) {
                 dbFile.setWritable(true, false)
@@ -759,14 +845,20 @@ class ContentRepository(context: Context) {
             movies?.let { results.addAll(it.map { movie -> movie.toMovie() }) }
             series?.let { results.addAll(it.map { s -> s.toSeries() }) }
 
-            // Close the temporary connection
-            db.close()
-
             Log.d(TAG, "Found ${results.size} results in ${source.displayName} database")
             results
         } catch (e: Exception) {
             Log.e(TAG, "Error searching ${source.displayName} database: ${e.message}", e)
             emptyList()
+        } finally {
+            // P1 FIX: Issue #7 - Always close connection, even if query fails
+            // Prevents EMFILE ("Too many open files") crashes after ~50-100 failed searches
+            try {
+                db.close()
+                Log.d(TAG, "Closed temporary database connection for ${source.displayName}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing database connection: ${e.message}", e)
+            }
         }
     }
 

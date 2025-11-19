@@ -201,13 +201,19 @@ class PlaylistDetailFragment : DetailsSupportFragment() {
         lifecycleScope.launch {
             val cardPresenter = GenreCardPresenter(requireContext())
             val listRowAdapter = ArrayObjectAdapter(cardPresenter)
+            val repository = ContentRepository(requireContext())
 
             items.forEach { item ->
                 try {
                     val seriesId = item.numericId
-                    // Note: We don't have a getSeries method, so we'll need to get it differently
-                    // For now, we'll skip series or implement a workaround
-                    Log.w(TAG, "Series loading not fully implemented yet for ID: $seriesId")
+                    // P3 FIX: Issue #15 - Load series from database using new getSeries method
+                    val result = repository.getSeries(seriesId)
+                    result.onSuccess { series ->
+                        listRowAdapter.add(series)
+                        Log.d(TAG, "Loaded series: ${series.title}")
+                    }.onFailure { e ->
+                        Log.e(TAG, "Failed to load series $seriesId: ${e.message}")
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error loading series ${item.contentId}", e)
                 }
