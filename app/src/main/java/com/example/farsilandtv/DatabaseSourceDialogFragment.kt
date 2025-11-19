@@ -7,6 +7,7 @@ import androidx.leanback.widget.GuidanceStylist
 import androidx.leanback.widget.GuidedAction
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.database.DatabaseSource
+import com.example.farsilandtv.data.repository.ContentRepository
 
 /**
  * Guided step fragment to select database source (Farsiland or FarsiPlex)
@@ -146,6 +147,8 @@ class DatabaseSourceConfirmationFragment : GuidedStepSupportFragment() {
                 val switched = ContentDatabase.switchDatabaseSource(requireContext(), newSource)
 
                 if (switched) {
+                    // P2 FIX: Issue #11 - Clear stale cache entries from old source
+                    ContentRepository(requireContext()).clearCache()
                     Toast.makeText(
                         requireContext(),
                         getString(R.string.switched_to_database_source, newSource.displayName),

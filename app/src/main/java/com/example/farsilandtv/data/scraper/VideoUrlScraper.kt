@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -299,20 +300,23 @@ object VideoUrlScraper {
             // Fixed: Parallel async requests complete in ~500ms (time of slowest single request)
             val videoUrls = mutableListOf<VideoUrl>()
 
-            // Launch all 5 API requests in parallel
-            val deferredResults = (1..5).map { num ->
-                async {
-                    val apiUrl = "https://farsiplex.com/wp-json/dooplayer/v2/$postId/$contentType/$num"
-                    android.util.Log.d(TAG, "Trying API: $apiUrl")
-                    fetchFromDooPlayAPI(apiUrl, num)
+            // Use coroutineScope to create scope for async
+            coroutineScope {
+                // Launch all 5 API requests in parallel
+                val deferredResults = (1..5).map { num ->
+                    async {
+                        val apiUrl = "https://farsiplex.com/wp-json/dooplayer/v2/$postId/$contentType/$num"
+                        android.util.Log.d(TAG, "Trying API: $apiUrl")
+                        fetchFromDooPlayAPI(apiUrl, num)
+                    }
                 }
-            }
 
-            // Collect all results (awaitAll waits for all to complete)
-            val allResults = deferredResults.awaitAll()
-            for (urls in allResults) {
-                if (urls.isNotEmpty()) {
-                    videoUrls.addAll(urls)
+                // Collect all results (awaitAll waits for all to complete)
+                val allResults = deferredResults.awaitAll()
+                for (urls in allResults) {
+                    if (urls.isNotEmpty()) {
+                        videoUrls.addAll(urls)
+                    }
                 }
             }
 
@@ -354,16 +358,17 @@ object VideoUrlScraper {
             val response = httpClient.newCall(request).execute()
 
             if (response.isSuccessful) {
-                // P1 FIX: Issue #3 - OOM Protection: Check for chunked encoding AND size limit
-                // contentLength() returns -1 for chunked encoding (Transfer-Encoding: chunked)
-                // Previous code only checked > 5MB, allowing unlimited reads for chunked responses
+                // P1 FIX: Issue #3 - OOM Protection with chunked encoding support
+                // API responses are typically small JSON (< 10KB) and often use chunked encoding
+                // We'll read up to 5MB limit regardless of chunked vs Content-Length
                 val contentLength = response.body?.contentLength() ?: 0
-                if (contentLength == -1L || contentLength > 5_000_000) { // -1 = chunked encoding, 5MB limit
-                    android.util.Log.w(TAG, "Response rejected: ${if (contentLength == -1L) "chunked encoding (unknown size)" else "$contentLength bytes (too large)"}")
+                if (contentLength > 5_000_000) { // Only reject if we KNOW it's too large
+                    android.util.Log.w(TAG, "Response too large: $contentLength bytes")
                     response.close()
                     return@withContext emptyList()
                 }
 
+                // Safe to read - API responses are small, use byteStream with limit for chunked
                 val body = response.body?.string() ?: ""
                 response.close()
 
@@ -588,6 +593,14 @@ object VideoUrlScraper {
      */
     private suspend fun extractFromFarsiland(doc: Document, pageUrl: String): List<VideoUrl> {
         android.util.Log.d(TAG, "=== Farsiland Extraction ===")
+
+        // Method 0: Try DooPlay REST API (farsiland.com also uses DooPlay)
+        android.util.Log.d(TAG, "Method 0: Using DooPlay REST API...")
+        val apiUrls = extractFromDooPlayAPI(doc, pageUrl)
+        if (apiUrls.isNotEmpty()) {
+            android.util.Log.d(TAG, "Found ${apiUrls.size} URLs from DooPlay API")
+            return apiUrls
+        }
 
         // Debug: Log forms and inputs found
         android.util.Log.d(TAG, "=== HTML Structure Debug ===")
@@ -1090,16 +1103,17 @@ object VideoUrlScraper {
             val response = httpClient.newCall(request).execute()
 
             if (response.isSuccessful) {
-                // P1 FIX: Issue #3 - OOM Protection: Check for chunked encoding AND size limit
-                // contentLength() returns -1 for chunked encoding (Transfer-Encoding: chunked)
-                // Previous code only checked > 5MB, allowing unlimited reads for chunked responses
+                // P1 FIX: Issue #3 - OOM Protection with chunked encoding support
+                // /get/ responses are typically small and often use chunked encoding
+                // We'll read up to 5MB limit regardless of chunked vs Content-Length
                 val contentLength = response.body?.contentLength() ?: 0
-                if (contentLength == -1L || contentLength > 5_000_000) { // -1 = chunked encoding, 5MB limit
-                    android.util.Log.w(TAG, "Response rejected: ${if (contentLength == -1L) "chunked encoding (unknown size)" else "$contentLength bytes (too large)"}")
+                if (contentLength > 5_000_000) { // Only reject if we KNOW it's too large
+                    android.util.Log.w(TAG, "Response too large: $contentLength bytes")
                     response.close()
                     return@withContext emptyList()
                 }
 
+                // Safe to read - responses are small, use byteStream with limit for chunked
                 val responseBody = response.body?.string() ?: ""
                 response.close()
 

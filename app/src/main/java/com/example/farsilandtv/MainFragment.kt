@@ -26,6 +26,7 @@ import androidx.leanback.app.GuidedStepSupportFragment
 import com.example.farsilandtv.data.database.ContinueWatchingItem
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.database.DatabaseSource
+import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.repository.WatchlistRepository
@@ -432,6 +433,8 @@ class MainFragment : BrowseSupportFragment() {
             val switched = ContentDatabase.switchDatabaseSource(requireContext(), newSource)
 
             if (switched) {
+                // P2 FIX: Issue #11 - Clear stale cache entries from old source
+                ContentRepository(requireContext()).clearCache()
                 Toast.makeText(
                     requireContext(),
                     "Switching to ${newSource.displayName}...",

@@ -2,6 +2,7 @@ package com.example.farsilandtv.data.repository
 
 import android.content.Context
 import android.util.Log
+import android.util.LruCache
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
@@ -75,12 +76,14 @@ class ContentRepository(context: Context) {
     )
 
     /**
-     * Thread-safe cache maps for different content types
+     * P2 FIX: Issue #8 - LRU caches with size limit to prevent unbounded memory growth
+     * Thread-safe cache maps for different content types (LruCache is synchronized internally)
      * Key format: "source_page_perPage" (e.g., "FARSILAND_1_20")
+     * Max 50 entries per cache = ~50-100MB max vs unlimited ConcurrentHashMap (150-300MB+)
      */
-    private val moviesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Movie>>>()
-    private val seriesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Series>>>()
-    private val episodesCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry<List<Episode>>>()
+    private val moviesCache = LruCache<String, CacheEntry<List<Movie>>>(50)
+    private val seriesCache = LruCache<String, CacheEntry<List<Series>>>(50)
+    private val episodesCache = LruCache<String, CacheEntry<List<Episode>>>(50)
 
     /**
      * Build cache key from parameters
@@ -112,13 +115,14 @@ class ContentRepository(context: Context) {
     }
 
     /**
-     * Clear all caches (called on database switch)
+     * P2 FIX: Issue #11 - Clear all caches (called on database switch)
+     * Updated for LruCache which uses evictAll() instead of clear()
      */
     fun clearCache() {
-        moviesCache.clear()
-        seriesCache.clear()
-        episodesCache.clear()
-        Log.i(TAG, "All caches cleared")
+        moviesCache.evictAll()
+        seriesCache.evictAll()
+        episodesCache.evictAll()
+        Log.i(TAG, "All caches cleared (LruCache evicted)")
     }
 
     // ========== Feature #18: Paging 3 Methods (Database-First, Unlimited Items) ==========
@@ -202,7 +206,7 @@ class ContentRepository(context: Context) {
 
             // Check cache first
             val cacheKey = buildCacheKey(currentSource, page, perPage)
-            val cachedEntry = moviesCache[cacheKey]
+            val cachedEntry = moviesCache.get(cacheKey)
             if (isCacheValid(cachedEntry, currentSource)) {
                 Log.d(TAG, "getMovies() - Returning CACHED data (${cachedEntry!!.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
@@ -231,7 +235,7 @@ class ContentRepository(context: Context) {
                         val movies = paginatedMovies.map { it.toMovie() }
 
                         // Store in cache
-                        moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                        moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database")
 
                         return@withContext Result.success(movies)
@@ -254,7 +258,7 @@ class ContentRepository(context: Context) {
                 val movies = wpMovies.map { wpMovie -> wpMovie.toMovie() }
 
                 // Store in cache
-                moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
                 Log.d(TAG, "getMovies() - Cached ${movies.size} movies from API")
 
                 return@withContext Result.success(movies)
@@ -270,7 +274,7 @@ class ContentRepository(context: Context) {
                         val movies = cachedMovies.map { it.toMovie() }
 
                         // Store in cache (fallback data)
-                        moviesCache[cacheKey] = CacheEntry(movies, System.currentTimeMillis(), currentSource)
+                        moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database (API fallback)")
 
                         return@withContext Result.success(movies)
@@ -296,6 +300,24 @@ class ContentRepository(context: Context) {
     }
 
     /**
+     * P3 FIX: Issue #15 - Get series by ID from database
+     * Used by PlaylistDetailFragment to display series in playlists
+     */
+    suspend fun getSeries(id: Int): Result<Series> = withContext(Dispatchers.IO) {
+        try {
+            val cachedSeries = getContentDb().seriesDao().getSeriesById(id)
+            if (cachedSeries != null) {
+                Result.success(cachedSeries.toSeries())
+            } else {
+                Result.failure(Exception("Series not found with ID: $id"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting series by ID: $id", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Get list of TV shows
      * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
      * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
@@ -307,7 +329,7 @@ class ContentRepository(context: Context) {
 
             // Check cache first
             val cacheKey = buildCacheKey(currentSource, page, perPage)
-            val cachedEntry = seriesCache[cacheKey]
+            val cachedEntry = seriesCache.get(cacheKey)
             if (isCacheValid(cachedEntry, currentSource)) {
                 Log.d(TAG, "getTvShows() - Returning CACHED data (${cachedEntry!!.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
@@ -336,7 +358,7 @@ class ContentRepository(context: Context) {
                         val series = paginatedSeries.map { it.toSeries() }
 
                         // Store in cache
-                        seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                        seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getTvShows() - Cached ${series.size} series from database")
 
                         return@withContext Result.success(series)
@@ -359,7 +381,7 @@ class ContentRepository(context: Context) {
                 val series = wpShows.map { wpShow -> wpShow.toSeries() }
 
                 // Store in cache
-                seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
                 Log.d(TAG, "getTvShows() - Cached ${series.size} series from API")
 
                 return@withContext Result.success(series)
@@ -376,7 +398,7 @@ class ContentRepository(context: Context) {
                         val series = cachedSeries.map { it.toSeries() }
 
                         // Store in cache (fallback data)
-                        seriesCache[cacheKey] = CacheEntry(series, System.currentTimeMillis(), currentSource)
+                        seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getTvShows() - Cached ${series.size} series from database (API fallback)")
 
                         return@withContext Result.success(series)
@@ -401,7 +423,7 @@ class ContentRepository(context: Context) {
 
             // Check cache first
             val cacheKey = buildCacheKey(currentSource, page, perPage)
-            val cachedEntry = episodesCache[cacheKey]
+            val cachedEntry = episodesCache.get(cacheKey)
             if (isCacheValid(cachedEntry, currentSource)) {
                 Log.d(TAG, "getRecentEpisodes() - Returning CACHED data (${cachedEntry!!.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
@@ -430,7 +452,7 @@ class ContentRepository(context: Context) {
                         val episodes = paginatedEpisodes.map { it.toEpisode() }
 
                         // Store in cache
-                        episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                        episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database")
 
                         return@withContext Result.success(episodes)
@@ -453,7 +475,7 @@ class ContentRepository(context: Context) {
                 val episodes = wpEpisodes.map { wpEpisode -> wpEpisode.toEpisode() }
 
                 // Store in cache
-                episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
                 Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from API")
 
                 return@withContext Result.success(episodes)
@@ -470,7 +492,7 @@ class ContentRepository(context: Context) {
                         val episodes = cachedEpisodes.map { it.toEpisode() }
 
                         // Store in cache (fallback data)
-                        episodesCache[cacheKey] = CacheEntry(episodes, System.currentTimeMillis(), currentSource)
+                        episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
                         Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database (API fallback)")
 
                         return@withContext Result.success(episodes)

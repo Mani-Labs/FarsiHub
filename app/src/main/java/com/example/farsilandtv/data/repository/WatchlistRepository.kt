@@ -1,6 +1,7 @@
 package com.example.farsilandtv.data.repository
 
 import android.content.Context
+import android.util.Log
 import androidx.room.withTransaction
 import com.example.farsilandtv.data.database.*
 import com.example.farsilandtv.data.models.Episode
@@ -352,9 +353,13 @@ class WatchlistRepository(context: Context) {
         if (movie != null && movie.isInWatchlist) {
             // Movie is bookmarked - keep it but reset progress
             Log.d(TAG, "Movie $movieId is bookmarked, resetting progress only (preserving bookmark)")
-            movieDao.updateProgress(movieId, position = 0, duration = movie.totalDuration)
-            movieDao.updateLastWatched(movieId, lastWatched = 0)
-            movieDao.updateCompleted(movieId, isCompleted = false)
+            // Reset progress fields but keep bookmark
+            val updated = movie.copy(
+                playbackPosition = 0,
+                lastWatched = null,
+                isCompleted = false
+            )
+            movieDao.insertMovie(updated)
         } else {
             // Not bookmarked - safe to delete entirely
             Log.d(TAG, "Movie $movieId not bookmarked, deleting from continue watching")
