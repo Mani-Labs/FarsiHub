@@ -137,9 +137,12 @@ class AddToPlaylistDialogFragment : DialogFragment() {
     private fun displayPlaylists(playlists: List<Playlist>) {
         playlistsContainer.removeAllViews()
 
+        val movieCopy = movie
+        val seriesCopy = series
+
         val contentId = when {
-            movie != null -> "movie-${movie.id}"
-            series != null -> "series-${series.id}"
+            movieCopy != null -> "movie-${movieCopy.id}"
+            seriesCopy != null -> "series-${seriesCopy.id}"
             else -> return
         }
 
@@ -188,14 +191,17 @@ class AddToPlaylistDialogFragment : DialogFragment() {
             try {
                 var addedCount = 0
 
+                val movieCopy = movie
+                val seriesCopy = series
+
                 selectedPlaylists.forEach { playlistId ->
                     when {
-                        movie != null -> {
-                            playlistRepo.addMovieToPlaylist(playlistId, movie)
+                        movieCopy != null -> {
+                            playlistRepo.addMovieToPlaylist(playlistId, movieCopy)
                             addedCount++
                         }
-                        series != null -> {
-                            playlistRepo.addSeriesToPlaylist(playlistId, series)
+                        seriesCopy != null -> {
+                            playlistRepo.addSeriesToPlaylist(playlistId, seriesCopy)
                             addedCount++
                         }
                     }

@@ -23,7 +23,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SearchHistory::class,
         Playlist::class,
         PlaylistItem::class,
-        NotificationPreferences::class
+        NotificationPreferences::class,
+        PlaybackPosition::class
     ],
     version = 10, // FarsilandDatabase fully removed (H1 fix)
     exportSchema = false
@@ -38,6 +39,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun playlistItemDao(): PlaylistItemDao
     abstract fun notificationPreferencesDao(): NotificationPreferencesDao
+    abstract fun playbackPositionDao(): PlaybackPositionDao
 
     companion object {
         @Volatile

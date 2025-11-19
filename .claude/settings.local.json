@@ -157,7 +157,10 @@
       "Bash(cmd /c \"cd /d G:\\FarsiPlex && rmdir /S /Q app\\build && gradlew.bat assembleDebug 2>&1\")",
       "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat --stop\")",
       "Bash(cmd /c \"cd /d G:\\FarsiPlex && rmdir /S /Q .gradle app\\build build && gradlew.bat assembleDebug\")",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat clean assembleDebug 2>&1\")",
+      "Bash(G:FarsiPlexgradlew.bat clean assembleDebug)"
     ],
     "deny": [],
     "ask": []

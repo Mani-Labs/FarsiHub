@@ -217,7 +217,7 @@ class NotificationHelper(private val context: Context) {
      */
     fun showSyncErrorNotification(syncType: String, attemptCount: Int) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID_SYNC_ERROR)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("$syncType Sync Failed")
             .setContentText("Background sync failed after $attemptCount attempts. Check your internet connection.")
             .setStyle(NotificationCompat.BigTextStyle()
