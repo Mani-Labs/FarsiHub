@@ -209,8 +209,11 @@ object EpisodeListScraper {
                 else -> null
             }
 
+            // Generate unique ID from series/season/episode to prevent hash collisions
+            val uniqueId = "$seriesId-$season-$episode".hashCode()
+
             return Episode(
-                id = href.hashCode(), // Generate ID from URL (consistent with other scrapers)
+                id = uniqueId,
                 seriesId = seriesId,
                 seriesTitle = seriesTitle,
                 title = title,
@@ -275,8 +278,11 @@ object EpisodeListScraper {
                 else -> null
             }
 
+            // Generate unique ID from series/season/episode to prevent hash collisions
+            val uniqueId = "$seriesId-$season-$episode".hashCode()
+
             return Episode(
-                id = href.hashCode(), // Generate ID from URL (consistent with other scrapers)
+                id = uniqueId,
                 seriesId = seriesId,
                 seriesTitle = seriesTitle,
                 title = title,
@@ -352,8 +358,11 @@ object EpisodeListScraper {
             val thumbnail = doc.select("meta[property=og:image]").attr("content")
                 ?: doc.select("img.episode-thumbnail").firstOrNull()?.attr("abs:src")
 
+            // Generate unique ID from URL and episode numbers to prevent collisions
+            val uniqueId = "$episodeUrl-$season-$episode".hashCode()
+
             Episode(
-                id = episodeUrl.hashCode(), // Generate ID from URL (consistent with other scrapers)
+                id = uniqueId,
                 seriesId = null,
                 title = title,
                 description = description,

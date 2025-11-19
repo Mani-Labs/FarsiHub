@@ -1,10 +1,15 @@
 package com.example.farsilandtv
 
 import android.os.Bundle
+import android.view.View
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * MainActivity with sidebar navigation:
@@ -51,11 +56,65 @@ class MainActivity : FragmentActivity() {
             }
         })
 
-        if (savedInstanceState == null) {
-            // Start with Home fragment
+        // Check if database is initialized (race condition fix)
+        val prefs = getSharedPreferences("app_state", MODE_PRIVATE)
+        val isDbInitialized = prefs.getBoolean("content_db_initialized", false)
+
+        if (!isDbInitialized) {
+            // Show loading screen while DB initializes
+            showDatabaseLoadingScreen()
+        } else if (savedInstanceState == null) {
+            // DB ready, start with Home fragment
             getSupportFragmentManager().beginTransaction()
                 .replace(R.id.main_browse_fragment, HomeFragment())
                 .commitNow()
+        }
+    }
+
+    /**
+     * Show loading screen while database copies from assets (first launch only)
+     * Polls for content_db_initialized flag and starts HomeFragment when ready
+     */
+    private fun showDatabaseLoadingScreen() {
+        // Show loading message in timestamp area
+        val timestampView = findViewById<TextView>(R.id.timestamp_text)
+        timestampView?.apply {
+            text = "Loading content database..."
+            visibility = View.VISIBLE
+        }
+
+        // Poll for initialization complete
+        lifecycleScope.launch {
+            val prefs = getSharedPreferences("app_state", MODE_PRIVATE)
+            var attempts = 0
+            val maxAttempts = 120 // 2 minutes max (120 * 1000ms)
+
+            while (!prefs.getBoolean("content_db_initialized", false) && attempts < maxAttempts) {
+                delay(1000) // Check every second
+                attempts++
+
+                // Update progress
+                timestampView?.text = "Loading content database... ${attempts}s"
+            }
+
+            // Check final status
+            if (prefs.getBoolean("content_db_initialized", false)) {
+                // Success - load HomeFragment
+                timestampView?.visibility = View.GONE
+                if (!supportFragmentManager.isStateSaved) {
+                    supportFragmentManager.beginTransaction()
+                        .replace(R.id.main_browse_fragment, HomeFragment())
+                        .commitNow()
+                }
+            } else {
+                // Timeout - show error
+                timestampView?.text = "Database initialization failed. Please restart the app."
+                Toast.makeText(
+                    this@MainActivity,
+                    "Database initialization timed out",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 

@@ -88,8 +88,38 @@ class FarsilandApp : Application() {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error initializing content database: ${e.message}", e)
-                    // Don't mark as initialized if failed - will retry next launch
+                    Log.e(TAG, "CRITICAL: Content database initialization failed: ${e.message}", e)
+
+                    // RECOVERY: Migration failure likely - delete corrupted database and retry once
+                    try {
+                        Log.w(TAG, "Attempting database recovery: deleting corrupted database files")
+                        withContext(Dispatchers.IO) {
+                            // Delete all database files
+                            val dbPath = applicationContext.getDatabasePath("content.db")
+                            val walFile = applicationContext.getDatabasePath("content.db-wal")
+                            val shmFile = applicationContext.getDatabasePath("content.db-shm")
+
+                            dbPath?.delete()
+                            walFile?.delete()
+                            shmFile?.delete()
+
+                            Log.i(TAG, "Database files deleted, retrying initialization...")
+
+                            // Retry initialization
+                            val db = ContentDatabase.getDatabase(applicationContext)
+                            val currentSource = ContentDatabase.getCurrentSource(applicationContext)
+                            val movieCount = db.movieDao().getMovieCount()
+
+                            Log.i(TAG, "Database recovery successful! Loaded $movieCount movies")
+
+                            withContext(Dispatchers.Main) {
+                                prefs.edit().putBoolean("content_db_initialized", true).apply()
+                            }
+                        }
+                    } catch (recoveryError: Exception) {
+                        Log.e(TAG, "FATAL: Database recovery failed. User must clear app data.", recoveryError)
+                        // Don't mark as initialized - will show error on next launch
+                    }
                 }
             }
         } else {
@@ -116,11 +146,11 @@ class FarsilandApp : Application() {
         }
 
         // Optimized constraints for Shield TV
+        // DeviceIdle removed - Android TV rarely enters idle mode (especially with screensavers)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .setRequiresBatteryNotLow(true)
             .setRequiresCharging(false)
-            .setRequiresDeviceIdle(true) // No sync during playback
             .build()
 
         // Convert minutes to hours if >= 60 minutes for better WorkManager compatibility
@@ -182,11 +212,11 @@ class FarsilandApp : Application() {
         }
 
         // Optimized constraints for Shield TV
+        // DeviceIdle removed - Android TV rarely enters idle mode (especially with screensavers)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .setRequiresBatteryNotLow(true)
             .setRequiresCharging(false)
-            .setRequiresDeviceIdle(true) // No sync during playback
             .build()
 
         // Convert minutes to hours if >= 60 minutes for better WorkManager compatibility
