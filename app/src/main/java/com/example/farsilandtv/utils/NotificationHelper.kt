@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.core.app.NotificationCompat
 import com.example.farsilandtv.R
 
 /**
@@ -22,12 +23,14 @@ class NotificationHelper(private val context: Context) {
         const val CHANNEL_ID_NEW_SEASONS = "farsiland_new_seasons"
         const val CHANNEL_ID_WEEKLY_DIGEST = "farsiland_weekly_digest"
         const val CHANNEL_ID_PLAYBACK = "farsiland_playback"
+        const val CHANNEL_ID_SYNC_ERROR = "farsiland_sync_error"
 
         // Notification IDs
         const val NOTIFICATION_ID_NEW_EPISODE = 1001
         const val NOTIFICATION_ID_NEW_SEASON = 1002
         const val NOTIFICATION_ID_WEEKLY_DIGEST = 1003
         const val NOTIFICATION_ID_PLAYBACK = 2001
+        const val NOTIFICATION_ID_SYNC_ERROR = 3001
     }
 
     private val notificationManager: NotificationManager =
@@ -43,7 +46,8 @@ class NotificationHelper(private val context: Context) {
                 createNewEpisodesChannel(),
                 createNewSeasonsChannel(),
                 createWeeklyDigestChannel(),
-                createPlaybackChannel()
+                createPlaybackChannel(),
+                createSyncErrorChannel()
             )
 
             channels.forEach { channel ->
@@ -118,6 +122,22 @@ class NotificationHelper(private val context: Context) {
     }
 
     /**
+     * Create channel for sync error notifications
+     */
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun createSyncErrorChannel(): NotificationChannel {
+        return NotificationChannel(
+            CHANNEL_ID_SYNC_ERROR,
+            "Sync Errors",
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = "Notifications when background sync fails"
+            enableVibration(true)
+            setShowBadge(true)
+        }
+    }
+
+    /**
      * Check if current time is within quiet hours
      *
      * @param currentHour Current hour in 24-hour format (0-23)
@@ -188,5 +208,26 @@ class NotificationHelper(private val context: Context) {
     fun cancelNotification(notificationId: Int) {
         notificationManager.cancel(notificationId)
         Log.d(TAG, "Cancelled notification: $notificationId")
+    }
+
+    /**
+     * Show sync error notification to user
+     * @param syncType Type of sync that failed (e.g., "Farsiland", "FarsiPlex")
+     * @param attemptCount Number of retry attempts that failed
+     */
+    fun showSyncErrorNotification(syncType: String, attemptCount: Int) {
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID_SYNC_ERROR)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("$syncType Sync Failed")
+            .setContentText("Background sync failed after $attemptCount attempts. Check your internet connection.")
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText("Background sync for $syncType failed after $attemptCount retry attempts. " +
+                        "Please check your internet connection and try refreshing manually from Settings > Sync."))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID_SYNC_ERROR, notification)
+        Log.d(TAG, "Sync error notification shown for $syncType")
     }
 }

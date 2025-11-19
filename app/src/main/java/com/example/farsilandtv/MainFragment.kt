@@ -653,7 +653,9 @@ class MainFragment : BrowseSupportFragment() {
         }
 
         override fun onBindViewHolder(viewHolder: ViewHolder, item: Any) {
-            (viewHolder.view as TextView).text = item as String
+            val textView = viewHolder.view as? TextView ?: return
+            val text = item as? String ?: return
+            textView.text = text
         }
 
         override fun onUnbindViewHolder(viewHolder: ViewHolder) {}

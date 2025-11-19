@@ -6,14 +6,12 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
-import com.example.farsilandtv.data.db.PlaybackPosition
-import com.example.farsilandtv.data.db.PlaybackPositionDao
 
 /**
  * Room Database for FarsilandTV
  * Handles local storage for watchlist, playback progress, and preferences
  *
- * Consolidation note (v9): Merged PlaybackPosition from FarsilandDatabase
+ * Note: PlaybackPosition tracking moved to EpisodeProgress entity
  * to eliminate dual database pattern and prevent data sync issues.
  */
 @Database(
@@ -25,10 +23,9 @@ import com.example.farsilandtv.data.db.PlaybackPositionDao
         SearchHistory::class,
         Playlist::class,
         PlaylistItem::class,
-        NotificationPreferences::class,
-        PlaybackPosition::class  // Added in v9: Consolidated from FarsilandDatabase
+        NotificationPreferences::class
     ],
-    version = 10, // Consolidated PlaybackPosition from FarsilandDatabase (C1 fix)
+    version = 10, // FarsilandDatabase fully removed (H1 fix)
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -41,7 +38,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun playlistItemDao(): PlaylistItemDao
     abstract fun notificationPreferencesDao(): NotificationPreferencesDao
-    abstract fun playbackPositionDao(): PlaybackPositionDao  // Added in v9
 
     companion object {
         @Volatile

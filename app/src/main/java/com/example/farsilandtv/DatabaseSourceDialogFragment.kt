@@ -97,17 +97,17 @@ class DatabaseSourceSelectionFragment : GuidedStepSupportFragment() {
  */
 class DatabaseSourceConfirmationFragment : GuidedStepSupportFragment() {
 
-    // Bug #6 fix: Initialize with default value instead of lateinit
-    private var newSource: DatabaseSource = DatabaseSource.FARSILAND
     private var onSourceChanged: ((DatabaseSource) -> Unit)? = null
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        arguments?.let {
-            val sourceName = it.getString(ARG_SOURCE_NAME) ?: DatabaseSource.FARSILAND.fileName
-            newSource = DatabaseSource.fromFileName(sourceName)
+    // Get newSource from arguments directly (called during UI creation)
+    private val newSource: DatabaseSource
+        get() {
+            val sourceName = arguments?.getString(ARG_SOURCE_NAME)
+            android.util.Log.d("DatabaseSwitch", "ARG_SOURCE_NAME = $sourceName")
+            return sourceName?.let {
+                DatabaseSource.fromFileName(it)
+            } ?: DatabaseSource.FARSILAND
         }
-    }
 
     // Bug #3 fix: Clear callback references to prevent memory leaks
     override fun onDestroyView() {

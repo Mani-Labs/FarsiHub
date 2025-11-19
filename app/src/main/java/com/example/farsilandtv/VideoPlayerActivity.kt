@@ -17,7 +17,6 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.runBlocking
 import com.example.farsilandtv.data.models.VideoUrl
 import com.example.farsilandtv.data.repository.ContentRepository
@@ -806,30 +805,12 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * Handle key events for quality menu and D-pad seeking
+     * Handle key events for quality menu
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_Q -> {
                 showQualitySelector()
-                true
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                // Jump forward 30 seconds
-                player?.let {
-                    val newPosition = it.currentPosition + 30_000L
-                    it.seekTo(newPosition.coerceAtMost(it.duration))
-                    Toast.makeText(this, "+30s", Toast.LENGTH_SHORT).show()
-                }
-                true
-            }
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                // Jump backward 15 seconds
-                player?.let {
-                    val newPosition = it.currentPosition - 15_000L
-                    it.seekTo(newPosition.coerceAtLeast(0L))
-                    Toast.makeText(this, "-15s", Toast.LENGTH_SHORT).show()
-                }
                 true
             }
             else -> super.onKeyDown(keyCode, event)

@@ -272,13 +272,14 @@ class SearchActivity : FragmentActivity() {
 
             override fun onBindViewHolder(viewHolder: ViewHolder, item: Any) {
                 val textView = viewHolder.view as android.widget.TextView
-                textView.text = item as String
+                val itemText = item as? String ?: return
+                textView.text = itemText
 
                 // Highlight selected filter
                 val isSelected = when {
-                    item.startsWith("All") && currentFilter == FilterType.ALL -> true
-                    item.startsWith("Movies") && currentFilter == FilterType.MOVIES -> true
-                    item.startsWith("Series") && currentFilter == FilterType.SERIES -> true
+                    itemText.startsWith("All") && currentFilter == FilterType.ALL -> true
+                    itemText.startsWith("Movies") && currentFilter == FilterType.MOVIES -> true
+                    itemText.startsWith("Series") && currentFilter == FilterType.SERIES -> true
                     else -> false
                 }
 
@@ -466,7 +467,7 @@ class SearchActivity : FragmentActivity() {
 
             override fun onBindViewHolder(viewHolder: ViewHolder, item: Any) {
                 val textView = viewHolder.view as android.widget.TextView
-                val text = item as String
+                val text = item as? String ?: return
 
                 textView.text = text
 

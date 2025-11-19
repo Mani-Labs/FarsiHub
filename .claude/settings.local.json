@@ -144,7 +144,20 @@
       "Bash(adb pull:*)",
       "Bash(Select-String -Pattern \"BUILD|FAILED|ERROR|CustomPlayback\")",
       "Bash(Select-String -Pattern \"Found|quality|Quality|Server|480|720|1080\")",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(Select-String -Pattern \"BUILD|FAILED|SUCCESS\")",
+      "Bash(Select-Object -Last 5)",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat assembleDebug 2>&1\")",
+      "Bash(git rm:*)",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat compileDebugKotlin 2>&1\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && del /F app\\build\\outputs\\apk\\debug\\app-debug.apk && gradlew.bat assembleDebug\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat :app:clean :app:assembleDebug --rerun-tasks\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && del /F app\\build\\outputs\\apk\\debug\\app-debug.apk && gradlew.bat --no-build-cache clean assembleDebug\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat --no-build-cache clean assembleDebug 2>&1\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && rmdir /S /Q app\\build && gradlew.bat assembleDebug 2>&1\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat --stop\")",
+      "Bash(cmd /c \"cd /d G:\\FarsiPlex && rmdir /S /Q .gradle app\\build build && gradlew.bat assembleDebug\")",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []

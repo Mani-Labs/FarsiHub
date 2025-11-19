@@ -138,8 +138,8 @@ class AddToPlaylistDialogFragment : DialogFragment() {
         playlistsContainer.removeAllViews()
 
         val contentId = when {
-            movie != null -> "movie-${movie!!.id}"
-            series != null -> "series-${series!!.id}"
+            movie != null -> "movie-${movie.id}"
+            series != null -> "series-${series.id}"
             else -> return
         }
 
@@ -191,11 +191,11 @@ class AddToPlaylistDialogFragment : DialogFragment() {
                 selectedPlaylists.forEach { playlistId ->
                     when {
                         movie != null -> {
-                            playlistRepo.addMovieToPlaylist(playlistId, movie!!)
+                            playlistRepo.addMovieToPlaylist(playlistId, movie)
                             addedCount++
                         }
                         series != null -> {
-                            playlistRepo.addSeriesToPlaylist(playlistId, series!!)
+                            playlistRepo.addSeriesToPlaylist(playlistId, series)
                             addedCount++
                         }
                     }

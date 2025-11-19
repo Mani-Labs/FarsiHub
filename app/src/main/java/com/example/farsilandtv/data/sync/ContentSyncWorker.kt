@@ -12,6 +12,7 @@ import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.SyncPreferences
+import com.example.farsilandtv.utils.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -140,7 +141,11 @@ class ContentSyncWorker(
             if (attemptCount >= MAX_RETRY_ATTEMPTS) {
                 Log.e(TAG, "Max retry attempts ($MAX_RETRY_ATTEMPTS) reached. Giving up.")
                 Log.e(TAG, "User notification: Background sync failed after $attemptCount attempts")
-                // TODO: Show notification to user about sync failure
+
+                // Show notification to user about sync failure
+                val notificationHelper = NotificationHelper(applicationContext)
+                notificationHelper.showSyncErrorNotification("Farsiland", attemptCount)
+
                 return@withContext Result.failure()
             }
 

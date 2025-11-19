@@ -13,6 +13,7 @@ import com.example.farsilandtv.data.api.FarsiPlexApiService
 import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.data.scraper.FarsiPlexMetadataScraper
+import com.example.farsilandtv.utils.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -83,7 +84,11 @@ class FarsiPlexSyncWorker(
             if (attemptCount >= MAX_RETRY_ATTEMPTS) {
                 Log.e(TAG, "Max retry attempts ($MAX_RETRY_ATTEMPTS) reached. Giving up.")
                 Log.e(TAG, "User notification: FarsiPlex sync failed after $attemptCount attempts")
-                // TODO: Show notification to user about sync failure
+
+                // Show notification to user about sync failure
+                val notificationHelper = NotificationHelper(applicationContext)
+                notificationHelper.showSyncErrorNotification("FarsiPlex", attemptCount)
+
                 return@withContext Result.failure()
             }
 
