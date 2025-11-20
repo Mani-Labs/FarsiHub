@@ -358,26 +358,50 @@ object VideoUrlScraper {
             val response = httpClient.newCall(request).execute()
 
             if (response.isSuccessful) {
-                // P1 FIX: Issue #3 - OOM Protection with chunked encoding support
-                // API responses are typically small JSON (< 10KB) and often use chunked encoding
-                // We'll read up to 5MB limit regardless of chunked vs Content-Length
-                val contentLength = response.body?.contentLength() ?: 0
-                if (contentLength > 5_000_000) { // Only reject if we KNOW it's too large
-                    android.util.Log.w(TAG, "Response too large: $contentLength bytes")
+                // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
+                // Problem: contentLength = -1 for chunked encoding, so header check fails
+                // Solution: Read with hard 5MB limit regardless of Content-Length header
+                val body = response.body ?: run {
                     response.close()
                     return@withContext emptyList()
                 }
 
-                // Safe to read - API responses are small, use byteStream with limit for chunked
-                val body = response.body?.string() ?: ""
+                // Step 1: Fast fail for known large sizes (via Content-Length header)
+                val contentLength = body.contentLength()
+                if (contentLength > 5_000_000) {
+                    android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                    response.close()
+                    return@withContext emptyList()
+                }
+
+                // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
+                val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
+                val source = body.source()
+                val buffer = okio.Buffer()
+                var totalRead = 0L
+
+                while (totalRead < maxBytes) {
+                    val bytesRead = source.read(buffer, maxBytes - totalRead)
+                    if (bytesRead == -1L) break // End of stream
+                    totalRead += bytesRead
+                }
+
+                // If we hit the limit and there's more data, reject it
+                if (totalRead >= maxBytes && !source.exhausted()) {
+                    android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
+                    response.close()
+                    return@withContext emptyList()
+                }
+
+                val bodyString = buffer.readUtf8()
                 response.close()
 
-                android.util.Log.d(TAG, "API Response (server $serverNum): ${body.take(500)}")
+                android.util.Log.d(TAG, "API Response (server $serverNum): ${bodyString.take(500)}")
 
                 // Parse JSON response
                 // Expected format: {"embed_url": "https://...", "type": "iframe"}
                 // Or direct: {"type": "mp4", "url": "https://...mp4"}
-                val mp4Urls = extractUrlsFromDooPlayResponse(body, serverNum)
+                val mp4Urls = extractUrlsFromDooPlayResponse(bodyString, serverNum)
                 return@withContext mp4Urls
             } else {
                 android.util.Log.d(TAG, "API returned HTTP ${response.code} for server $serverNum")
@@ -1103,18 +1127,42 @@ object VideoUrlScraper {
             val response = httpClient.newCall(request).execute()
 
             if (response.isSuccessful) {
-                // P1 FIX: Issue #3 - OOM Protection with chunked encoding support
-                // /get/ responses are typically small and often use chunked encoding
-                // We'll read up to 5MB limit regardless of chunked vs Content-Length
-                val contentLength = response.body?.contentLength() ?: 0
-                if (contentLength > 5_000_000) { // Only reject if we KNOW it's too large
-                    android.util.Log.w(TAG, "Response too large: $contentLength bytes")
+                // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
+                // Problem: contentLength = -1 for chunked encoding, so header check fails
+                // Solution: Read with hard 5MB limit regardless of Content-Length header
+                val body = response.body ?: run {
                     response.close()
                     return@withContext emptyList()
                 }
 
-                // Safe to read - responses are small, use byteStream with limit for chunked
-                val responseBody = response.body?.string() ?: ""
+                // Step 1: Fast fail for known large sizes (via Content-Length header)
+                val contentLength = body.contentLength()
+                if (contentLength > 5_000_000) {
+                    android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                    response.close()
+                    return@withContext emptyList()
+                }
+
+                // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
+                val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
+                val source = body.source()
+                val buffer = okio.Buffer()
+                var totalRead = 0L
+
+                while (totalRead < maxBytes) {
+                    val bytesRead = source.read(buffer, maxBytes - totalRead)
+                    if (bytesRead == -1L) break // End of stream
+                    totalRead += bytesRead
+                }
+
+                // If we hit the limit and there's more data, reject it
+                if (totalRead >= maxBytes && !source.exhausted()) {
+                    android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
+                    response.close()
+                    return@withContext emptyList()
+                }
+
+                val responseBody = buffer.readUtf8()
                 response.close()
 
                 android.util.Log.d(TAG, "Got response from /get/ (length: ${responseBody.length})")
@@ -1169,20 +1217,35 @@ object VideoUrlScraper {
                 val finalUrl = response.request.url.toString()
                 android.util.Log.d(TAG, "POST redirect final URL: $finalUrl")
 
-                // OOM Protection: Check content size BEFORE loading into memory
-                val contentLength = response.body?.contentLength() ?: 0
-                if (contentLength > 5_000_000) { // 5MB limit
-                    android.util.Log.w(TAG, "Response too large: $contentLength bytes, skipping body parse")
-                    response.close()
-                    return@withContext if (finalUrl != redirectUrl && finalUrl.contains(".mp4", ignoreCase = true)) {
-                        finalUrl
-                    } else {
-                        ""
+                // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
+                val responseBody = response.body?.let { body ->
+                    // Step 1: Fast fail for known large sizes
+                    val contentLength = body.contentLength()
+                    if (contentLength > 5_000_000) {
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                        return@let null
                     }
-                }
 
-                // Also check response body for video URLs
-                val responseBody = response.body?.string() ?: ""
+                    // Step 2: BOUNDED READ - Read max 5MB
+                    val maxBytes = 5L * 1024 * 1024
+                    val source = body.source()
+                    val buffer = okio.Buffer()
+                    var totalRead = 0L
+
+                    while (totalRead < maxBytes) {
+                        val bytesRead = source.read(buffer, maxBytes - totalRead)
+                        if (bytesRead == -1L) break
+                        totalRead += bytesRead
+                    }
+
+                    if (totalRead >= maxBytes && !source.exhausted()) {
+                        android.util.Log.w(TAG, "Response exceeded 5MB limit")
+                        return@let null
+                    }
+
+                    buffer.readUtf8()
+                } ?: ""
+
                 response.close()
 
                 // If final URL is different from redirect URL, it worked
