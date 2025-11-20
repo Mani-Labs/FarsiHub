@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.example.farsilandtv"
-    compileSdk = 36  // Required by androidx.core:1.17.0 - cannot downgrade
+    compileSdk = 35  // AUDIT FIX #16: Downgraded from 36 (unstable preview). Min 35 required by Leanback 1.2.0
 
     defaultConfig {
         applicationId = "com.example.farsilandtv"

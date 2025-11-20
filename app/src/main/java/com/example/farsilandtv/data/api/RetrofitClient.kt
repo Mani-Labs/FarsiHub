@@ -169,18 +169,11 @@ object RetrofitClient {
                             android.content.Context.CONNECTIVITY_SERVICE
                         ) as android.net.ConnectivityManager
 
-                        // Use modern API (Android M+)
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                            val activeNetwork = connectivityManager.activeNetwork
-                            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
-                            capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-                        } else {
-                            // Fallback for older devices (API < 23)
-                            @Suppress("DEPRECATION")
-                            val activeNetworkInfo = connectivityManager.activeNetworkInfo
-                            @Suppress("DEPRECATION")
-                            activeNetworkInfo?.isConnectedOrConnecting == true
-                        }
+                        // AUDIT FIX #19: Removed API < 23 fallback (dead code, minSdk = 28)
+                        // Use NetworkCapabilities API (available since API 23, minSdk = 28)
+                        val activeNetwork = connectivityManager.activeNetwork
+                        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+                        capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
                     }
                 } catch (e: Exception) {
                     true // Assume network available if check fails

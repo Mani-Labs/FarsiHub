@@ -90,13 +90,13 @@ class FarsilandApp : Application() {
                 } catch (e: Exception) {
                     Log.e(TAG, "CRITICAL: Content database initialization failed: ${e.message}", e)
 
-                    // CRITICAL FIX: Removed boot loop - DO NOT call killProcess() in recovery
-                    // Previous code would cause infinite restart loop if DB init kept failing
-                    // New approach: Mark DB as failed, let MainActivity show permanent error screen
+                    // AUDIT FIX #15: "Zombie State" Prevention
+                    // Issue: Deleting DB and continuing leaves app with empty database
+                    // Fix: Trigger emergency full network sync to rebuild database from API
                     try {
-                        Log.w(TAG, "Attempting database recovery: deleting corrupted files")
+                        Log.w(TAG, "Attempting database recovery: deleting corrupted files and triggering full sync")
                         withContext(Dispatchers.IO) {
-                            // Delete all database files
+                            // Delete all corrupted database files
                             val dbPath = applicationContext.getDatabasePath("content.db")
                             val walFile = applicationContext.getDatabasePath("content.db-wal")
                             val shmFile = applicationContext.getDatabasePath("content.db-shm")
@@ -107,21 +107,49 @@ class FarsilandApp : Application() {
 
                             Log.i(TAG, "Database cleanup: main=$deletedMain, wal=$deletedWal, shm=$deletedShm")
 
-                            // Mark DB initialization as permanently failed
+                            // Mark DB as requiring emergency sync (not permanently failed)
                             withContext(Dispatchers.Main) {
                                 prefs.edit()
                                     .putBoolean("content_db_initialized", false)
                                     .putBoolean("content_db_error", true)
+                                    .putBoolean("content_db_emergency_sync", true) // NEW: Trigger full sync
                                     .putString("content_db_error_message", e.message ?: "Unknown error")
                                     .apply()
 
-                                Log.e(TAG, "Database initialization failed. User must clear app data or reinstall.")
+                                Log.w(TAG, "Database deleted. Emergency full sync will be triggered on next launch.")
+                            }
+
+                            // Trigger IMMEDIATE emergency sync to rebuild database from network
+                            val currentSource = com.example.farsilandtv.data.database.DatabasePreferences.getInstance(applicationContext).getCurrentSource()
+                            when (currentSource) {
+                                com.example.farsilandtv.data.database.DatabaseSource.FARSILAND -> {
+                                    val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.ContentSyncWorker>()
+                                        .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                                        .build()
+                                    androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                                    Log.i(TAG, "Emergency Farsiland sync triggered")
+                                }
+                                com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX -> {
+                                    val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.FarsiPlexSyncWorker>()
+                                        .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                                        .build()
+                                    androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                                    Log.i(TAG, "Emergency FarsiPlex sync triggered")
+                                }
+                                com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE -> {
+                                    Log.e(TAG, "FATAL: Namakade has no API sync. User must reinstall app to restore database.")
+                                    withContext(Dispatchers.Main) {
+                                        prefs.edit().putBoolean("content_db_fatal_error", true).apply()
+                                    }
+                                }
                             }
                         }
                     } catch (recoveryError: Exception) {
                         Log.e(TAG, "FATAL: Database recovery failed completely", recoveryError)
-                        Log.e(TAG, "User must manually clear app data: Settings → Apps → FarsiPlex → Clear Data")
-                        // Don't crash - let app continue and show error in MainActivity
+                        withContext(Dispatchers.Main) {
+                            prefs.edit().putBoolean("content_db_fatal_error", true).apply()
+                        }
+                        Log.e(TAG, "App cannot recover. User must clear app data: Settings → Apps → FarsiPlex → Clear Data")
                     }
                 }
             }
