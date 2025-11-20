@@ -163,6 +163,10 @@ class ContentRepository private constructor(context: Context) {
      * Get movies with Paging 3 (database-first, unlimited items)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
+     *
+     * NOTE: F3 audit item (reactive paging) - ViewModel should call this method again when source changes
+     * This ensures fresh Pager is created with new URL pattern
+     *
      * @return Flow of paged movies from database
      */
     fun getMoviesPaged(): Flow<PagingData<Movie>> {
@@ -184,6 +188,10 @@ class ContentRepository private constructor(context: Context) {
      * Get TV series with Paging 3 (database-first, unlimited items)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
+     *
+     * NOTE: F3 audit item (reactive paging) - ViewModel should call this method again when source changes
+     * This ensures fresh Pager is created with new URL pattern
+     *
      * @return Flow of paged series from database
      */
     fun getSeriesPaged(): Flow<PagingData<Series>> {

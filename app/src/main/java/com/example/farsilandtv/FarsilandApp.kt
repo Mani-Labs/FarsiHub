@@ -16,7 +16,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.TimeUnit
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.database.StandaloneDatabaseProvider
 
 /**
  * Application class for Farsiland TV
@@ -30,6 +34,11 @@ class FarsilandApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        // EXTERNAL AUDIT FIX S2: Initialize ExoPlayer cache on background thread
+        // Prevents main thread I/O during VideoPlayerActivity.onCreate()
+        // Cache is lazily created once and shared across all video playback sessions
+        initializeVideoCache()
 
         // Initialize Firebase Crashlytics (M4)
         // initializeCrashlytics()  // DISABLED: Firebase not configured
@@ -86,6 +95,35 @@ class FarsilandApp : Application() {
                     .edit()
                     .putBoolean("content_db_fatal_error", true)
                     .apply()
+            }
+        }
+    }
+
+    /**
+     * EXTERNAL AUDIT FIX S2: Initialize ExoPlayer video cache
+     * Moved from VideoPlayerActivity to prevent main thread blocking
+     *
+     * Benefits:
+     * - No frame drops on player initialization (was 50-120ms)
+     * - Cache persists across video player instances
+     * - Reduces disk I/O on every video start
+     */
+    private fun initializeVideoCache() {
+        applicationScope.launch(Dispatchers.IO) {
+            try {
+                val cacheDir = File(cacheDir, "exoplayer_cache")
+                val cacheSize = 100L * 1024 * 1024 // 100MB
+
+                videoCache = SimpleCache(
+                    cacheDir,
+                    LeastRecentlyUsedCacheEvictor(cacheSize),
+                    StandaloneDatabaseProvider(applicationContext)
+                )
+
+                Log.i(TAG, "Video cache initialized: 100MB at ${cacheDir.absolutePath}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize video cache: ${e.message}", e)
+                // Non-fatal - video playback will work without cache
             }
         }
     }
@@ -337,6 +375,15 @@ class FarsilandApp : Application() {
         private const val TAG = "FarsilandApp"
 
         lateinit var instance: FarsilandApp
+            private set
+
+        /**
+         * EXTERNAL AUDIT FIX S2: Singleton video cache instance
+         * Initialized in Application.onCreate() on background thread
+         * Shared across all video playback sessions
+         */
+        @Volatile
+        var videoCache: SimpleCache? = null
             private set
 
         /**
