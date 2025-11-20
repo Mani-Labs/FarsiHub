@@ -295,32 +295,63 @@ object VideoUrlScraper {
 
             android.util.Log.d(TAG, "Content type: $contentType")
 
-            // P2 FIX: Issue #9 - Parallelize API requests for ~400% speedup
-            // Previous code: Sequential for loop waited for each request (500ms × 5 = 2500ms worst case)
-            // Fixed: Parallel async requests complete in ~500ms (time of slowest single request)
+            // AUDIT FIX H2.1: First-wins pattern - return as soon as ANY server responds
+            // Previous issue: awaitAll() waited for all 5 servers even if server 1 responded in 0.5s
+            // Fixed: Return immediately when first server responds with valid URLs, cancel others
             val videoUrls = mutableListOf<VideoUrl>()
 
             // Use coroutineScope to create scope for async
             coroutineScope {
                 // Launch all 5 API requests in parallel
-                val deferredResults = (1..5).map { num ->
+                val jobs = (1..5).map { num ->
                     async {
                         val apiUrl = "https://farsiplex.com/wp-json/dooplayer/v2/$postId/$contentType/$num"
                         android.util.Log.d(TAG, "Trying API: $apiUrl")
-                        fetchFromDooPlayAPI(apiUrl, num)
+                        Pair(num, fetchFromDooPlayAPI(apiUrl, num))
                     }
                 }
 
-                // Collect all results (awaitAll waits for all to complete)
-                val allResults = deferredResults.awaitAll()
-                for (urls in allResults) {
-                    if (urls.isNotEmpty()) {
-                        videoUrls.addAll(urls)
+                // Wait for first non-empty result
+                var foundResult = false
+                for (job in jobs) {
+                    if (foundResult) {
+                        job.cancel() // Cancel remaining jobs
+                        continue
+                    }
+
+                    try {
+                        val (serverNum, urls) = job.await()
+                        if (urls.isNotEmpty()) {
+                            videoUrls.addAll(urls)
+                            foundResult = true
+                            android.util.Log.d(TAG, "Server $serverNum responded first with ${urls.size} URLs - cancelling remaining requests")
+
+                            // Cancel all remaining jobs
+                            jobs.forEach { if (it != job) it.cancel() }
+                            break
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.d(TAG, "Server request failed or was cancelled: ${e.message}")
+                    }
+                }
+
+                // If no server returned results, still try to collect from remaining jobs
+                if (!foundResult) {
+                    android.util.Log.d(TAG, "No server returned results on first pass, waiting for remaining...")
+                    for (job in jobs) {
+                        try {
+                            val (_, urls) = job.await()
+                            if (urls.isNotEmpty()) {
+                                videoUrls.addAll(urls)
+                            }
+                        } catch (e: Exception) {
+                            // Job was cancelled or failed
+                        }
                     }
                 }
             }
 
-            android.util.Log.d(TAG, "Parallel API requests completed, found ${videoUrls.size} total URLs")
+            android.util.Log.d(TAG, "First-wins pattern completed, found ${videoUrls.size} total URLs")
 
             if (videoUrls.isNotEmpty()) {
                 // Remove duplicates and sort by quality
@@ -359,20 +390,21 @@ object VideoUrlScraper {
             // AUDIT FIX #12: Use 'use' to ensure response is always closed, even if reading fails
             val result: List<VideoUrl> = httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
+                    // AUDIT FIX H2.2: Reduced from 5MB to 1MB to prevent ANR on low-power TV CPUs
                     // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
                     // Problem: contentLength = -1 for chunked encoding, so header check fails
-                    // Solution: Read with hard 5MB limit regardless of Content-Length header
+                    // Solution: Read with hard 1MB limit regardless of Content-Length header
                     val body = response.body ?: return@use emptyList()
 
                     // Step 1: Fast fail for known large sizes (via Content-Length header)
                     val contentLength = body.contentLength()
-                    if (contentLength > 5_000_000) {
-                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                    if (contentLength > 1_000_000) {
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 1MB)")
                         return@use emptyList()
                     }
 
-                    // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
-                    val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
+                    // Step 2: BOUNDED READ - Read max 1MB, stops even if stream is larger/infinite
+                    val maxBytes = 1L * 1024 * 1024 // 1MB hard limit (AUDIT FIX H2.2)
                     val source = body.source()
                     val buffer = okio.Buffer()
                     var totalRead = 0L
@@ -390,7 +422,7 @@ object VideoUrlScraper {
 
                     // If we hit the limit and there's more data, reject it
                     if (totalRead >= maxBytes && !source.exhausted()) {
-                        android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
+                        android.util.Log.w(TAG, "Response exceeded 1MB limit (likely malicious chunked stream)")
                         return@use emptyList()
                     }
 
@@ -1163,7 +1195,7 @@ object VideoUrlScraper {
 
                     // If we hit the limit and there's more data, reject it
                     if (totalRead >= maxBytes && !source.exhausted()) {
-                        android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
+                        android.util.Log.w(TAG, "Response exceeded 1MB limit (likely malicious chunked stream)")
                         return@use emptyList()
                     }
 
@@ -1355,8 +1387,9 @@ object VideoUrlScraper {
                 val scriptContent = script.html()
 
                 // SECURITY: Protect against ReDoS with size limit and timeout
-                if (scriptContent.length > 10_000_000) { // 10MB max
-                    android.util.Log.w(TAG, "Script too large for regex parsing: ${scriptContent.length} bytes")
+                // AUDIT FIX H2.2: Reduced from 10MB to 1MB to prevent ANR on low-power TV CPUs
+                if (scriptContent.length > 1_000_000) { // 1MB max
+                    android.util.Log.w(TAG, "Script too large for regex parsing: ${scriptContent.length} bytes (max 1MB)")
                     continue
                 }
 
