@@ -38,6 +38,22 @@ object WebSearchScraper {
     ).toMap()
 
     /**
+     * AUDIT FIX #10 (Post-Release): Check if title matches search query
+     * Prevents returning 393 irrelevant results (like "samad" search returning everything)
+     *
+     * Uses same aggressive normalization as ContentRepository deduplication
+     * - Removes ALL non-alphanumeric characters (spaces, hyphens, punctuation)
+     * - Case-insensitive matching
+     *
+     * @return true if title contains the query as a substring
+     */
+    private fun titleMatchesQuery(title: String, query: String): Boolean {
+        val normalizedTitle = title.replace(Regex("[^\\p{L}\\p{N}]"), "").lowercase()
+        val normalizedQuery = query.replace(Regex("[^\\p{L}\\p{N}]"), "").lowercase()
+        return normalizedTitle.contains(normalizedQuery)
+    }
+
+    /**
      * Fix CDN URL by trying fallback domains
      * If original domain is known to be unreliable, returns URL with working alternative
      */
@@ -101,10 +117,25 @@ object WebSearchScraper {
                                        item.text().contains(" TV", ignoreCase = true) ||
                                        item.select("a[href*='/tvshows/']").isNotEmpty()
 
-                        if (isSeries) {
-                            parseSeriesResult(item)?.let { results.add(it) }
+                        val parsedItem = if (isSeries) {
+                            parseSeriesResult(item)
                         } else {
-                            parseMovieResult(item)?.let { results.add(it) }
+                            parseMovieResult(item)
+                        }
+
+                        // AUDIT FIX #10: Filter out irrelevant results
+                        parsedItem?.let {
+                            val title = when (it) {
+                                is Movie -> it.title
+                                is Series -> it.title
+                                else -> ""
+                            }
+
+                            if (titleMatchesQuery(title, query)) {
+                                results.add(it)
+                            } else {
+                                Log.d(TAG, "Skipping non-matching Farsiland result: $title")
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error parsing Farsiland result: ${e.message}")
@@ -164,16 +195,32 @@ object WebSearchScraper {
                                        item.attr("href").contains("/tvshows/") ||
                                        item.select("a[href*='/tvshows/']").isNotEmpty()
 
-                        if (isMovie) {
-                            parseMovieResult(item)?.let { results.add(it) }
+                        val parsedItem = if (isMovie) {
+                            parseMovieResult(item)
                         } else if (isSeries) {
-                            parseSeriesResult(item)?.let { results.add(it) }
+                            parseSeriesResult(item)
                         } else {
                             // Try to determine from URL
                             val link = item.select("a").attr("href")
                             when {
-                                link.contains("/movie/") -> parseMovieResult(item)?.let { results.add(it) }
-                                link.contains("/tvshows/") -> parseSeriesResult(item)?.let { results.add(it) }
+                                link.contains("/movie/") -> parseMovieResult(item)
+                                link.contains("/tvshows/") -> parseSeriesResult(item)
+                                else -> null
+                            }
+                        }
+
+                        // AUDIT FIX #10: Filter out irrelevant results
+                        parsedItem?.let {
+                            val title = when (it) {
+                                is Movie -> it.title
+                                is Series -> it.title
+                                else -> ""
+                            }
+
+                            if (titleMatchesQuery(title, query)) {
+                                results.add(it)
+                            } else {
+                                Log.d(TAG, "Skipping non-matching FarsiPlex result: $title")
                             }
                         }
                     } catch (e: Exception) {
@@ -231,6 +278,12 @@ object WebSearchScraper {
 
                         if (title.isEmpty()) continue
 
+                        // AUDIT FIX #10: Filter out irrelevant results
+                        if (!titleMatchesQuery(title, query)) {
+                            Log.d(TAG, "Skipping non-matching show: $title")
+                            continue
+                        }
+
                         // Try multiple selectors for poster URL
                         var posterUrl = item.select("img").attr("src")
                             .ifEmpty { item.select("img").attr("data-src") }
@@ -278,6 +331,12 @@ object WebSearchScraper {
                         val title = item.select(".SSh3").text()
 
                         if (title.isEmpty()) continue
+
+                        // AUDIT FIX #10: Filter out irrelevant results
+                        if (!titleMatchesQuery(title, query)) {
+                            Log.d(TAG, "Skipping non-matching movie: $title")
+                            continue
+                        }
 
                         // Try multiple selectors for poster URL
                         var posterUrl = item.select("img").attr("src")

@@ -181,6 +181,17 @@ abstract class AppDatabase : RoomDatabase() {
          * - Removes data consistency risks from dual writes
          * - Simplifies dependency management (single database instance)
          * - Prepares for atomic transactions in future migrations
+         *
+         * ⚠️ AUDIT FIX #9: KNOWN LIMITATION - Playback History Not Auto-Migrated
+         * User Impact: "Continue Watching" history will be reset after app update
+         *
+         * Justification:
+         * 1. Playback position is ephemeral data (users expect to resume from current position)
+         * 2. Old FarsilandDatabase is a separate file that would require complex data merging
+         * 3. Risk of data corruption from merging incomplete/inconsistent databases
+         * 4. isCompleted status can be regenerated from watchlist entries
+         *
+         * Alternative considered: Manual migration tool (rejected due to complexity vs benefit)
          */
         private val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(database: SupportSQLiteDatabase) {

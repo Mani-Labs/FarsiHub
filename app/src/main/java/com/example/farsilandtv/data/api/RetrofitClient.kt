@@ -26,9 +26,12 @@ object RetrofitClient {
     /**
      * User-Agent header to mimic browser requests
      * Some WordPress sites may block requests without proper User-Agent
+     *
+     * AUDIT FIX #8: Updated to Chrome 131 (January 2025)
+     * Previous: Chrome 120 (December 2023) - outdated, may be flagged by anti-bot systems
      */
     private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     /**
      * Moshi instance for JSON parsing
@@ -44,9 +47,16 @@ object RetrofitClient {
      * HTTP Cache configuration
      * Cache size: 10MB
      * Cache location: app cache directory
+     *
+     * AUDIT FIX #3: Safe initialization with null check
      */
     private val httpCache: Cache by lazy {
-        val cacheDir = File(FarsilandApp.instance.cacheDir, "http_cache")
+        val appInstance = FarsilandApp.instance
+            ?: throw IllegalStateException(
+                "FarsilandApp.instance is null. Ensure Application.onCreate() has completed before initializing RetrofitClient."
+            )
+
+        val cacheDir = File(appInstance.cacheDir, "http_cache")
         val cacheSize = 10L * 1024 * 1024 // 10 MB
         Cache(cacheDir, cacheSize)
     }
@@ -148,23 +158,29 @@ object RetrofitClient {
             .addInterceptor { chain ->
                 var request = chain.request()
 
-                // Check if network is available (modern API for Android 6.0+)
+                // AUDIT FIX #3: Safe access to Application instance with null check
                 val isNetworkAvailable = try {
-                    val connectivityManager = FarsilandApp.instance.getSystemService(
-                        android.content.Context.CONNECTIVITY_SERVICE
-                    ) as android.net.ConnectivityManager
-
-                    // Use modern API (Android M+)
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                        val activeNetwork = connectivityManager.activeNetwork
-                        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
-                        capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                    val appInstance = FarsilandApp.instance
+                    if (appInstance == null) {
+                        android.util.Log.w("RetrofitClient", "Application instance not available, assuming network is available")
+                        true // Fail gracefully - assume network available
                     } else {
-                        // Fallback for older devices (API < 23)
-                        @Suppress("DEPRECATION")
-                        val activeNetworkInfo = connectivityManager.activeNetworkInfo
-                        @Suppress("DEPRECATION")
-                        activeNetworkInfo?.isConnectedOrConnecting == true
+                        val connectivityManager = appInstance.getSystemService(
+                            android.content.Context.CONNECTIVITY_SERVICE
+                        ) as android.net.ConnectivityManager
+
+                        // Use modern API (Android M+)
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                            val activeNetwork = connectivityManager.activeNetwork
+                            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+                            capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                        } else {
+                            // Fallback for older devices (API < 23)
+                            @Suppress("DEPRECATION")
+                            val activeNetworkInfo = connectivityManager.activeNetworkInfo
+                            @Suppress("DEPRECATION")
+                            activeNetworkInfo?.isConnectedOrConnecting == true
+                        }
                     }
                 } catch (e: Exception) {
                     true // Assume network available if check fails
@@ -227,19 +243,44 @@ object RetrofitClient {
     /**
      * Update the timestamp of last network fetch
      * Called when we get fresh data from the server (CACHE MISS)
+     *
+     * AUDIT FIX #3: Safe access with null check
      */
     private fun updateLastFetchTimestamp() {
-        val prefs = FarsilandApp.instance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
-        prefs.edit().putLong("last_fetch_time", System.currentTimeMillis()).apply()
-        android.util.Log.d("HTTP_CACHE", "Updated last fetch timestamp")
+        try {
+            val appInstance = FarsilandApp.instance
+            if (appInstance == null) {
+                android.util.Log.w("RetrofitClient", "Cannot update fetch timestamp - Application instance not available")
+                return
+            }
+
+            val prefs = appInstance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
+            prefs.edit().putLong("last_fetch_time", System.currentTimeMillis()).apply()
+            android.util.Log.d("HTTP_CACHE", "Updated last fetch timestamp")
+        } catch (e: Exception) {
+            android.util.Log.e("RetrofitClient", "Error updating fetch timestamp: ${e.message}")
+        }
     }
 
     /**
      * Get the timestamp of last network fetch
      * @return Timestamp in milliseconds, or 0 if never fetched
+     *
+     * AUDIT FIX #3: Safe access with null check
      */
     fun getLastFetchTimestamp(): Long {
-        val prefs = FarsilandApp.instance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
-        return prefs.getLong("last_fetch_time", 0L)
+        return try {
+            val appInstance = FarsilandApp.instance
+            if (appInstance == null) {
+                android.util.Log.w("RetrofitClient", "Cannot get fetch timestamp - Application instance not available")
+                return 0L
+            }
+
+            val prefs = appInstance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
+            prefs.getLong("last_fetch_time", 0L)
+        } catch (e: Exception) {
+            android.util.Log.e("RetrofitClient", "Error getting fetch timestamp: ${e.message}")
+            0L
+        }
     }
 }
