@@ -48,6 +48,9 @@ interface CachedMovieDao {
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
     // Query is automatically sanitized by FTS4 tokenizer
     // @SkipQueryVerification: FTS4 virtual table is created via migration, not Room entity
+    // TODO: Fix FTS4 compilation errors - Room kapt can't validate FTS queries at compile time
+    // TEMPORARILY DISABLED - using fallback search instead
+    /*
     @androidx.room.SkipQueryVerification
     @Query("""
         SELECT m.* FROM cached_movies m
@@ -55,6 +58,11 @@ interface CachedMovieDao {
         WHERE cached_movies_fts MATCH :query
         ORDER BY m.dateAdded DESC
     """)
+    fun searchMovies(query: String): Flow<List<CachedMovie>>
+    */
+
+    // Fallback search using LIKE (slower but works)
+    @Query("SELECT * FROM cached_movies WHERE title LIKE '%' || :query || '%' ORDER BY dateAdded DESC")
     fun searchMovies(query: String): Flow<List<CachedMovie>>
 
     @Query("SELECT COUNT(*) FROM cached_movies")
@@ -118,6 +126,9 @@ interface CachedSeriesDao {
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
     // Query is automatically sanitized by FTS4 tokenizer
     // @SkipQueryVerification: FTS4 virtual table is created via migration, not Room entity
+    // TODO: Fix FTS4 compilation errors - Room kapt can't validate FTS queries at compile time
+    // TEMPORARILY DISABLED - using fallback search instead
+    /*
     @androidx.room.SkipQueryVerification
     @Query("""
         SELECT s.* FROM cached_series s
@@ -125,6 +136,11 @@ interface CachedSeriesDao {
         WHERE cached_series_fts MATCH :query
         ORDER BY s.dateAdded DESC
     """)
+    fun searchSeries(query: String): Flow<List<CachedSeries>>
+    */
+
+    // Fallback search using LIKE (slower but works)
+    @Query("SELECT * FROM cached_series WHERE title LIKE '%' || :query || '%' ORDER BY dateAdded DESC")
     fun searchSeries(query: String): Flow<List<CachedSeries>>
 
     @Query("SELECT COUNT(*) FROM cached_series")
@@ -190,6 +206,9 @@ interface CachedEpisodeDao {
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
     // Query is automatically sanitized by FTS4 tokenizer
     // @SkipQueryVerification: FTS4 virtual table is created via migration, not Room entity
+    // TODO: Fix FTS4 compilation errors - Room kapt can't validate FTS queries at compile time
+    // TEMPORARILY DISABLED - using fallback search instead
+    /*
     @androidx.room.SkipQueryVerification
     @Query("""
         SELECT e.* FROM cached_episodes e
@@ -197,6 +216,11 @@ interface CachedEpisodeDao {
         WHERE cached_episodes_fts MATCH :query
         ORDER BY e.dateAdded DESC
     """)
+    fun searchEpisodes(query: String): Flow<List<CachedEpisode>>
+    */
+
+    // Fallback search using LIKE (slower but works)
+    @Query("SELECT * FROM cached_episodes WHERE title LIKE '%' || :query || '%' OR seriesTitle LIKE '%' || :query || '%' ORDER BY dateAdded DESC")
     fun searchEpisodes(query: String): Flow<List<CachedEpisode>>
 
     @Query("SELECT COUNT(*) FROM cached_episodes")
