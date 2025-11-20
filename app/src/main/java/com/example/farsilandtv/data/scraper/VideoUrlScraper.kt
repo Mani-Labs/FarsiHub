@@ -347,6 +347,7 @@ object VideoUrlScraper {
 
     /**
      * Fetch video URL from DooPlay API endpoint
+     * AUDIT FIX #12: Wrapped in .use {} to prevent resource leaks on exceptions
      */
     private suspend fun fetchFromDooPlayAPI(apiUrl: String, serverNum: Int): List<VideoUrl> = withContext(Dispatchers.IO) {
         try {
@@ -355,57 +356,60 @@ object VideoUrlScraper {
                 .get()
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            // AUDIT FIX #12: Use 'use' to ensure response is always closed, even if reading fails
+            val result: List<VideoUrl> = httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
+                    // Problem: contentLength = -1 for chunked encoding, so header check fails
+                    // Solution: Read with hard 5MB limit regardless of Content-Length header
+                    val body = response.body ?: return@use emptyList()
 
-            if (response.isSuccessful) {
-                // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
-                // Problem: contentLength = -1 for chunked encoding, so header check fails
-                // Solution: Read with hard 5MB limit regardless of Content-Length header
-                val body = response.body ?: run {
-                    response.close()
-                    return@withContext emptyList()
+                    // Step 1: Fast fail for known large sizes (via Content-Length header)
+                    val contentLength = body.contentLength()
+                    if (contentLength > 5_000_000) {
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                        return@use emptyList()
+                    }
+
+                    // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
+                    val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
+                    val source = body.source()
+                    val buffer = okio.Buffer()
+                    var totalRead = 0L
+
+                    try {
+                        while (totalRead < maxBytes) {
+                            val bytesRead = source.read(buffer, maxBytes - totalRead)
+                            if (bytesRead == -1L) break // End of stream
+                            totalRead += bytesRead
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w(TAG, "Error reading response stream", e)
+                        return@use emptyList()
+                    }
+
+                    // If we hit the limit and there's more data, reject it
+                    if (totalRead >= maxBytes && !source.exhausted()) {
+                        android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
+                        return@use emptyList()
+                    }
+
+                    val bodyString = buffer.readUtf8()
+
+                    android.util.Log.d(TAG, "API Response (server $serverNum): ${bodyString.take(500)}")
+
+                    // Parse JSON response
+                    // Expected format: {"embed_url": "https://...", "type": "iframe"}
+                    // Or direct: {"type": "mp4", "url": "https://...mp4"}
+                    extractUrlsFromDooPlayResponse(bodyString, serverNum)
+                } else {
+                    android.util.Log.d(TAG, "API returned HTTP ${response.code} for server $serverNum")
+                    emptyList()
                 }
+            }
 
-                // Step 1: Fast fail for known large sizes (via Content-Length header)
-                val contentLength = body.contentLength()
-                if (contentLength > 5_000_000) {
-                    android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
-                    response.close()
-                    return@withContext emptyList()
-                }
-
-                // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
-                val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
-                val source = body.source()
-                val buffer = okio.Buffer()
-                var totalRead = 0L
-
-                while (totalRead < maxBytes) {
-                    val bytesRead = source.read(buffer, maxBytes - totalRead)
-                    if (bytesRead == -1L) break // End of stream
-                    totalRead += bytesRead
-                }
-
-                // If we hit the limit and there's more data, reject it
-                if (totalRead >= maxBytes && !source.exhausted()) {
-                    android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
-                    response.close()
-                    return@withContext emptyList()
-                }
-
-                val bodyString = buffer.readUtf8()
-                response.close()
-
-                android.util.Log.d(TAG, "API Response (server $serverNum): ${bodyString.take(500)}")
-
-                // Parse JSON response
-                // Expected format: {"embed_url": "https://...", "type": "iframe"}
-                // Or direct: {"type": "mp4", "url": "https://...mp4"}
-                val mp4Urls = extractUrlsFromDooPlayResponse(bodyString, serverNum)
-                return@withContext mp4Urls
-            } else {
-                android.util.Log.d(TAG, "API returned HTTP ${response.code} for server $serverNum")
-                response.close()
+            if (result.isNotEmpty()) {
+                return@withContext result
             }
 
         } catch (e: Exception) {
@@ -1109,6 +1113,7 @@ object VideoUrlScraper {
 
     /**
      * POST fileid to /get/ endpoint to get both mirror URLs (d1 and d2)
+     * AUDIT FIX #12: Wrapped in .use {} to prevent resource leaks on exceptions
      */
     private suspend fun postToGetEndpoint(fileid: String): List<String> = withContext(Dispatchers.IO) {
         try {
@@ -1124,67 +1129,72 @@ object VideoUrlScraper {
                 .post(formBody)
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            // AUDIT FIX #12: Use 'use' to ensure response is always closed, even if reading fails
+            val result: List<String> = httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
+                    // Problem: contentLength = -1 for chunked encoding, so header check fails
+                    // Solution: Read with hard 5MB limit regardless of Content-Length header
+                    val body = response.body ?: return@use emptyList()
 
-            if (response.isSuccessful) {
-                // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
-                // Problem: contentLength = -1 for chunked encoding, so header check fails
-                // Solution: Read with hard 5MB limit regardless of Content-Length header
-                val body = response.body ?: run {
-                    response.close()
-                    return@withContext emptyList()
-                }
-
-                // Step 1: Fast fail for known large sizes (via Content-Length header)
-                val contentLength = body.contentLength()
-                if (contentLength > 5_000_000) {
-                    android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
-                    response.close()
-                    return@withContext emptyList()
-                }
-
-                // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
-                val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
-                val source = body.source()
-                val buffer = okio.Buffer()
-                var totalRead = 0L
-
-                while (totalRead < maxBytes) {
-                    val bytesRead = source.read(buffer, maxBytes - totalRead)
-                    if (bytesRead == -1L) break // End of stream
-                    totalRead += bytesRead
-                }
-
-                // If we hit the limit and there's more data, reject it
-                if (totalRead >= maxBytes && !source.exhausted()) {
-                    android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
-                    response.close()
-                    return@withContext emptyList()
-                }
-
-                val responseBody = buffer.readUtf8()
-                response.close()
-
-                android.util.Log.d(TAG, "Got response from /get/ (length: ${responseBody.length})")
-
-                // Extract ALL MP4 URLs from response (both d1 and d2 mirrors)
-                // SECURITY: Use timeout-protected regex execution
-                val mp4Regex = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
-                val matches = SecureRegex.findAllWithTimeout(mp4Regex, responseBody)
-                val urls = matches.map { it.value }.distinct().toList()
-
-                if (urls.isNotEmpty()) {
-                    android.util.Log.d(TAG, "Found ${urls.size} MP4 URLs in response:")
-                    urls.forEachIndexed { index, url ->
-                        android.util.Log.d(TAG, "  [$index] $url")
+                    // Step 1: Fast fail for known large sizes (via Content-Length header)
+                    val contentLength = body.contentLength()
+                    if (contentLength > 5_000_000) {
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                        return@use emptyList()
                     }
-                    return@withContext urls
-                }
 
-                android.util.Log.w(TAG, "No MP4 URLs found in /get/ response")
-            } else {
-                android.util.Log.w(TAG, "POST to /get/ failed: HTTP ${response.code}")
-                response.close()
+                    // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
+                    val maxBytes = 5L * 1024 * 1024 // 5MB hard limit
+                    val source = body.source()
+                    val buffer = okio.Buffer()
+                    var totalRead = 0L
+
+                    try {
+                        while (totalRead < maxBytes) {
+                            val bytesRead = source.read(buffer, maxBytes - totalRead)
+                            if (bytesRead == -1L) break // End of stream
+                            totalRead += bytesRead
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w(TAG, "Error reading response stream", e)
+                        return@use emptyList()
+                    }
+
+                    // If we hit the limit and there's more data, reject it
+                    if (totalRead >= maxBytes && !source.exhausted()) {
+                        android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
+                        return@use emptyList()
+                    }
+
+                    val responseBody = buffer.readUtf8()
+
+                    android.util.Log.d(TAG, "Got response from /get/ (length: ${responseBody.length})")
+
+                    // Extract ALL MP4 URLs from response (both d1 and d2 mirrors)
+                    // SECURITY: Use timeout-protected regex execution
+                    val mp4Regex = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
+                    val matches = SecureRegex.findAllWithTimeout(mp4Regex, responseBody)
+                    val urls = matches.map { it.value }.distinct().toList()
+
+                    if (urls.isNotEmpty()) {
+                        android.util.Log.d(TAG, "Found ${urls.size} MP4 URLs in response:")
+                        urls.forEachIndexed { index, url ->
+                            android.util.Log.d(TAG, "  [$index] $url")
+                        }
+                        return@use urls
+                    }
+
+                    android.util.Log.w(TAG, "No MP4 URLs found in /get/ response")
+                    emptyList()
+                } else {
+                    android.util.Log.w(TAG, "POST to /get/ failed: HTTP ${response.code}")
+                    emptyList()
+                }
+            }
+
+            if (result.isNotEmpty()) {
+                return@withContext result
             }
 
         } catch (e: Exception) {
@@ -1197,6 +1207,7 @@ object VideoUrlScraper {
     /**
      * Follow a redirect URL to get the final video URL
      * Uses POST method as the form requires
+     * AUDIT FIX #12: Wrapped in .use {} to prevent resource leaks on exceptions
      */
     private suspend fun followRedirect(redirectUrl: String): String = withContext(Dispatchers.IO) {
         try {
@@ -1210,80 +1221,89 @@ object VideoUrlScraper {
                 .post(emptyBody)
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            // AUDIT FIX #12: Use 'use' to ensure response is always closed
+            val result: String = httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    // Get the final URL after following redirects
+                    val finalUrl = response.request.url.toString()
+                    android.util.Log.d(TAG, "POST redirect final URL: $finalUrl")
 
-            if (response.isSuccessful) {
-                // Get the final URL after following redirects
-                val finalUrl = response.request.url.toString()
-                android.util.Log.d(TAG, "POST redirect final URL: $finalUrl")
+                    // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
+                    val responseBody = response.body?.let { body ->
+                        // Step 1: Fast fail for known large sizes
+                        val contentLength = body.contentLength()
+                        if (contentLength > 5_000_000) {
+                            android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                            return@let null
+                        }
 
-                // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
-                val responseBody = response.body?.let { body ->
-                    // Step 1: Fast fail for known large sizes
-                    val contentLength = body.contentLength()
-                    if (contentLength > 5_000_000) {
-                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
-                        return@let null
+                        // Step 2: BOUNDED READ - Read max 5MB
+                        val maxBytes = 5L * 1024 * 1024
+                        val source = body.source()
+                        val buffer = okio.Buffer()
+                        var totalRead = 0L
+
+                        try {
+                            while (totalRead < maxBytes) {
+                                val bytesRead = source.read(buffer, maxBytes - totalRead)
+                                if (bytesRead == -1L) break
+                                totalRead += bytesRead
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.w(TAG, "Error reading response stream", e)
+                            return@let null
+                        }
+
+                        if (totalRead >= maxBytes && !source.exhausted()) {
+                            android.util.Log.w(TAG, "Response exceeded 5MB limit")
+                            return@let null
+                        }
+
+                        buffer.readUtf8()
+                    } ?: ""
+
+                    // If final URL is different from redirect URL, it worked
+                    if (finalUrl != redirectUrl && finalUrl.contains(".mp4", ignoreCase = true)) {
+                        return@use finalUrl
                     }
 
-                    // Step 2: BOUNDED READ - Read max 5MB
-                    val maxBytes = 5L * 1024 * 1024
-                    val source = body.source()
-                    val buffer = okio.Buffer()
-                    var totalRead = 0L
+                    // Otherwise, try to extract URL from response body (JavaScript or HTML)
+                    if (responseBody.contains(".mp4", ignoreCase = true)) {
+                        android.util.Log.d(TAG, "Searching for MP4 URL in POST response body...")
+                        android.util.Log.d(TAG, "Response body (first 500 chars): ${responseBody.take(500)}")
 
-                    while (totalRead < maxBytes) {
-                        val bytesRead = source.read(buffer, maxBytes - totalRead)
-                        if (bytesRead == -1L) break
-                        totalRead += bytesRead
-                    }
+                        // Look for MP4 URLs in various formats
+                        val patterns = listOf(
+                            Regex("""https?://[^\s"'<>()]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE), // Standard URL
+                            Regex("""['"]([^'"]*\.mp4[^'"]*)['"]""", RegexOption.IGNORE_CASE), // Quoted string
+                            Regex("""location\.href\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE), // JavaScript redirect
+                            Regex("""window\.location\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE), // Window location
+                            Regex("""src\s*[:=]\s*['"]([^'"]*\.mp4[^'"]*)['"]""", RegexOption.IGNORE_CASE) // src attribute
+                        )
 
-                    if (totalRead >= maxBytes && !source.exhausted()) {
-                        android.util.Log.w(TAG, "Response exceeded 5MB limit")
-                        return@let null
-                    }
-
-                    buffer.readUtf8()
-                } ?: ""
-
-                response.close()
-
-                // If final URL is different from redirect URL, it worked
-                if (finalUrl != redirectUrl && finalUrl.contains(".mp4", ignoreCase = true)) {
-                    return@withContext finalUrl
-                }
-
-                // Otherwise, try to extract URL from response body (JavaScript or HTML)
-                if (responseBody.contains(".mp4", ignoreCase = true)) {
-                    android.util.Log.d(TAG, "Searching for MP4 URL in POST response body...")
-                    android.util.Log.d(TAG, "Response body (first 500 chars): ${responseBody.take(500)}")
-
-                    // Look for MP4 URLs in various formats
-                    val patterns = listOf(
-                        Regex("""https?://[^\s"'<>()]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE), // Standard URL
-                        Regex("""['"]([^'"]*\.mp4[^'"]*)['"]""", RegexOption.IGNORE_CASE), // Quoted string
-                        Regex("""location\.href\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE), // JavaScript redirect
-                        Regex("""window\.location\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE), // Window location
-                        Regex("""src\s*[:=]\s*['"]([^'"]*\.mp4[^'"]*)['"]""", RegexOption.IGNORE_CASE) // src attribute
-                    )
-
-                    for (pattern in patterns) {
-                        val match = pattern.find(responseBody)
-                        if (match != null) {
-                            val url = if (match.groupValues.size > 1) match.groupValues[1] else match.value
-                            if (url.contains(".mp4", ignoreCase = true)) {
-                                android.util.Log.d(TAG, "Found MP4 URL via pattern: $url")
-                                return@withContext url.trim().removeSurrounding("\"", "\"").removeSurrounding("'", "'")
+                        for (pattern in patterns) {
+                            val match = pattern.find(responseBody)
+                            if (match != null) {
+                                val url = if (match.groupValues.size > 1) match.groupValues[1] else match.value
+                                if (url.contains(".mp4", ignoreCase = true)) {
+                                    android.util.Log.d(TAG, "Found MP4 URL via pattern: $url")
+                                    return@use url.trim().removeSurrounding("\"", "\"").removeSurrounding("'", "'")
+                                }
                             }
                         }
                     }
-                }
 
-                return@withContext finalUrl
+                    finalUrl
+                } else {
+                    android.util.Log.w(TAG, "POST redirect failed: HTTP ${response.code}")
+                    ""
+                }
             }
 
-            android.util.Log.w(TAG, "POST redirect failed: HTTP ${response.code}")
-            response.close()
+            if (result.isNotEmpty()) {
+                return@withContext result
+            }
+
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Error following redirect", e)
         }

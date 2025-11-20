@@ -54,6 +54,17 @@ abstract class ContentDatabase : RoomDatabase() {
             android.util.Log.d("ContentDatabase", "getDatabase() called - Requested: ${source.displayName} ($databaseName)")
             android.util.Log.d("ContentDatabase", "Current instance: $currentDatabaseName")
 
+            // AUDIT FIX #13: Prevent ANR - check main thread BEFORE synchronized block
+            // If database doesn't exist and we're on main thread, fail fast instead of blocking
+            val dbFile = context.applicationContext.getDatabasePath(databaseName)
+            if (!dbFile.exists() && android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                throw IllegalStateException(
+                    "Database not initialized. Cannot copy database from assets on Main Thread (would cause ANR). " +
+                    "Database must be pre-initialized in Application.onCreate() on background thread. " +
+                    "Current source: ${source.displayName} ($databaseName)"
+                )
+            }
+
             // Use single synchronized block to prevent double-lock deadlock (Bug #1 fix)
             return synchronized(this) {
                 // Check if database source changed (inside synchronized block for thread safety)
@@ -99,16 +110,12 @@ abstract class ContentDatabase : RoomDatabase() {
                         // Issue: createFromAsset() copies as read-only, causing permission errors
                         // Solution: Copy manually BEFORE Room opens it, set writable immediately
 
+                        // Get database file path (main thread check already done before synchronized block)
                         val dbFile = context.applicationContext.getDatabasePath(databaseName)
 
-                        // AUDIT FIX #1: Check for main thread and warn (database copy is I/O intensive)
-                        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper() && !dbFile.exists()) {
-                            android.util.Log.w("ContentDatabase",
-                                "WARNING: Database initialization on main thread may cause ANR. " +
-                                "Consider pre-initializing in Application.onCreate() on background thread.")
-                        }
-
                         // If database doesn't exist, copy from assets with writable permissions
+                        // AUDIT FIX #1/#13: Database copy only happens here, and main thread is blocked
+                        // before entering synchronized block (see line 60-66)
                         if (!dbFile.exists()) {
                             android.util.Log.i("ContentDatabase", "Database doesn't exist, copying from assets...")
                             copyDatabaseFromAssets(context.applicationContext, assetPath, dbFile)
@@ -170,7 +177,7 @@ abstract class ContentDatabase : RoomDatabase() {
          * Switch to a different database source
          * Returns true if database was switched
          *
-         * AUDIT FIX #2: Safe database switching with error handling
+         * AUDIT FIX #2/#14: Safe database switching with error handling + race condition fix
          * Note: Caller should clear ContentRepository caches after switching
          * Example: contentRepository.clearCache()
          *
@@ -183,7 +190,8 @@ abstract class ContentDatabase : RoomDatabase() {
             if (currentSource != source) {
                 android.util.Log.i("ContentDatabase", "Switching database from ${currentSource.displayName} to ${source.displayName}")
 
-                // Close database FIRST with error handling
+                // AUDIT FIX #14: Atomic operation - close + update preferences in same synchronized block
+                // Prevents race condition where getDatabase() sees null but reads old preference
                 synchronized(this) {
                     try {
                         INSTANCE?.close()
@@ -195,12 +203,12 @@ abstract class ContentDatabase : RoomDatabase() {
                     }
                     INSTANCE = null
                     currentDatabaseName = null
+
+                    // Update preferences INSIDE synchronized block for atomicity
+                    dbPrefs.setDatabaseSource(source)
                 }
 
-                // THEN update preferences
-                dbPrefs.setDatabaseSource(source)
-
-                // AUTO-SYNC: Trigger sync for the newly selected database
+                // AUTO-SYNC: Trigger sync OUTSIDE synchronized block (don't hold lock during network I/O)
                 android.util.Log.i("ContentDatabase", "Database switched to ${source.displayName} - triggering auto-sync")
                 triggerSyncForSource(context, source)
 

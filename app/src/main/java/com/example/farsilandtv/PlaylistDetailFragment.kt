@@ -1,4 +1,5 @@
 package com.example.farsilandtv
+import coil.imageLoader
 import coil.load
 
 import android.content.Intent
@@ -103,22 +104,27 @@ class PlaylistDetailFragment : DetailsSupportFragment() {
             R.drawable.default_background
         )
 
-        // Load cover image if available using Coil
+        // AUDIT FIX #11: Load cover image using ImageRequest (fixes K2 compiler crash + efficiency)
+        // Issue: imageView.load with nested target{} lambda causes K2 compiler crash
+        // Fix: Use ImageRequest.Builder with direct enqueue - more efficient, no dummy ImageView
         if (!playlist.coverImageUrl.isNullOrEmpty()) {
-            val imageView = android.widget.ImageView(requireContext())
-            imageView.load(playlist.coverImageUrl) {
-                size(512, 512)
-                crossfade(300)
-                target(
-                    onSuccess = { drawable ->
-                        // Convert drawable to bitmap for background
-                        val bitmap = (drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-                        if (bitmap != null) {
-                            detailsBackground.coverBitmap = bitmap
-                        }
+            val request = coil.request.ImageRequest.Builder(requireContext())
+                .data(playlist.coverImageUrl)
+                .size(512, 512)
+                .crossfade(300)
+                .target { drawable ->
+                    // Update row image
+                    detailsRow.imageDrawable = drawable
+
+                    // Update background
+                    val bitmap = (drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                    if (bitmap != null) {
+                        detailsBackground.coverBitmap = bitmap
                     }
-                )
-            }
+                }
+                .build()
+
+            requireContext().imageLoader.enqueue(request)
         }
 
         // Setup actions
