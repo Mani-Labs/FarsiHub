@@ -369,13 +369,10 @@ class VideoPlayerActivity : AppCompatActivity() {
                 mapOf("Referer" to referer)
             )
 
-        // Initialize 100MB disk cache for video segments
-        val cacheSize = 100L * 1024 * 1024 // 100MB cache
-        cache = SimpleCache(
-            File(cacheDir, "exoplayer_cache"),
-            LeastRecentlyUsedCacheEvictor(cacheSize),
-            StandaloneDatabaseProvider(this)
-        )
+        // EXTERNAL AUDIT FIX S2: Use singleton cache from Application
+        // Cache is initialized on background thread in Application.onCreate()
+        // This eliminates 50-120ms main thread I/O block during player initialization
+        cache = FarsilandApp.videoCache
 
         // Wrap HTTP data source with cache for faster quality switches and replays
         val cacheDataSourceFactory = CacheDataSource.Factory()
