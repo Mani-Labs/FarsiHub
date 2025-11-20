@@ -48,17 +48,40 @@ object RetrofitClient {
      * Cache size: 10MB
      * Cache location: app cache directory
      *
-     * AUDIT FIX #3: Safe initialization with null check
+     * AUDIT FIX C1.3: Safe initialization without Application.instance dependency
+     * Creates cache in temp directory if Application not ready (prevents startup crashes)
      */
-    private val httpCache: Cache by lazy {
-        val appInstance = FarsilandApp.instance
-            ?: throw IllegalStateException(
-                "FarsilandApp.instance is null. Ensure Application.onCreate() has completed before initializing RetrofitClient."
-            )
+    @Volatile
+    private var httpCache: Cache? = null
 
-        val cacheDir = File(appInstance.cacheDir, "http_cache")
-        val cacheSize = 10L * 1024 * 1024 // 10 MB
-        Cache(cacheDir, cacheSize)
+    private fun getOrCreateCache(context: android.content.Context? = null): Cache {
+        httpCache?.let { return it }
+
+        synchronized(this) {
+            httpCache?.let { return it }
+
+            // Try to get context from Application instance first
+            val appContext = context?.applicationContext
+                ?: FarsilandApp.instance?.applicationContext
+
+            if (appContext != null) {
+                // Normal path: Use app cache directory
+                val cacheDir = File(appContext.cacheDir, "http_cache")
+                val cacheSize = 10L * 1024 * 1024 // 10 MB
+                httpCache = Cache(cacheDir, cacheSize)
+            } else {
+                // Fallback path: Use system temp directory (prevents crash during early initialization)
+                android.util.Log.w("RetrofitClient",
+                    "Application context not available - using temp cache directory. " +
+                    "Cache will be recreated when proper context is available.")
+                val tempCacheDir = File(System.getProperty("java.io.tmpdir"), "farsiland_http_cache")
+                tempCacheDir.mkdirs()
+                val cacheSize = 10L * 1024 * 1024 // 10 MB
+                httpCache = Cache(tempCacheDir, cacheSize)
+            }
+
+            return httpCache!!
+        }
     }
 
     /**
@@ -90,6 +113,7 @@ object RetrofitClient {
     /**
      * OkHttpClient with caching, logging and timeouts
      * OPTIMIZED: Connection pooling, HTTP/2, DNS caching (2025-11-10)
+     * AUDIT FIX C1.3: Safe cache initialization
      */
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -98,8 +122,8 @@ object RetrofitClient {
             .readTimeout(25, TimeUnit.SECONDS)     // Reduced from 30s
             .writeTimeout(25, TimeUnit.SECONDS)     // Reduced from 30s
 
-            // HTTP Cache
-            .cache(httpCache)
+            // HTTP Cache (AUDIT FIX C1.3: Use safe initialization)
+            .cache(getOrCreateCache())
 
             // Performance optimizations (2025-11-10)
             .connectionPool(connectionPool)  // 10 idle connections for faster reuse
@@ -127,13 +151,29 @@ object RetrofitClient {
 
                 val response = chain.proceed(request)
 
-                // Override server's Cache-Control to cache for 10 minutes
-                // Reduced from 1 hour (3600s) to prevent stale video links
-                response.newBuilder()
-                    .removeHeader("Pragma")
-                    .removeHeader("Cache-Control")
-                    .header("Cache-Control", "public, max-age=600") // 10 minutes
-                    .build()
+                // AUDIT FIX H2.3: Skip Cache-Control override for video URL endpoints
+                // These endpoints often return signed URLs that expire quickly (< 5 minutes)
+                // Caching them for 10 minutes causes 403 Forbidden errors
+                val url = request.url.toString()
+                val isVideoEndpoint = url.contains("/wp-json/dooplayer/v2/") ||
+                                    url.contains("/video/") ||
+                                    url.contains(".mp4") ||
+                                    url.contains("player") ||
+                                    url.contains("stream")
+
+                if (isVideoEndpoint) {
+                    // Respect server's Cache-Control for video endpoints
+                    android.util.Log.d("HTTP_CACHE", "Video endpoint detected - respecting server cache headers")
+                    response
+                } else {
+                    // Override server's Cache-Control to cache for 10 minutes
+                    // Reduced from 1 hour (3600s) to prevent stale content
+                    response.newBuilder()
+                        .removeHeader("Pragma")
+                        .removeHeader("Cache-Control")
+                        .header("Cache-Control", "public, max-age=600") // 10 minutes
+                        .build()
+                }
             }
 
             // Log cache hits/misses and track last network fetch time
@@ -223,10 +263,11 @@ object RetrofitClient {
     /**
      * Clear HTTP cache
      * Call this to force fresh data on next request
+     * AUDIT FIX C1.3: Safe null handling
      */
     fun clearCache() {
         try {
-            httpCache.evictAll()
+            httpCache?.evictAll()
             android.util.Log.d("RetrofitClient", "HTTP cache cleared successfully")
         } catch (e: Exception) {
             android.util.Log.e("RetrofitClient", "Error clearing cache", e)

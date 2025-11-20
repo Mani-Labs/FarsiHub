@@ -125,7 +125,11 @@ object ImageLoader {
      * - No loading delay when user navigates
      * - Images already in cache
      *
+     * AUDIT FIX C1.1: Now accepts lifecycle-aware CoroutineScope to prevent memory leaks
+     * Caller MUST pass lifecycleScope or viewModelScope
+     *
      * @param context Android context
+     * @param scope Lifecycle-aware CoroutineScope (lifecycleScope or viewModelScope)
      * @param currentPosition Current focused position
      * @param totalItems Total number of items in list
      * @param imageUrlProvider Function that returns image URL for a position
@@ -135,6 +139,7 @@ object ImageLoader {
      */
     fun preloadAdjacentImages(
         context: Context,
+        scope: CoroutineScope,
         currentPosition: Int,
         totalItems: Int,
         imageUrlProvider: (Int) -> String?,
@@ -145,7 +150,8 @@ object ImageLoader {
         val loader = getImageLoader(context)
 
         // Preload items in range [currentPosition - 3, currentPosition + 3]
-        CoroutineScope(Dispatchers.IO).launch {
+        // AUDIT FIX C1.1: Use provided lifecycle-aware scope instead of creating new one
+        scope.launch(Dispatchers.IO) {
             for (offset in -preloadRange..preloadRange) {
                 val position = currentPosition + offset
 
@@ -177,13 +183,18 @@ object ImageLoader {
      * - Featured carousel (preload next slide)
      * - Detail screens (preload related content)
      *
+     * AUDIT FIX C1.1: Now accepts lifecycle-aware CoroutineScope to prevent memory leaks
+     * Caller MUST pass lifecycleScope or viewModelScope
+     *
      * @param context Android context
+     * @param scope Lifecycle-aware CoroutineScope (lifecycleScope or viewModelScope)
      * @param imageUrl Image URL to preload
      * @param width Target width
      * @param height Target height
      */
     fun preloadImage(
         context: Context,
+        scope: CoroutineScope,
         imageUrl: String?,
         width: Int = 1920,
         height: Int = 1080
@@ -192,7 +203,8 @@ object ImageLoader {
 
         val loader = getImageLoader(context)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        // AUDIT FIX C1.1: Use provided lifecycle-aware scope instead of creating new one
+        scope.launch(Dispatchers.IO) {
             val request = ImageRequest.Builder(context)
                 .data(imageUrl)
                 .size(width, height)

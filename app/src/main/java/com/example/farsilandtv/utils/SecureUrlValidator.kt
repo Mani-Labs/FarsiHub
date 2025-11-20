@@ -42,6 +42,16 @@ object SecureUrlValidator {
     )
 
     /**
+     * AUDIT FIX M3.1: Whitelist of trusted domains that only support HTTP
+     * Some Iranian CDNs or private servers may not have valid SSL certificates
+     * These domains are allowed to use HTTP as a fallback
+     */
+    private val HTTP_ALLOWED_DOMAINS: Set<String> = setOf(
+        // Add specific HTTP-only trusted domains here as needed
+        // Example: "cdn.example.ir", "legacy-server.example.com"
+    )
+
+    /**
      * Check if URL uses HTTPS protocol
      *
      * @param url URL to validate
@@ -105,12 +115,34 @@ object SecureUrlValidator {
     }
 
     /**
+     * AUDIT FIX M3.1: Check if HTTP is allowed for this domain
+     * Some trusted domains may only support HTTP (no valid SSL cert)
+     *
+     * @param url URL to check
+     * @return true if HTTP is allowed for this domain
+     */
+    fun isHttpAllowed(url: String): Boolean {
+        return try {
+            val parsedUrl = URL(url)
+            val host = parsedUrl.host.lowercase()
+
+            // Check if domain is in HTTP whitelist
+            HTTP_ALLOWED_DOMAINS.any { allowedDomain: String ->
+                host == allowedDomain || host.endsWith(".$allowedDomain")
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
      * Normalize HTTP URL to HTTPS (safe upgrade)
      *
+     * AUDIT FIX M3.1: Added fallback for HTTP-only trusted domains
      * Only upgrades URLs from trusted domains. Unknown domains are rejected.
      *
      * @param url URL to normalize
-     * @return HTTPS URL if upgrade is safe, null if URL should be rejected
+     * @return HTTPS URL if upgrade is safe, HTTP URL if domain is in HTTP whitelist, null if URL should be rejected
      */
     fun normalizeToHttps(url: String): String? {
         // Already HTTPS - return as-is
@@ -122,6 +154,12 @@ object SecureUrlValidator {
         if (!url.startsWith("http://", ignoreCase = true)) {
             Log.w(TAG, "Invalid URL scheme: $url")
             return null
+        }
+
+        // AUDIT FIX M3.1: Check if HTTP is explicitly allowed for this domain
+        if (isHttpAllowed(url)) {
+            Log.d(TAG, "HTTP allowed for whitelisted domain: $url")
+            return url  // Return HTTP URL as-is
         }
 
         // Upgrade to HTTPS

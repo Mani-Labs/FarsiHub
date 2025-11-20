@@ -19,7 +19,8 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // Support ARM devices like Nvidia Shield
+        // AUDIT FIX M3.4: Moved ABI filters to buildTypes (different filters for debug/release)
+        // Default: Include all ABIs for debug builds (emulator support)
         ndk {
             abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
         }
@@ -35,6 +36,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
+            // AUDIT FIX M3.4: Remove x86/x64 from release builds (50% smaller native libs)
+            // Android TV devices are exclusively ARM-based (x86/x64 only for emulator)
+            ndk {
+                abiFilters.clear()
+                abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))
+            }
         }
     }
 
