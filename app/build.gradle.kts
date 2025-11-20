@@ -10,12 +10,12 @@ plugins {
 
 android {
     namespace = "com.example.farsilandtv"
-    compileSdk = 36
+    compileSdk = 36  // Required by androidx.core:1.17.0 - cannot downgrade
 
     defaultConfig {
         applicationId = "com.example.farsilandtv"
         minSdk = 28  // Android 9 - supports most Android TV devices including Nvidia Shield
-        targetSdk = 36
+        targetSdk = 34  // Stable runtime behavior (separate from compileSdk)
         versionCode = 1
         versionName = "1.0"
 

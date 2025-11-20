@@ -89,7 +89,9 @@ class MainActivity : FragmentActivity() {
             var attempts = 0
             val maxAttempts = 120 // 2 minutes max (120 * 1000ms)
 
-            while (!prefs.getBoolean("content_db_initialized", false) && attempts < maxAttempts) {
+            while (!prefs.getBoolean("content_db_initialized", false) &&
+                   !prefs.getBoolean("content_db_error", false) &&
+                   attempts < maxAttempts) {
                 delay(1000) // Check every second
                 attempts++
 
@@ -106,9 +108,18 @@ class MainActivity : FragmentActivity() {
                         .replace(R.id.main_browse_fragment, HomeFragment())
                         .commitNow()
                 }
+            } else if (prefs.getBoolean("content_db_error", false)) {
+                // Fatal error - show permanent error message
+                val errorMsg = prefs.getString("content_db_error_message", "Unknown error")
+                timestampView?.text = "FATAL: Database corrupted. Clear app data: Settings → Apps → FarsiPlex → Storage → Clear Data"
+                Toast.makeText(
+                    this@MainActivity,
+                    "Database error: $errorMsg",
+                    Toast.LENGTH_LONG
+                ).show()
             } else {
                 // Timeout - show error
-                timestampView?.text = "Database initialization failed. Please restart the app."
+                timestampView?.text = "Database initialization timed out. Please restart the app."
                 Toast.makeText(
                     this@MainActivity,
                     "Database initialization timed out",

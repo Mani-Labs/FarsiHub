@@ -117,11 +117,12 @@ object RetrofitClient {
 
                 val response = chain.proceed(request)
 
-                // Override server's Cache-Control to cache for 1 hour
+                // Override server's Cache-Control to cache for 10 minutes
+                // Reduced from 1 hour (3600s) to prevent stale video links
                 response.newBuilder()
                     .removeHeader("Pragma")
                     .removeHeader("Cache-Control")
-                    .header("Cache-Control", "public, max-age=3600") // 1 hour
+                    .header("Cache-Control", "public, max-age=600") // 10 minutes
                     .build()
             }
 

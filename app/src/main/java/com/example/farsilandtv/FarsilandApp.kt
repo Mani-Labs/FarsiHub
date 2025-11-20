@@ -90,11 +90,11 @@ class FarsilandApp : Application() {
                 } catch (e: Exception) {
                     Log.e(TAG, "CRITICAL: Content database initialization failed: ${e.message}", e)
 
-                    // P2 FIX: Issue #13 - Force process restart instead of risky in-place recovery
-                    // Previous code: delete() → immediate re-open() → unstable if delete failed or connection leaked
-                    // Fixed: Delete files, restart process for clean slate (Android will recreate from assets)
+                    // CRITICAL FIX: Removed boot loop - DO NOT call killProcess() in recovery
+                    // Previous code would cause infinite restart loop if DB init kept failing
+                    // New approach: Mark DB as failed, let MainActivity show permanent error screen
                     try {
-                        Log.w(TAG, "Attempting database recovery: deleting corrupted files and restarting app")
+                        Log.w(TAG, "Attempting database recovery: deleting corrupted files")
                         withContext(Dispatchers.IO) {
                             // Delete all database files
                             val dbPath = applicationContext.getDatabasePath("content.db")
@@ -107,17 +107,21 @@ class FarsilandApp : Application() {
 
                             Log.i(TAG, "Database cleanup: main=$deletedMain, wal=$deletedWal, shm=$deletedShm")
 
-                            // Don't mark as initialized - next launch will recreate from assets
-                            // Force process restart for clean state
+                            // Mark DB initialization as permanently failed
                             withContext(Dispatchers.Main) {
-                                Log.i(TAG, "Restarting app process for clean database initialization...")
-                                android.os.Process.killProcess(android.os.Process.myPid())
+                                prefs.edit()
+                                    .putBoolean("content_db_initialized", false)
+                                    .putBoolean("content_db_error", true)
+                                    .putString("content_db_error_message", e.message ?: "Unknown error")
+                                    .apply()
+
+                                Log.e(TAG, "Database initialization failed. User must clear app data or reinstall.")
                             }
                         }
                     } catch (recoveryError: Exception) {
                         Log.e(TAG, "FATAL: Database recovery failed completely", recoveryError)
                         Log.e(TAG, "User must manually clear app data: Settings → Apps → FarsiPlex → Clear Data")
-                        // Process will likely be unstable - let Android handle the crash
+                        // Don't crash - let app continue and show error in MainActivity
                     }
                 }
             }
