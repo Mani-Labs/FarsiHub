@@ -38,7 +38,7 @@ class PlaylistDetailFragment : DetailsSupportFragment() {
     private var playlistId: Long = -1
     private var playlist: Playlist? = null
     private val playlistRepo by lazy { PlaylistRepository(requireContext()) }
-    private val contentRepo by lazy { ContentRepository(requireContext()) }
+    private val contentRepo by lazy { ContentRepository.getInstance(requireContext()) }
 
     private lateinit var detailsBackground: DetailsSupportFragmentBackgroundController
     private lateinit var presenterSelector: ClassPresenterSelector
@@ -207,7 +207,7 @@ class PlaylistDetailFragment : DetailsSupportFragment() {
         lifecycleScope.launch {
             val cardPresenter = GenreCardPresenter(requireContext())
             val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-            val repository = ContentRepository(requireContext())
+            val repository = ContentRepository.getInstance(requireContext())
 
             items.forEach { item ->
                 try {

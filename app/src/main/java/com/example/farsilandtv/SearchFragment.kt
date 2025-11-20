@@ -50,7 +50,7 @@ class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResu
         super.onCreate(savedInstanceState)
         Log.i(TAG, "SearchFragment onCreate")
 
-        repository = ContentRepository(requireContext())
+        repository = ContentRepository.getInstance(requireContext())
         watchlistRepo = WatchlistRepository(requireContext())
         viewModel = ViewModelProvider(this)[MainViewModel::class.java]
 

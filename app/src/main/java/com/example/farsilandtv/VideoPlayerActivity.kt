@@ -2,6 +2,7 @@ package com.example.farsilandtv
 
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -30,6 +31,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.datasource.cache.SimpleCache
@@ -55,6 +57,8 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     // M6 FIX: Network monitoring during playback
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    // EXTERNAL AUDIT FIX C4.3: Track registration status to prevent double-registration
+    private var isNetworkCallbackRegistered = false
     private val connectivityManager by lazy {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
@@ -110,8 +114,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         try {
             setContentView(R.layout.activity_video_player)
 
-            // Initialize repository
-            repository = ContentRepository(this)
+            // EXTERNAL AUDIT FIX S1: Use singleton getInstance() for cache persistence
+            repository = ContentRepository.getInstance(this)
 
             // H4 FIX: Fail-fast validation of required intent extras
             // Extract all intent extras first
@@ -178,8 +182,9 @@ class VideoPlayerActivity : AppCompatActivity() {
             // Setup back press handler
             onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    // Save current position before leaving
-                    saveCurrentPosition()
+                    // EXTERNAL AUDIT FIX C2.1: Use forceSync=true to prevent race condition
+                    // Without this, lifecycleScope.launch could fire while finish() is executing
+                    saveCurrentPosition(forceSync = true)
                     // Navigate back to previous activity
                     finish()
                 }
@@ -226,6 +231,74 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * EXTERNAL AUDIT FIX C2.2: Handle new intents when Activity is already running (singleTop)
+     *
+     * Problem: With launchMode="singleTop", clicking another video while player is open
+     *          delivers intent to existing instance via onNewIntent(), not onCreate()
+     * Result: New video request is ignored, player continues playing old video
+     * Solution: Update intent and re-initialize player with new content
+     */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+
+        if (intent == null) return
+
+        Log.d(TAG, "onNewIntent() - New video request received while player is open")
+
+        // Update the activity's intent so getIntent() returns the new one
+        setIntent(intent)
+
+        // Save current position before switching videos
+        saveCurrentPosition(forceSync = true)
+
+        // Stop current playback
+        player?.stop()
+
+        // Extract new content data from intent
+        contentType = intent.getStringExtra("CONTENT_TYPE") ?: "movie"
+        contentId = intent.getIntExtra("CONTENT_ID", 0)
+        contentTitle = intent.getStringExtra("CONTENT_TITLE") ?: "Unknown"
+        contentUrl = intent.getStringExtra("CONTENT_URL") ?: ""
+        contentPosterUrl = intent.getStringExtra("CONTENT_POSTER_URL")
+
+        if (contentType == "episode") {
+            seriesId = intent.getIntExtra("SERIES_ID", 0)
+            seasonNumber = intent.getIntExtra("EPISODE_SEASON", 0)
+            episodeNumber = intent.getIntExtra("EPISODE_NUMBER", 0)
+        }
+
+        // Validate required data
+        if (contentUrl.isEmpty() || contentId == 0) {
+            Toast.makeText(this, "Error: Invalid video request", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "onNewIntent: Missing required data - contentUrl=$contentUrl, contentId=$contentId")
+            return
+        }
+
+        Log.d(TAG, "onNewIntent: Switching to new video - $contentType: $contentTitle")
+
+        // Check if quality was pre-selected
+        val selectedVideoUrl = intent.getStringExtra("SELECTED_VIDEO_URL")
+        val selectedQuality = intent.getStringExtra("SELECTED_VIDEO_QUALITY")
+
+        if (selectedVideoUrl != null && selectedQuality != null) {
+            currentVideoUrl = selectedVideoUrl
+            availableQualities = listOf(
+                VideoUrl(
+                    url = selectedVideoUrl,
+                    quality = selectedQuality,
+                    fileSizeMb = null,
+                    mirror = null
+                )
+            )
+            currentQualityIndex = 0
+            loadSavedPosition(selectedVideoUrl)
+        } else {
+            // Fetch new video URLs and start playback
+            fetchVideoUrlsAndPlay()
+        }
+    }
+
     private fun setupQualityButton() {
         // Find the quality button from the custom controls
         playerView.findViewById<View>(R.id.quality_button)?.setOnClickListener {
@@ -236,8 +309,15 @@ class VideoPlayerActivity : AppCompatActivity() {
     /**
      * M6 FIX: Register network callback to monitor connectivity during playback
      * Notifies user when network drops, preventing silent infinite buffering
+     * EXTERNAL AUDIT FIX C4.3: Check registration flag to prevent double-registration
      */
     private fun registerNetworkCallback() {
+        // EXTERNAL AUDIT FIX C4.3: Prevent double-registration memory leak
+        if (isNetworkCallbackRegistered) {
+            Log.d(TAG, "Network callback already registered, skipping")
+            return
+        }
+
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onLost(network: Network) {
                 // Network disconnected during playback
@@ -267,9 +347,11 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         try {
             connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
+            isNetworkCallbackRegistered = true  // EXTERNAL AUDIT FIX C4.3: Mark as registered
             Log.d(TAG, "Network callback registered successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register network callback", e)
+            isNetworkCallbackRegistered = false  // EXTERNAL AUDIT FIX C4.3: Mark as failed
         }
     }
 
@@ -356,6 +438,30 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                 override fun onPlayerError(error: PlaybackException) {
                     Log.e(TAG, "Playback error", error)
+
+                    // EXTERNAL AUDIT FIX C2.5: Detect HTTP errors and clear cache to prevent caching error responses
+                    val cause = error.cause
+                    if (cause is HttpDataSource.InvalidResponseCodeException) {
+                        val statusCode = cause.responseCode
+                        Log.e(TAG, "HTTP error detected: $statusCode - clearing cache to prevent caching error response")
+
+                        // Clear cache for this video to prevent repeated errors from cached bad response
+                        cache?.let {
+                            try {
+                                // Remove all cache keys - ExoPlayer will rebuild cache on next load
+                                val keys = it.keys
+                                for (key in keys) {
+                                    it.removeResource(key)
+                                }
+                                Log.d(TAG, "Cache cleared after HTTP error $statusCode")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to clear cache after HTTP error", e)
+                            }
+                        }
+
+                        showError("HTTP error $statusCode: ${cause.message}")
+                        return
+                    }
 
                     // Try CDN mirror fallback if not already tried
                     if (!hasTriedMirror && currentVideoUrl.contains("d1.flnd.buzz")) {
@@ -681,7 +787,11 @@ class VideoPlayerActivity : AppCompatActivity() {
     /**
      * Save current playback position to database
      */
-    private fun saveCurrentPosition() {
+    /**
+     * EXTERNAL AUDIT FIX C2.1: Add forceSync parameter to eliminate race condition
+     * @param forceSync If true, always use runBlocking (e.g., on back press)
+     */
+    private fun saveCurrentPosition(forceSync: Boolean = false) {
         synchronized(positionSaveLock) {
             try {
                 val currentPlayer = player ?: return
@@ -690,11 +800,13 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                 if (duration <= 0) return // Skip if duration not available yet
 
-                // H6 FIX: Use runBlocking during destruction to ensure position is saved
-                // before Activity is destroyed. GlobalScope would outlive Activity lifecycle,
-                // causing potential crashes and memory leaks.
+                // H6 FIX + EXTERNAL AUDIT FIX C2.1: Use runBlocking when:
+                // 1. Activity is finishing/destroyed (isDestroying)
+                // 2. Caller explicitly requests sync (forceSync=true) - e.g., back press
+                // This prevents the race condition where lifecycleScope.launch fires
+                // but finish() executes before the DB write completes
                 val isDestroying = isFinishing || isDestroyed
-                if (isDestroying) {
+                if (isDestroying || forceSync) {
                     // Use runBlocking to ensure synchronous execution before Activity death
                     // This is acceptable here because:
                     // 1. It's during destruction (user is leaving anyway)
@@ -896,12 +1008,81 @@ class VideoPlayerActivity : AppCompatActivity() {
         Log.d(TAG, "Player and cache released in onStop()")
     }
 
+    /**
+     * EXTERNAL AUDIT FIX C2.3: Save state to Bundle for process death recovery
+     *
+     * Problem: Android kills background processes when RAM is low
+     * Result: User loses playback position if they leave app and Android reclaims memory
+     * Solution: Persist critical state to Bundle which survives process death
+     */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+
+        player?.let {
+            outState.putLong("playback_position", it.currentPosition)
+            outState.putString("video_url", currentVideoUrl)
+            outState.putBoolean("was_playing", it.isPlaying)
+            outState.putInt("quality_index", currentQualityIndex)
+        }
+
+        // Save content metadata
+        outState.putInt("content_id", contentId)
+        outState.putString("content_type", contentType)
+        outState.putString("content_title", contentTitle)
+        outState.putString("content_url", contentUrl)
+        outState.putString("content_poster_url", contentPosterUrl)
+
+        if (contentType == "episode") {
+            outState.putInt("series_id", seriesId)
+            outState.putInt("season_number", seasonNumber)
+            outState.putInt("episode_number", episodeNumber)
+        }
+
+        Log.d(TAG, "State saved to Bundle for process death recovery - position=${player?.currentPosition}ms")
+    }
+
+    /**
+     * EXTERNAL AUDIT FIX C2.3: Restore state from Bundle after process death
+     */
+    private fun restoreStateFromBundle(savedInstanceState: Bundle) {
+        val position = savedInstanceState.getLong("playback_position", 0L)
+        val videoUrl = savedInstanceState.getString("video_url", "")
+        val wasPlaying = savedInstanceState.getBoolean("was_playing", false)
+        val qualityIndex = savedInstanceState.getInt("quality_index", 0)
+
+        // Restore content metadata
+        contentId = savedInstanceState.getInt("content_id", contentId)
+        contentType = savedInstanceState.getString("content_type", contentType)
+        contentTitle = savedInstanceState.getString("content_title", contentTitle)
+        contentUrl = savedInstanceState.getString("content_url", contentUrl)
+        contentPosterUrl = savedInstanceState.getString("content_poster_url", contentPosterUrl)
+
+        if (contentType == "episode") {
+            seriesId = savedInstanceState.getInt("series_id", seriesId)
+            seasonNumber = savedInstanceState.getInt("season_number", seasonNumber)
+            episodeNumber = savedInstanceState.getInt("episode_number", episodeNumber)
+        }
+
+        if (videoUrl.isNotEmpty() && position > 0) {
+            Log.d(TAG, "Restoring playback from Bundle after process death: position=${position}ms, url=$videoUrl")
+
+            savedPlaybackState = PlaybackState(
+                position = position,
+                videoUrl = videoUrl,
+                wasPlaying = wasPlaying
+            )
+            currentQualityIndex = qualityIndex
+        }
+    }
+
     override fun onStart() {
         super.onStart()
-        // P0 FIX: Issue #1 - Restore player and cache if released in onStop()
-        // This handles the case when user returns after pressing Home button
+        // EXTERNAL AUDIT FIX S4: Wrap in try-catch to prevent crash on storage errors
+        try {
+            // P0 FIX: Issue #1 - Restore player and cache if released in onStop()
+            // This handles the case when user returns after pressing Home button
 
-        if (player == null && savedPlaybackState != null) {
+            if (player == null && savedPlaybackState != null) {
             Log.d(TAG, "Re-initializing player after onStop(), restoring state")
 
             // Re-initialize player and cache
@@ -924,6 +1105,11 @@ class VideoPlayerActivity : AppCompatActivity() {
 
             Log.d(TAG, "Player restored: position=${state.position}ms, playing=${state.wasPlaying}")
         }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onStart() - failed to restore player", e)
+            Toast.makeText(this, "Error restoring playback: ${e.message}", Toast.LENGTH_SHORT).show()
+            // Don't crash - just log the error and continue
+        }
     }
 
     override fun onDestroy() {
@@ -937,15 +1123,18 @@ class VideoPlayerActivity : AppCompatActivity() {
         saveCurrentPosition()
 
         // M6 FIX: Unregister network callback to prevent memory leak
+        // EXTERNAL AUDIT FIX C4.3: Clear registration flag after unregister
         networkCallback?.let {
             try {
                 connectivityManager.unregisterNetworkCallback(it)
+                isNetworkCallbackRegistered = false  // EXTERNAL AUDIT FIX C4.3: Mark as unregistered
                 Log.d(TAG, "Network callback unregistered")
             } catch (e: Exception) {
                 Log.e(TAG, "Error unregistering network callback", e)
             }
         }
         networkCallback = null
+        isNetworkCallbackRegistered = false  // EXTERNAL AUDIT FIX C4.3: Ensure flag is cleared
 
         // Defensive cleanup (player and cache should already be null from onStop)
         player?.release()

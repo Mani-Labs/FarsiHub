@@ -36,7 +36,7 @@ class FarsiPlexSyncWorker(
 
     private val contentDb = ContentDatabase.getDatabase(context)
     private val farsiPlexApi = FarsiPlexApiService(RetrofitClient.getHttpClient())
-    private val contentRepo = ContentRepository(context)
+    private val contentRepo = ContentRepository.getInstance(context)
     // FIXED: Use same SharedPreferences as SyncSettingsFragment to show sync status
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
 

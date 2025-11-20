@@ -25,7 +25,7 @@ import kotlinx.coroutines.async
  */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = ContentRepository(application.applicationContext)
+    private val repository = ContentRepository.getInstance(application.applicationContext)
 
     // Feature #18: Paging 3 - Unlimited scrolling (replaces 300-item caps)
     // These flows are database-backed and can handle unlimited items efficiently

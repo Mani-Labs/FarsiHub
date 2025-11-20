@@ -28,6 +28,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -39,8 +40,13 @@ import org.jsoup.Jsoup
  * - Queries local ContentDatabase first (fast, offline-capable)
  * - Falls back to WordPress API if data not in database
  * - Still uses scraping for video URLs and episode lists
+ *
+ * EXTERNAL AUDIT FIX S1: Singleton pattern to preserve cache across Activities
+ * Previous issue: ContentRepository(context) instantiated in each Activity/ViewModel
+ * Result: LruCache reset on every navigation (0% cache effectiveness)
+ * Solution: Thread-safe singleton with lazy initialization
  */
-class ContentRepository(context: Context) {
+class ContentRepository private constructor(context: Context) {
 
     private val wordPressApi: WordPressApiService = RetrofitClient.wordPressApi
     private val videoScraper = VideoUrlScraper
@@ -49,6 +55,31 @@ class ContentRepository(context: Context) {
 
     // Store context to get database dynamically (fixes Bug #4: stale database reference)
     private val appContext = context.applicationContext
+
+    companion object {
+        private const val TAG = "ContentRepository"
+        private const val CACHE_TTL_MS = 30_000L // 30 seconds
+
+        // EXTERNAL AUDIT FIX S1: Singleton instance with double-check locking
+        @Volatile
+        private var INSTANCE: ContentRepository? = null
+
+        /**
+         * Get singleton instance of ContentRepository
+         * Thread-safe with double-check locking pattern
+         */
+        fun getInstance(context: Context): ContentRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: ContentRepository(context.applicationContext).also {
+                    INSTANCE = it
+                    Log.d(TAG, "Singleton ContentRepository instance created")
+                }
+            }
+        }
+
+        // EXTERNAL AUDIT FIX C3.4: Pre-compiled Regex for title normalization
+        private val TITLE_NORMALIZER_REGEX = Regex("[^\\p{L}\\p{N}]")
+    }
 
     // Get database instance dynamically to support database switching
     private fun getContentDb(): ContentDatabase {
@@ -62,7 +93,8 @@ class ContentRepository(context: Context) {
     }
 
     // In-memory cache for genres (loaded once)
-    private var genresCache: List<Genre>? = null
+    // EXTERNAL AUDIT FIX S6: Use AtomicReference for thread-safe lazy initialization
+    private val genresCache = AtomicReference<List<Genre>?>(null)
 
     // ========== Source-Aware Response Cache (Performance Optimization) ==========
 
@@ -729,9 +761,10 @@ class ContentRepository(context: Context) {
                  * - Example: "Spider-Man" -> "spiderman", "Spiderman" -> "spiderman" (MATCH!)
                  */
                 fun normalizeTitle(title: String): String {
+                    // EXTERNAL AUDIT FIX C3.4: Use pre-compiled Regex from companion object
                     // Remove ALL special characters AND spaces for aggressive deduplication
                     // This handles: "Spider-Man", "Spider Man", "Spiderman" -> all become "spiderman"
-                    return title.replace(Regex("[^\\p{L}\\p{N}]"), "")
+                    return title.replace(TITLE_NORMALIZER_REGEX, "")
                         .lowercase()
                 }
 
@@ -893,8 +926,8 @@ class ContentRepository(context: Context) {
      */
     suspend fun getGenres(): Result<List<Genre>> = withContext(Dispatchers.IO) {
         try {
-            // Return cached genres if available
-            genresCache?.let { return@withContext Result.success(it) }
+            // Return cached genres if available (EXTERNAL AUDIT FIX S6: Thread-safe access)
+            genresCache.get()?.let { return@withContext Result.success(it) }
 
             // Fetch from API
             val wpGenres = wordPressApi.getGenres(perPage = 100)
@@ -906,7 +939,8 @@ class ContentRepository(context: Context) {
                 )
             }
 
-            genresCache = genres
+            // EXTERNAL AUDIT FIX S6: Thread-safe cache update
+            genresCache.set(genres)
             Result.success(genres)
         } catch (e: Exception) {
             handleApiError("getGenres", e)
@@ -1335,11 +1369,12 @@ class ContentRepository(context: Context) {
         if (genreIds.isEmpty()) return emptyList()
 
         return try {
-            // Get cached genres or fetch from API
-            val genres = genresCache ?: run {
+            // Get cached genres or fetch from API (EXTERNAL AUDIT FIX S6: Thread-safe access)
+            val genres = genresCache.get() ?: run {
                 val wpGenres = wordPressApi.getGenres(perPage = 100)
                 val mapped = wpGenres.map { Genre(it.id, it.name, it.slug) }
-                genresCache = mapped
+                // EXTERNAL AUDIT FIX S6: Thread-safe cache update
+                genresCache.set(mapped)
                 mapped
             }
 
@@ -1645,10 +1680,6 @@ class ContentRepository(context: Context) {
         }
     }
 
-    companion object {
-        private const val TAG = "ContentRepository"
-        private const val CACHE_TTL_MS = 30_000L // 30 seconds
-
-        // AUDIT FIX #17: DATE_FORMATTER removed - replaced with java.time.Instant (thread-safe)
-    }
+    // EXTERNAL AUDIT FIX S1: Companion object moved to top of class with singleton getInstance()
+    // EXTERNAL AUDIT FIX C3.4: Added TITLE_NORMALIZER_REGEX for performance
 }

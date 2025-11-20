@@ -64,21 +64,20 @@ object RetrofitClient {
             val appContext = context?.applicationContext
                 ?: FarsilandApp.instance?.applicationContext
 
-            if (appContext != null) {
-                // Normal path: Use app cache directory
-                val cacheDir = File(appContext.cacheDir, "http_cache")
-                val cacheSize = 10L * 1024 * 1024 // 10 MB
-                httpCache = Cache(cacheDir, cacheSize)
-            } else {
-                // Fallback path: Use system temp directory (prevents crash during early initialization)
-                android.util.Log.w("RetrofitClient",
-                    "Application context not available - using temp cache directory. " +
-                    "Cache will be recreated when proper context is available.")
-                val tempCacheDir = File(System.getProperty("java.io.tmpdir"), "farsiland_http_cache")
-                tempCacheDir.mkdirs()
-                val cacheSize = 10L * 1024 * 1024 // 10 MB
-                httpCache = Cache(tempCacheDir, cacheSize)
+            // EXTERNAL AUDIT FIX C4.2: Remove temp directory fallback for Android 10+ compatibility
+            // Always require valid app context - fail fast if not available
+            if (appContext == null) {
+                throw IllegalStateException(
+                    "Application context not available for cache initialization. " +
+                    "This should not happen as OkHttpClient is lazily initialized. " +
+                    "Temp directory fallback removed for Android 10+ scoped storage compatibility."
+                )
             }
+
+            // Always use app cache directory (Android 10+ compatible)
+            val cacheDir = File(appContext.cacheDir, "http_cache")
+            val cacheSize = 10L * 1024 * 1024 // 10 MB
+            httpCache = Cache(cacheDir, cacheSize)
 
             return httpCache!!
         }

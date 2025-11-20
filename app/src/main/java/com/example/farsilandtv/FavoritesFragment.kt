@@ -36,7 +36,7 @@ class FavoritesFragment : VerticalGridSupportFragment() {
         Log.d(TAG, "onCreate FavoritesFragment")
 
         favoritesRepo = FavoritesRepository(requireContext())
-        contentRepo = ContentRepository(requireContext())
+        contentRepo = ContentRepository.getInstance(requireContext())
 
         setupUI()
         loadFavorites()

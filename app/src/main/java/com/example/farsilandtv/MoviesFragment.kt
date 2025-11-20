@@ -83,7 +83,7 @@ class MoviesFragment : VerticalGridSupportFragment() {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "MoviesFragment onCreate")
 
-        repository = ContentRepository(requireContext())
+        repository = ContentRepository.getInstance(requireContext())
         viewModel = ViewModelProvider(this)[MainViewModel::class.java]
         genrePreferences = GenrePreferences(requireContext())
 

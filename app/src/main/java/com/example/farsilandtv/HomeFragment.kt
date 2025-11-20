@@ -1279,7 +1279,8 @@ class HomeFragment : BrowseSupportFragment() {
             featuredRowAdapter?.add(it)
         }
 
-        val header = HeaderItem(0, "")
+        // UI FIX: Use unique header ID (-1) to avoid conflict with Navigate row (ID 0)
+        val header = HeaderItem(-1, "")
         val featuredRow = ListRow(header, featuredRowAdapter)
 
         // Insert at top (position 0)
