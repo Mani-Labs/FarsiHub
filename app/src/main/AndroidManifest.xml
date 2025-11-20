@@ -37,8 +37,11 @@
         </activity>
         <activity
             android:name=".DetailsActivity"
-            android:exported="false"
-            android:launchMode="singleTop" />
+            android:exported="true"
+            android:launchMode="singleTop">
+            <!-- EXTERNAL AUDIT FIX #5: Enable deep linking for Android TV "Play Next" integration -->
+            <!-- System launcher needs permission to open this activity from home screen -->
+        </activity>
         <activity
             android:name=".PlaybackActivity"
             android:exported="false" />

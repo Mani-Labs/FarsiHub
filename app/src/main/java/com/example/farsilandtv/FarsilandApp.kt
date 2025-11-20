@@ -90,22 +90,24 @@ class FarsilandApp : Application() {
                 } catch (e: Exception) {
                     Log.e(TAG, "CRITICAL: Content database initialization failed: ${e.message}", e)
 
-                    // AUDIT FIX #15: "Zombie State" Prevention
-                    // Issue: Deleting DB and continuing leaves app with empty database
-                    // Fix: Trigger emergency full network sync to rebuild database from API
+                    // AUDIT FIX #15: "Zombie State" Prevention + Database Recovery Safety
+                    // Issue: Deleting DB files while connection is open causes crashes
+                    // Fix: Close database connection BEFORE deletion, use Android's deleteDatabase() API
                     try {
-                        Log.w(TAG, "Attempting database recovery: deleting corrupted files and triggering full sync")
+                        Log.w(TAG, "Attempting database recovery: closing database and deleting corrupted files")
                         withContext(Dispatchers.IO) {
-                            // Delete all corrupted database files
-                            val dbPath = applicationContext.getDatabasePath("content.db")
-                            val walFile = applicationContext.getDatabasePath("content.db-wal")
-                            val shmFile = applicationContext.getDatabasePath("content.db-shm")
+                            // EXTERNAL AUDIT FIX #1: Close database connection before deleting files
+                            // Prevents file locks, crashes, and data corruption from "zombie" state
+                            try {
+                                ContentDatabase.closeDatabase()
+                                Log.i(TAG, "Database instance closed successfully")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Error closing database (may already be closed): ${e.message}")
+                            }
 
-                            val deletedMain = dbPath?.delete() ?: false
-                            val deletedWal = walFile?.delete() ?: false
-                            val deletedShm = shmFile?.delete() ?: false
-
-                            Log.i(TAG, "Database cleanup: main=$deletedMain, wal=$deletedWal, shm=$deletedShm")
+                            // Use Android's deleteDatabase() API - handles .db, .db-wal, .db-shm automatically
+                            val deleted = applicationContext.deleteDatabase("content.db")
+                            Log.i(TAG, "Database cleanup: deleted=$deleted")
 
                             // Mark DB as requiring emergency sync (not permanently failed)
                             withContext(Dispatchers.Main) {
@@ -178,9 +180,9 @@ class FarsilandApp : Application() {
 
         // Optimized constraints for Shield TV
         // DeviceIdle removed - Android TV rarely enters idle mode (especially with screensavers)
+        // EXTERNAL AUDIT FIX #2: Battery constraint removed - Android TV is always plugged in
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
-            .setRequiresBatteryNotLow(true)
             .setRequiresCharging(false)
             .build()
 
@@ -249,9 +251,9 @@ class FarsilandApp : Application() {
 
         // Optimized constraints for Shield TV
         // DeviceIdle removed - Android TV rarely enters idle mode (especially with screensavers)
+        // EXTERNAL AUDIT FIX #2: Battery constraint removed - Android TV is always plugged in
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
-            .setRequiresBatteryNotLow(true)
             .setRequiresCharging(false)
             .build()
 

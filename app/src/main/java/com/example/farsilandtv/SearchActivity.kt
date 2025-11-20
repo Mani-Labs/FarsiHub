@@ -48,6 +48,36 @@ class SearchActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * EXTERNAL AUDIT FIX #4: Handle new search intents when activity is already open
+     *
+     * When launchMode="singleTop", Android delivers new voice search queries via onNewIntent()
+     * instead of creating a new activity instance. Without this override, new search queries
+     * are ignored and the user sees the old search results.
+     *
+     * This fix ensures voice search works correctly when the SearchActivity is already open.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        Log.d(TAG, "New search intent received")
+
+        // Update activity intent to the new one
+        setIntent(intent)
+
+        // Extract search query from new intent
+        val query = intent.getStringExtra(android.app.SearchManager.QUERY)
+
+        if (!query.isNullOrEmpty()) {
+            Log.d(TAG, "Processing new voice search query: $query")
+
+            // Find the SearchFragment and trigger new search
+            val fragment = supportFragmentManager.findFragmentById(R.id.search_fragment_container)
+            if (fragment is SearchFragment) {
+                fragment.setSearchQuery(query, true)
+            }
+        }
+    }
+
     class SearchFragment : SearchSupportFragment(), SearchSupportFragment.SearchResultProvider {
 
         private lateinit var contentRepository: ContentRepository

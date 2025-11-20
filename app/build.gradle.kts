@@ -61,7 +61,8 @@ android {
     }
 
     lint {
-        abortOnError = false // Don't fail build on lint errors (for development)
+        // EXTERNAL AUDIT FIX #3: Enable lint error checking to catch issues early
+        abortOnError = true // Fail build on lint errors to maintain code quality
         checkReleaseBuilds = false
     }
 }
