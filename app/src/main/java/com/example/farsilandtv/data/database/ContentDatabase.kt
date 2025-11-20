@@ -58,9 +58,19 @@ abstract class ContentDatabase : RoomDatabase() {
             return synchronized(this) {
                 // Check if database source changed (inside synchronized block for thread safety)
                 if (currentDatabaseName != null && currentDatabaseName != databaseName) {
-                    // User switched database source - close old instance
+                    // AUDIT FIX #2: Safe database switching - close with error handling
                     android.util.Log.i("ContentDatabase", "Database source changed: $currentDatabaseName → $databaseName")
-                    INSTANCE?.close()
+
+                    // Close old instance safely (may fail if observers still active)
+                    try {
+                        INSTANCE?.close()
+                        android.util.Log.i("ContentDatabase", "Old database instance closed successfully")
+                    } catch (e: Exception) {
+                        android.util.Log.w("ContentDatabase",
+                            "Failed to close old database (observers may still be active): ${e.message}. " +
+                            "Instance will be replaced anyway.")
+                    }
+
                     INSTANCE = null
                     currentDatabaseName = null
                 }
@@ -91,23 +101,17 @@ abstract class ContentDatabase : RoomDatabase() {
 
                         val dbFile = context.applicationContext.getDatabasePath(databaseName)
 
+                        // AUDIT FIX #1: Check for main thread and warn (database copy is I/O intensive)
+                        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper() && !dbFile.exists()) {
+                            android.util.Log.w("ContentDatabase",
+                                "WARNING: Database initialization on main thread may cause ANR. " +
+                                "Consider pre-initializing in Application.onCreate() on background thread.")
+                        }
+
                         // If database doesn't exist, copy from assets with writable permissions
                         if (!dbFile.exists()) {
                             android.util.Log.i("ContentDatabase", "Database doesn't exist, copying from assets...")
-                            try {
-                                dbFile.parentFile?.mkdirs()
-                                context.applicationContext.assets.open(assetPath).use { input ->
-                                    dbFile.outputStream().use { output ->
-                                        input.copyTo(output)
-                                    }
-                                }
-                                // Set writable IMMEDIATELY after copy
-                                dbFile.setWritable(true, false)
-                                android.util.Log.i("ContentDatabase", "Database copied successfully with write permissions")
-                            } catch (e: Exception) {
-                                android.util.Log.e("ContentDatabase", "Error copying database: ${e.message}")
-                                throw e
-                            }
+                            copyDatabaseFromAssets(context.applicationContext, assetPath, dbFile)
                         }
 
                         val instance = Room.databaseBuilder(
@@ -118,54 +122,32 @@ abstract class ContentDatabase : RoomDatabase() {
                             // Don't use createFromAsset - we copied manually above
                             .fallbackToDestructiveMigration()  // For development
                             .addCallback(object : androidx.room.RoomDatabase.Callback() {
-                                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
-                                    super.onCreate(db)
-                                    // CRITICAL FIX: Set write permissions in onCreate callback
-                                    // This runs AFTER Room copies from assets but BEFORE opening WAL mode
-                                    android.util.Log.d("ContentDatabase", "Room onCreate callback - fixing file permissions...")
-
-                                    try {
-                                        // Give database time to flush writes
-                                        Thread.sleep(100)
-
-                                        // Fix main database file
-                                        if (dbFile.exists() && !dbFile.canWrite()) {
-                                            android.util.Log.w("ContentDatabase", "Main DB read-only, fixing: ${dbFile.absolutePath}")
-                                            dbFile.setWritable(true, false)
-                                        }
-
-                                        // Fix WAL file (Write-Ahead Log)
-                                        val walFile = context.applicationContext.getDatabasePath("$databaseName-wal")
-                                        if (walFile.exists() && !walFile.canWrite()) {
-                                            android.util.Log.w("ContentDatabase", "WAL read-only, fixing")
-                                            walFile.setWritable(true, false)
-                                        }
-
-                                        // Fix SHM file (Shared Memory)
-                                        val shmFile = context.applicationContext.getDatabasePath("$databaseName-shm")
-                                        if (shmFile.exists() && !shmFile.canWrite()) {
-                                            android.util.Log.w("ContentDatabase", "SHM read-only, fixing")
-                                            shmFile.setWritable(true, false)
-                                        }
-
-                                        android.util.Log.i("ContentDatabase", "Database permissions fixed in onCreate")
-                                    } catch (e: Exception) {
-                                        android.util.Log.e("ContentDatabase", "Error fixing permissions: ${e.message}")
-                                    }
-                                }
-
                                 override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                                     super.onOpen(db)
-                                    // Also fix on every open (in case files were recreated)
-                                    android.util.Log.d("ContentDatabase", "Room onOpen - double-checking permissions...")
+                                    // AUDIT FIX #6: Reduced permission checks - only verify on open, not every operation
+                                    // WAL/SHM files are created by SQLite after first transaction
+                                    // Permissions are set once during initial copy, this is just verification
+                                    android.util.Log.d("ContentDatabase", "Database opened: $databaseName")
+
+                                    // Only fix permissions if actually read-only (rare case)
                                     try {
-                                        if (dbFile.exists()) dbFile.setWritable(true, false)
                                         val walFile = context.applicationContext.getDatabasePath("$databaseName-wal")
-                                        if (walFile.exists()) walFile.setWritable(true, false)
                                         val shmFile = context.applicationContext.getDatabasePath("$databaseName-shm")
-                                        if (shmFile.exists()) shmFile.setWritable(true, false)
+
+                                        if (dbFile.exists() && !dbFile.canWrite()) {
+                                            android.util.Log.w("ContentDatabase", "Main DB read-only after open, fixing")
+                                            dbFile.setWritable(true, false)
+                                        }
+                                        if (walFile.exists() && !walFile.canWrite()) {
+                                            android.util.Log.w("ContentDatabase", "WAL file read-only, fixing")
+                                            walFile.setWritable(true, false)
+                                        }
+                                        if (shmFile.exists() && !shmFile.canWrite()) {
+                                            android.util.Log.w("ContentDatabase", "SHM file read-only, fixing")
+                                            shmFile.setWritable(true, false)
+                                        }
                                     } catch (e: Exception) {
-                                        android.util.Log.e("ContentDatabase", "onOpen permission fix failed: ${e.message}")
+                                        android.util.Log.e("ContentDatabase", "Permission check failed: ${e.message}")
                                     }
                                 }
                             })
@@ -187,7 +169,11 @@ abstract class ContentDatabase : RoomDatabase() {
         /**
          * Switch to a different database source
          * Returns true if database was switched
-         * Bug #10 fix: Close database BEFORE updating preferences to prevent corruption
+         *
+         * AUDIT FIX #2: Safe database switching with error handling
+         * Note: Caller should clear ContentRepository caches after switching
+         * Example: contentRepository.clearCache()
+         *
          * AUTO-SYNC: Automatically syncs the new database source after switching
          */
         fun switchDatabaseSource(context: Context, source: DatabaseSource): Boolean {
@@ -195,9 +181,18 @@ abstract class ContentDatabase : RoomDatabase() {
             val currentSource = dbPrefs.getCurrentSource()
 
             if (currentSource != source) {
-                // Close database FIRST (Bug #10 fix: prevents file lock/corruption if crash occurs)
+                android.util.Log.i("ContentDatabase", "Switching database from ${currentSource.displayName} to ${source.displayName}")
+
+                // Close database FIRST with error handling
                 synchronized(this) {
-                    INSTANCE?.close()
+                    try {
+                        INSTANCE?.close()
+                        android.util.Log.i("ContentDatabase", "Previous database instance closed")
+                    } catch (e: Exception) {
+                        android.util.Log.w("ContentDatabase",
+                            "Error closing previous database (may have active observers): ${e.message}. " +
+                            "Proceeding with switch anyway.")
+                    }
                     INSTANCE = null
                     currentDatabaseName = null
                 }
@@ -270,6 +265,39 @@ abstract class ContentDatabase : RoomDatabase() {
                 INSTANCE?.close()
                 INSTANCE = null
                 currentDatabaseName = null
+            }
+        }
+
+        /**
+         * AUDIT FIX #1: Extract database copy logic to separate function
+         * Copies database from assets with proper error handling and permissions
+         * Should ideally be called from background thread to avoid ANR
+         */
+        private fun copyDatabaseFromAssets(
+            context: android.content.Context,
+            assetPath: String,
+            dbFile: java.io.File
+        ) {
+            try {
+                dbFile.parentFile?.mkdirs()
+
+                // Use buffered streams for better performance
+                context.assets.open(assetPath).buffered().use { input ->
+                    dbFile.outputStream().buffered().use { output ->
+                        input.copyTo(output, bufferSize = 8192)
+                    }
+                }
+
+                // Set writable IMMEDIATELY after copy
+                dbFile.setWritable(true, false)
+                android.util.Log.i("ContentDatabase", "Database copied successfully with write permissions")
+            } catch (e: Exception) {
+                android.util.Log.e("ContentDatabase", "Error copying database: ${e.message}")
+                // Clean up partial file if copy failed
+                if (dbFile.exists()) {
+                    dbFile.delete()
+                }
+                throw e
             }
         }
     }
