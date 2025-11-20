@@ -39,7 +39,7 @@ fun FarsilandNavHost(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val contentRepository = remember { ContentRepository(context) }
+    val contentRepository = remember { ContentRepository.getInstance(context) }
     val scope = rememberCoroutineScope()
 
     // Shared ViewModel for content

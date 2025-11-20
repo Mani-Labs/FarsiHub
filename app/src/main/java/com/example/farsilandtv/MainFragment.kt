@@ -434,7 +434,7 @@ class MainFragment : BrowseSupportFragment() {
 
             if (switched) {
                 // P2 FIX: Issue #11 - Clear stale cache entries from old source
-                ContentRepository(requireContext()).clearCache()
+                ContentRepository.getInstance(requireContext()).clearCache()
                 Toast.makeText(
                     requireContext(),
                     "Switching to ${newSource.displayName}...",

@@ -37,7 +37,7 @@ class SeriesDetailsActivity : FragmentActivity() {
         setContentView(R.layout.activity_series_details)
 
         // Initialize repository
-        contentRepository = ContentRepository(applicationContext)
+        contentRepository = ContentRepository.getInstance(applicationContext)
 
         // Setup back press handler
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -162,7 +162,7 @@ class SeriesDetailsActivity : FragmentActivity() {
                 // Update database for persistence
                 lifecycleScope.launch {
                     try {
-                        val repository = com.example.farsilandtv.data.repository.ContentRepository(this@SeriesDetailsActivity)
+                        val repository = com.example.farsilandtv.data.repository.ContentRepository.getInstance(this@SeriesDetailsActivity)
                         repository.updateSeriesMetadata(currentSeries.id, seasons.size, totalEpisodes)
                         Log.d(TAG, "Successfully updated series metadata in database")
                     } catch (e: Exception) {

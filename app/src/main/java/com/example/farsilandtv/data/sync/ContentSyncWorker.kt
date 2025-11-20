@@ -39,7 +39,7 @@ class ContentSyncWorker(
 
     private val contentDb = ContentDatabase.getDatabase(context)
     private val wordPressApi = RetrofitClient.wordPressApi
-    private val repository = ContentRepository(context)
+    private val repository = ContentRepository.getInstance(context)
     private val syncPrefs = SyncPreferences(context)
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
 

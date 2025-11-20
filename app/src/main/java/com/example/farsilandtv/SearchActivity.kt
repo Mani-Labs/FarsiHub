@@ -111,7 +111,7 @@ class SearchActivity : FragmentActivity() {
         override fun onCreate(savedInstanceState: Bundle?) {
             super.onCreate(savedInstanceState)
 
-            contentRepository = ContentRepository(requireContext())
+            contentRepository = ContentRepository.getInstance(requireContext())
             searchRepository = SearchRepository(requireContext())
             rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
             setSearchResultProvider(this)
