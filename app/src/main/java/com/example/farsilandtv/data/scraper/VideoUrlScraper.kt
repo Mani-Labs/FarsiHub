@@ -300,7 +300,9 @@ object VideoUrlScraper {
             // Fixed: Return immediately when first server responds with valid URLs, cancel others
             val videoUrls = mutableListOf<VideoUrl>()
 
-            // Use coroutineScope to create scope for async
+            // AUDIT FIX: True first-wins pattern using race condition avoidance
+            // Previous issue: Sequential await() blocked on slow servers even if fast ones completed
+            // Fix: Check completion status before awaiting, process whichever completes first
             coroutineScope {
                 // Launch all 5 API requests in parallel
                 val jobs = (1..5).map { num ->
@@ -311,41 +313,48 @@ object VideoUrlScraper {
                     }
                 }
 
-                // Wait for first non-empty result
+                // Poll jobs until one completes with results
                 var foundResult = false
-                for (job in jobs) {
-                    if (foundResult) {
-                        job.cancel() // Cancel remaining jobs
-                        continue
+                while (!foundResult && jobs.any { it.isActive }) {
+                    for (job in jobs) {
+                        // Only await jobs that have actually completed (non-blocking check)
+                        if (job.isCompleted && !job.isCancelled) {
+                            try {
+                                val (serverNum, urls) = job.await() // Now await is instant
+                                if (urls.isNotEmpty()) {
+                                    videoUrls.addAll(urls)
+                                    foundResult = true
+                                    android.util.Log.d(TAG, "Server $serverNum completed first with ${urls.size} URLs - cancelling slow servers")
+
+                                    // Cancel all remaining jobs
+                                    jobs.forEach { if (it != job) it.cancel() }
+                                    break
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.d(TAG, "Server request failed: ${e.message}")
+                            }
+                        }
                     }
 
-                    try {
-                        val (serverNum, urls) = job.await()
-                        if (urls.isNotEmpty()) {
-                            videoUrls.addAll(urls)
-                            foundResult = true
-                            android.util.Log.d(TAG, "Server $serverNum responded first with ${urls.size} URLs - cancelling remaining requests")
-
-                            // Cancel all remaining jobs
-                            jobs.forEach { if (it != job) it.cancel() }
-                            break
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.d(TAG, "Server request failed or was cancelled: ${e.message}")
+                    // Small delay to avoid tight CPU loop (50ms polling interval)
+                    if (!foundResult && jobs.any { it.isActive }) {
+                        kotlinx.coroutines.delay(50)
                     }
                 }
 
-                // If no server returned results, still try to collect from remaining jobs
+                // If no server returned results, await all remaining jobs as fallback
                 if (!foundResult) {
-                    android.util.Log.d(TAG, "No server returned results on first pass, waiting for remaining...")
+                    android.util.Log.d(TAG, "No fast server found URLs, waiting for all to finish...")
                     for (job in jobs) {
                         try {
-                            val (_, urls) = job.await()
-                            if (urls.isNotEmpty()) {
-                                videoUrls.addAll(urls)
+                            if (!job.isCancelled) {
+                                val (_, urls) = job.await()
+                                if (urls.isNotEmpty()) {
+                                    videoUrls.addAll(urls)
+                                }
                             }
                         } catch (e: Exception) {
-                            // Job was cancelled or failed
+                            // Job failed or was cancelled
                         }
                     }
                 }
@@ -460,8 +469,9 @@ object VideoUrlScraper {
         try {
             // Check for embed_url (jwplayer page)
             // Format: "embed_url":"https:\/\/farsiplex.com\/jwplayer\/?source=..."
+            // AUDIT FIX: Use SecureRegex to prevent ReDoS attacks
             val embedPattern = Regex("""["']embed_url["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            val embedMatch = embedPattern.find(jsonResponse)
+            val embedMatch = SecureRegex.findWithTimeout(embedPattern, jsonResponse)
             if (embedMatch != null) {
                 val embedUrl = embedMatch.groupValues[1]
                     .replace("\\/", "/") // Unescape JSON slashes

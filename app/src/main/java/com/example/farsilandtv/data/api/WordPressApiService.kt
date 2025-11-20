@@ -22,6 +22,7 @@ interface WordPressApiService {
      * @param modifiedAfter Only fetch items modified after this date (ISO 8601 format: "2025-11-12T10:30:00")
      * @param orderBy Sort by: date, title, modified, id (default: date)
      * @param order Sort order: asc, desc (default: desc)
+     * @param embed Include embedded resources (media, author, etc.) - AUDIT FIX: Eliminates N+1 queries
      */
     @GET("movies")
     suspend fun getMovies(
@@ -29,7 +30,8 @@ interface WordPressApiService {
         @Query("page") page: Int = 1,
         @Query("modified_after") modifiedAfter: String? = null,
         @Query("orderby") orderBy: String? = null,
-        @Query("order") order: String? = null
+        @Query("order") order: String? = null,
+        @Query("_embed") embed: Boolean = true
     ): List<WPMovie>
 
     /**
@@ -48,6 +50,7 @@ interface WordPressApiService {
      * @param modifiedAfter Only fetch items modified after this date (ISO 8601 format: "2025-11-12T10:30:00")
      * @param orderBy Sort by: date, title, modified, id
      * @param order Sort order: asc, desc
+     * @param embed Include embedded resources (media, author, etc.) - AUDIT FIX: Eliminates N+1 queries
      */
     @GET("tvshows")
     suspend fun getTvShows(
@@ -55,7 +58,8 @@ interface WordPressApiService {
         @Query("page") page: Int = 1,
         @Query("modified_after") modifiedAfter: String? = null,
         @Query("orderby") orderBy: String? = null,
-        @Query("order") order: String? = null
+        @Query("order") order: String? = null,
+        @Query("_embed") embed: Boolean = true
     ): List<WPTvShow>
 
     /**
@@ -74,6 +78,7 @@ interface WordPressApiService {
      * @param modifiedAfter Only fetch items modified after this date (ISO 8601 format: "2025-11-12T10:30:00")
      * @param orderBy Sort by: date, title, modified, id
      * @param order Sort order: asc, desc
+     * @param embed Include embedded resources (media, author, etc.) - AUDIT FIX: Eliminates N+1 queries
      *
      * Note: WordPress API may not link episodes to series directly.
      * We may need to scrape episode lists from series page HTML.
@@ -84,7 +89,8 @@ interface WordPressApiService {
         @Query("page") page: Int = 1,
         @Query("modified_after") modifiedAfter: String? = null,
         @Query("orderby") orderBy: String? = null,
-        @Query("order") order: String? = null
+        @Query("order") order: String? = null,
+        @Query("_embed") embed: Boolean = true
     ): List<WPEpisode>
 
     /**

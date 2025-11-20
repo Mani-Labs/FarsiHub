@@ -92,7 +92,15 @@ class ContentSyncWorker(
             }
             val movieCount = syncMovies(lastSyncTimestamp)
             val seriesCount = syncSeries(lastSyncTimestamp)
-            val episodeCount = syncEpisodes(lastSyncTimestamp)
+
+            // AUDIT FIX: Skip episode sync if series sync failed
+            // Prevents orphaned episodes with seriesId = 0
+            val episodeCount = if (seriesCount >= 0 && seriesTitleCache != null) {
+                syncEpisodes(lastSyncTimestamp)
+            } else {
+                Log.w(TAG, "Skipping episode sync - series sync failed or cache unavailable")
+                0
+            }
 
             // Phase 2: Sync monitored series (only series user cares about)
             if (isStopped) {
@@ -422,20 +430,17 @@ class ContentSyncWorker(
 
     /**
      * Convert WordPress API models to cached database entities
+     * AUDIT FIX: Uses embedded media to eliminate N+1 network queries
      */
     private suspend fun com.example.farsilandtv.data.models.wordpress.WPMovie.toCachedMovie(): CachedMovie {
         val year = extractYear(this.date)
         val dateAdded = parseDateToTimestamp(this.date)
         val lastUpdatedTimestamp = parseDateToTimestamp(this.modified ?: this.date)
 
-        // Get poster URL
-        val posterUrl = if (this.featuredMedia > 0) {
-            try {
-                wordPressApi.getMedia(this.featuredMedia).sourceUrl
-            } catch (e: Exception) {
-                null
-            }
-        } else null
+        // AUDIT FIX: Get poster URL from embedded media (no network call!)
+        // Previously: wordPressApi.getMedia(this.featuredMedia).sourceUrl (N+1 query)
+        // Now: Extract from _embedded field (included in main response)
+        val posterUrl = this.embedded?.featuredMedia?.firstOrNull()?.sourceUrl
 
         // Extract description
         val description = this.content?.rendered?.let { org.jsoup.Jsoup.parse(it).text() }
@@ -475,13 +480,8 @@ class ContentSyncWorker(
         val dateAdded = parseDateToTimestamp(this.date)
         val lastUpdatedTimestamp = parseDateToTimestamp(this.modified ?: this.date)
 
-        val posterUrl = if (this.featuredMedia > 0) {
-            try {
-                wordPressApi.getMedia(this.featuredMedia).sourceUrl
-            } catch (e: Exception) {
-                null
-            }
-        } else null
+        // AUDIT FIX: Get poster URL from embedded media (no network call!)
+        val posterUrl = this.embedded?.featuredMedia?.firstOrNull()?.sourceUrl
 
         val description = this.content?.rendered?.let { org.jsoup.Jsoup.parse(it).text() }
 
@@ -517,13 +517,8 @@ class ContentSyncWorker(
     private suspend fun com.example.farsilandtv.data.models.wordpress.WPEpisode.toCachedEpisode(): CachedEpisode {
         val description = this.content?.rendered?.let { org.jsoup.Jsoup.parse(it).text() }
 
-        val thumbnailUrl = if (this.featuredMedia > 0) {
-            try {
-                wordPressApi.getMedia(this.featuredMedia).sourceUrl
-            } catch (e: Exception) {
-                null
-            }
-        } else null
+        // AUDIT FIX: Get thumbnail URL from embedded media (no network call!)
+        val thumbnailUrl = this.embedded?.featuredMedia?.firstOrNull()?.sourceUrl
 
         val seasonNum = acf?.get("season")?.toString()?.toIntOrNull() ?: 1
         val episodeNum = acf?.get("episode")?.toString()?.toIntOrNull() ?: 1

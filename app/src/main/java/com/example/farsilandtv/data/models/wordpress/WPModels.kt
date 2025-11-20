@@ -51,7 +51,12 @@ data class WPMovie(
     val modifiedGmt: String?,
 
     @Json(name = "acf")
-    val acf: Map<String, Any>? = null // Custom fields (may contain year, rating, etc.)
+    val acf: Map<String, Any>? = null, // Custom fields (may contain year, rating, etc.)
+
+    // AUDIT FIX: Embedded media data when using _embed=true parameter
+    // Eliminates N+1 network queries by including media in main response
+    @Json(name = "_embedded")
+    val embedded: WPEmbedded? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -84,7 +89,11 @@ data class WPTvShow(
     val modifiedGmt: String?,
 
     @Json(name = "acf")
-    val acf: Map<String, Any>? = null
+    val acf: Map<String, Any>? = null,
+
+    // AUDIT FIX: Embedded media data when using _embed=true parameter
+    @Json(name = "_embedded")
+    val embedded: WPEmbedded? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -114,7 +123,11 @@ data class WPEpisode(
     val modifiedGmt: String?,
 
     @Json(name = "acf")
-    val acf: Map<String, Any>? = null // May contain season/episode numbers
+    val acf: Map<String, Any>? = null, // May contain season/episode numbers
+
+    // AUDIT FIX: Embedded media data when using _embed=true parameter
+    @Json(name = "_embedded")
+    val embedded: WPEmbedded? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -166,4 +179,15 @@ data class WPGenre(
 
     @Json(name = "slug")
     val slug: String
+)
+
+/**
+ * AUDIT FIX: Embedded data container for WordPress _embed parameter
+ * When using ?_embed=true, WordPress includes related resources inline
+ * This eliminates the need for separate N+1 network requests
+ */
+@JsonClass(generateAdapter = true)
+data class WPEmbedded(
+    @Json(name = "wp:featuredmedia")
+    val featuredMedia: List<WPMedia>? = null
 )
