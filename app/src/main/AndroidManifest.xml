@@ -39,8 +39,14 @@
             android:name=".DetailsActivity"
             android:exported="true"
             android:launchMode="singleTop">
-            <!-- EXTERNAL AUDIT FIX #5: Enable deep linking for Android TV "Play Next" integration -->
+            <!-- EXTERNAL AUDIT FIX #5 + AUDIT #3 C1: Enable deep linking for Android TV "Play Next" integration -->
             <!-- System launcher needs permission to open this activity from home screen -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="farsiland" android:host="detail" />
+            </intent-filter>
         </activity>
         <activity
             android:name=".PlaybackActivity"

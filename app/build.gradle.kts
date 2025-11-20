@@ -61,9 +61,12 @@ android {
     }
 
     lint {
-        // EXTERNAL AUDIT FIX #3: Enable lint error checking to catch issues early
+        // EXTERNAL AUDIT FIX #3 + AUDIT #3 M2: Enable lint error checking for all builds
+        // Previous: checkReleaseBuilds = false (skipped ProGuard/R8 validation)
+        // Risk: R8 may strip necessary classes, causing release APK crashes
+        // Fixed: Enable for release builds to catch issues before deployment
         abortOnError = true // Fail build on lint errors to maintain code quality
-        checkReleaseBuilds = false
+        checkReleaseBuilds = true  // AUDIT #3 M2: Enable for release builds
     }
 }
 

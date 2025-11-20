@@ -34,6 +34,17 @@ class FarsilandApp : Application() {
         // Initialize Firebase Crashlytics (M4)
         // initializeCrashlytics()  // DISABLED: Firebase not configured
 
+        // AUDIT #3 C3: Check for emergency sync flag from previous crash
+        val prefs = getSharedPreferences("app_state", MODE_PRIVATE)
+        val needsEmergencySync = prefs.getBoolean("content_db_emergency_sync", false)
+
+        if (needsEmergencySync) {
+            Log.w(TAG, "Emergency sync flag detected - triggering immediate database rebuild")
+            triggerEmergencySync()
+            // Clear flag after triggering
+            prefs.edit().putBoolean("content_db_emergency_sync", false).apply()
+        }
+
         // Initialize content database on first launch
         initializeContentDatabase()
 
@@ -42,6 +53,41 @@ class FarsilandApp : Application() {
 
         // Schedule periodic background sync for FarsiPlex (15 minutes)
         scheduleFarsiPlexSync()
+    }
+
+    /**
+     * Trigger emergency database sync after corruption recovery
+     * Called on cold start when emergency_sync flag is set
+     *
+     * AUDIT #3 C3: Moved from inline code to dedicated function
+     * Runs on fresh process after exitProcess(0) guarantees file handle release
+     */
+    private fun triggerEmergencySync() {
+        val currentSource = com.example.farsilandtv.data.database.DatabasePreferences.getInstance(applicationContext).getCurrentSource()
+
+        when (currentSource) {
+            com.example.farsilandtv.data.database.DatabaseSource.FARSILAND -> {
+                val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.ContentSyncWorker>()
+                    .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    .build()
+                androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                Log.i(TAG, "Emergency Farsiland sync triggered (cold start after crash recovery)")
+            }
+            com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX -> {
+                val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.FarsiPlexSyncWorker>()
+                    .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    .build()
+                androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                Log.i(TAG, "Emergency FarsiPlex sync triggered (cold start after crash recovery)")
+            }
+            com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE -> {
+                Log.e(TAG, "FATAL: Namakade has no API sync. User must reinstall app to restore database.")
+                getSharedPreferences("app_state", MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("content_db_fatal_error", true)
+                    .apply()
+            }
+        }
     }
 
     /**
@@ -109,42 +155,27 @@ class FarsilandApp : Application() {
                             val deleted = applicationContext.deleteDatabase("content.db")
                             Log.i(TAG, "Database cleanup: deleted=$deleted")
 
-                            // Mark DB as requiring emergency sync (not permanently failed)
+                            // AUDIT #3 C3: Mark emergency sync flag and exit immediately
+                            // Previous: Triggered WorkManager sync in same process (risky)
+                            // Issue: File locks on .db-wal/.db-shm may not release without process kill
+                            // Fix: Set flag, exit process, let next cold start handle emergency sync
                             withContext(Dispatchers.Main) {
                                 prefs.edit()
                                     .putBoolean("content_db_initialized", false)
                                     .putBoolean("content_db_error", true)
-                                    .putBoolean("content_db_emergency_sync", true) // NEW: Trigger full sync
+                                    .putBoolean("content_db_emergency_sync", true) // Trigger full sync on next start
                                     .putString("content_db_error_message", e.message ?: "Unknown error")
                                     .apply()
 
-                                Log.w(TAG, "Database deleted. Emergency full sync will be triggered on next launch.")
+                                Log.w(TAG, "Database recovery: Emergency sync flag set")
+                                Log.w(TAG, "Terminating process to release all file handles...")
+                                Log.w(TAG, "Emergency sync will run on next cold start")
                             }
 
-                            // Trigger IMMEDIATE emergency sync to rebuild database from network
-                            val currentSource = com.example.farsilandtv.data.database.DatabasePreferences.getInstance(applicationContext).getCurrentSource()
-                            when (currentSource) {
-                                com.example.farsilandtv.data.database.DatabaseSource.FARSILAND -> {
-                                    val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.ContentSyncWorker>()
-                                        .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                                        .build()
-                                    androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
-                                    Log.i(TAG, "Emergency Farsiland sync triggered")
-                                }
-                                com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX -> {
-                                    val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.FarsiPlexSyncWorker>()
-                                        .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                                        .build()
-                                    androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
-                                    Log.i(TAG, "Emergency FarsiPlex sync triggered")
-                                }
-                                com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE -> {
-                                    Log.e(TAG, "FATAL: Namakade has no API sync. User must reinstall app to restore database.")
-                                    withContext(Dispatchers.Main) {
-                                        prefs.edit().putBoolean("content_db_fatal_error", true).apply()
-                                    }
-                                }
-                            }
+                            // Force app termination to guarantee file handle release
+                            // This ensures .db-wal and .db-shm files are fully released by OS
+                            // Emergency sync will be triggered on next app launch
+                            kotlin.system.exitProcess(0)
                         }
                     } catch (recoveryError: Exception) {
                         Log.e(TAG, "FATAL: Database recovery failed completely", recoveryError)

@@ -151,15 +151,19 @@ object RetrofitClient {
 
                 val response = chain.proceed(request)
 
-                // AUDIT FIX H2.3: Skip Cache-Control override for video URL endpoints
-                // These endpoints often return signed URLs that expire quickly (< 5 minutes)
-                // Caching them for 10 minutes causes 403 Forbidden errors
+                // AUDIT FIX H2.3 + AUDIT #3 C2: Skip Cache-Control override for video URLs AND content pages
+                // Video endpoints: Often return signed URLs that expire quickly (< 5 minutes)
+                // Content pages: Embed video URLs that may expire before cache expires (10 min)
+                // Caching either for 10 minutes causes 403 Forbidden errors
                 val url = request.url.toString()
                 val isVideoEndpoint = url.contains("/wp-json/dooplayer/v2/") ||
                                     url.contains("/video/") ||
                                     url.contains(".mp4") ||
                                     url.contains("player") ||
-                                    url.contains("stream")
+                                    url.contains("stream") ||
+                                    url.contains("/series/") ||   // AUDIT #3 C2: Episode pages embed video URLs
+                                    url.contains("/movies/") ||    // AUDIT #3 C2: Movie pages embed video URLs
+                                    url.contains("/episode/")      // AUDIT #3 C2: Episode pages (alt pattern)
 
                 if (isVideoEndpoint) {
                     // Respect server's Cache-Control for video endpoints

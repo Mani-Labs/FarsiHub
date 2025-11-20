@@ -240,12 +240,25 @@ class ContentSyncWorker(
      * Check if user is actively watching content
      * Don't sync during playback to avoid interruptions
      * @return true if video is playing
+     *
+     * AUDIT #3 P3: Implement real detection using AudioManager
+     * Previous: Hardcoded false, causing network contention during 4K streaming
+     * Fixed: Use AudioManager.isMusicActive (covers video playback)
      */
     private fun isUserActivelyWatching(): Boolean {
-        // Check if VideoPlayerActivity is active
-        // This would require checking activity state or playback position updates
-        // For now, return false (assume not watching)
-        return false
+        return try {
+            val audioManager = applicationContext.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            val isPlaying = audioManager?.isMusicActive ?: false
+
+            if (isPlaying) {
+                Log.d(TAG, "User is actively watching content - skipping sync to avoid buffering")
+            }
+
+            isPlaying
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking playback state: ${e.message}")
+            false // Assume not watching if check fails
+        }
     }
 
     /**
