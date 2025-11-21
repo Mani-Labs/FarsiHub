@@ -4,6 +4,11 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.ForegroundInfo
+import androidx.core.app.NotificationCompat
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 import com.example.farsilandtv.data.database.CachedMovie
 import com.example.farsilandtv.data.database.CachedSeries
 import com.example.farsilandtv.data.database.CachedEpisode
@@ -50,6 +55,47 @@ class ContentSyncWorker(
     // @Volatile ensures visibility across coroutines, prevents TOCTOU race conditions
     @Volatile
     private var seriesTitleCache: Map<String, Int>? = null
+
+    /**
+     * EXTERNAL AUDIT FIX CRITICAL 1.2: Implement getForegroundInfo() for expedited work
+     * Required for Android API 30 and below to prevent IllegalStateException crash
+     *
+     * Issue: Emergency sync uses setExpedited() but doesn't provide foreground info
+     * Impact: Immediate crash on Android 9, 10, 11 (API 28-30) when emergency sync triggers
+     * Fix: Return ForegroundInfo with notification to satisfy OS requirement
+     */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        return createForegroundInfo()
+    }
+
+    private fun createForegroundInfo(): ForegroundInfo {
+        val channelId = "content_sync_channel"
+        val title = "Farsiland Sync"
+        val message = "Syncing content in background..."
+
+        // Create notification channel for Android 8.0+ (API 26+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Content Sync",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Background content synchronization"
+            }
+            val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
+
+        return ForegroundInfo(NOTIFICATION_ID, notification)
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
@@ -635,5 +681,6 @@ class ContentSyncWorker(
         private const val TAG = "ContentSyncWorker"
         const val WORK_NAME = "content_sync_work"
         private const val MAX_RETRY_ATTEMPTS = 5
+        private const val NOTIFICATION_ID = 1001  // Unique ID for sync notification
     }
 }

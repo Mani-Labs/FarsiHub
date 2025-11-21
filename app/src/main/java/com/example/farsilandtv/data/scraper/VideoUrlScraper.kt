@@ -444,6 +444,13 @@ object VideoUrlScraper {
                     }
                 }
 
+                // EXTERNAL AUDIT FIX CRITICAL 1.1: Cancel remaining jobs to exit coroutineScope immediately
+                // Issue: coroutineScope waits for ALL child jobs to complete, even after early break
+                // Impact: If Server 1 responds in 0.5s but Server 5 times out at 20s, user waits 20s
+                // Fix: Cancel all jobs when loop exits (success or timeout) to unblock coroutineScope
+                jobs.forEach { it.cancel() }
+                android.util.Log.d(TAG, "Cancelled remaining server jobs to prevent blocking")
+
                 resultChannel.close()
             }
 

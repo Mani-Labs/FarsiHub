@@ -4,6 +4,11 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.ForegroundInfo
+import androidx.core.app.NotificationCompat
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 import com.example.farsilandtv.data.database.CachedMovie
 import com.example.farsilandtv.data.database.CachedSeries
 import com.example.farsilandtv.data.database.CachedEpisode
@@ -39,6 +44,47 @@ class FarsiPlexSyncWorker(
     private val contentRepo = ContentRepository.getInstance(context)
     // FIXED: Use same SharedPreferences as SyncSettingsFragment to show sync status
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
+
+    /**
+     * EXTERNAL AUDIT FIX CRITICAL 1.2: Implement getForegroundInfo() for expedited work
+     * Required for Android API 30 and below to prevent IllegalStateException crash
+     *
+     * Issue: Emergency sync uses setExpedited() but doesn't provide foreground info
+     * Impact: Immediate crash on Android 9, 10, 11 (API 28-30) when emergency sync triggers
+     * Fix: Return ForegroundInfo with notification to satisfy OS requirement
+     */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        return createForegroundInfo()
+    }
+
+    private fun createForegroundInfo(): ForegroundInfo {
+        val channelId = "farsiplex_sync_channel"
+        val title = "FarsiPlex Sync"
+        val message = "Syncing content in background..."
+
+        // Create notification channel for Android 8.0+ (API 26+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "FarsiPlex Sync",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Background FarsiPlex content synchronization"
+            }
+            val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
+
+        return ForegroundInfo(NOTIFICATION_ID, notification)
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
@@ -251,5 +297,6 @@ class FarsiPlexSyncWorker(
         private const val TAG = "FarsiPlexSyncWorker"
         const val WORK_NAME = "farsiplex_content_sync"
         private const val MAX_RETRY_ATTEMPTS = 5
+        private const val NOTIFICATION_ID = 1002  // Unique ID for FarsiPlex sync notification
     }
 }
