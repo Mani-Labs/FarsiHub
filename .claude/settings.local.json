@@ -1,9 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.gradlew.bat compileDebugKotlin)",
-      "Bash(cmd /c gradlew.bat compileDebugKotlin)",
-      "Bash(git add:*)"
+      "Bash(adb devices:*)",
+      "Bash(./gradlew installDebug:*)",
+      "Bash(adb logcat:*)",
+      "Bash(adb uninstall:*)",
+      "Bash(.gradlew.bat installDebug)",
+      "Bash(timeout 15 adb logcat:*)",
+      "Bash(/tmp/fulllog.txt)",
+      "Bash(adb shell:*)",
+      "Bash(timeout 3 adb logcat:*)",
+      "Bash(git commit:*)",
+      "Bash(./gradlew assembleDebug:*)",
+      "Bash(.\\gradlew.bat assembleDebug:*)",
+      "Bash(timeout 5 adb logcat:*)",
+      "Bash(adb install:*)",
+      "WebFetch(domain:farsiland.com)"
     ],
     "deny": [],
     "ask": []

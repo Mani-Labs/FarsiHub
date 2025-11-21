@@ -32,6 +32,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 
@@ -56,6 +58,13 @@ class ContentRepository private constructor(context: Context) {
 
     // Store context to get database dynamically (fixes Bug #4: stale database reference)
     private val appContext = context.applicationContext
+
+    /**
+     * REFACTOR (2025-11-21): Sync completion trigger for auto-refresh
+     * Emits timestamp when WorkManager sync completes
+     * Triggers Pager invalidation and UI auto-refresh
+     */
+    private val _syncCompletionTrigger = MutableStateFlow(System.currentTimeMillis())
 
     companion object {
         private const val TAG = "ContentRepository"
@@ -175,6 +184,16 @@ class ContentRepository private constructor(context: Context) {
     // ========== Feature #18: Paging 3 Methods (Database-First, Unlimited Items) ==========
 
     /**
+     * REFACTOR (2025-11-21): Trigger Paging auto-refresh after sync completes
+     * Called by WorkManager when background sync finishes
+     * Emits new timestamp to invalidate Pager and refresh UI
+     */
+    fun notifySyncCompleted() {
+        _syncCompletionTrigger.value = System.currentTimeMillis()
+        Log.i(TAG, "Sync completion triggered - Pagers will auto-refresh")
+    }
+
+    /**
      * Get movies with Paging 3 (database-first, unlimited items, REACTIVE)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
@@ -184,13 +203,21 @@ class ContentRepository private constructor(context: Context) {
      * Solution: Observe database source changes and recreate Pager automatically
      * Result: UI updates instantly when user switches sources (no app restart needed)
      *
-     * @return Flow of paged movies from database (auto-updates on source change)
+     * REFACTOR (2025-11-21): Auto-refresh after sync completion
+     * Combines database source changes + sync completion trigger
+     * UI auto-refreshes when WorkManager background sync completes
+     *
+     * @return Flow of paged movies from database (auto-updates on source change + sync)
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getMoviesPaged(): Flow<PagingData<Movie>> {
         val dbPrefs = DatabasePreferences.getInstance(appContext)
 
-        return dbPrefs.observeCurrentSource().flatMapLatest { source ->
+        // Combine database source changes + sync completion trigger
+        // Recreate Pager when EITHER changes (source switch OR sync completes)
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source // Only need source, timestamp just triggers recreation
+        }.flatMapLatest { source ->
             val urlPattern = source.urlPattern
 
             Pager(
@@ -217,13 +244,20 @@ class ContentRepository private constructor(context: Context) {
      * Solution: Observe database source changes and recreate Pager automatically
      * Result: UI updates instantly when user switches sources (no app restart needed)
      *
-     * @return Flow of paged series from database (auto-updates on source change)
+     * REFACTOR (2025-11-21): Auto-refresh after sync completion
+     * Combines database source changes + sync completion trigger
+     * UI auto-refreshes when WorkManager background sync completes
+     *
+     * @return Flow of paged series from database (auto-updates on source change + sync)
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getSeriesPaged(): Flow<PagingData<Series>> {
         val dbPrefs = DatabasePreferences.getInstance(appContext)
 
-        return dbPrefs.observeCurrentSource().flatMapLatest { source ->
+        // Combine database source changes + sync completion trigger
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source // Only need source, timestamp just triggers recreation
+        }.flatMapLatest { source ->
             val urlPattern = source.urlPattern
 
             Pager(
@@ -250,13 +284,20 @@ class ContentRepository private constructor(context: Context) {
      * Solution: Observe database source changes and recreate Pager automatically
      * Result: UI updates instantly when user switches sources (no app restart needed)
      *
-     * @return Flow of paged episodes from database (auto-updates on source change)
+     * REFACTOR (2025-11-21): Auto-refresh after sync completion
+     * Combines database source changes + sync completion trigger
+     * UI auto-refreshes when WorkManager background sync completes
+     *
+     * @return Flow of paged episodes from database (auto-updates on source change + sync)
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getEpisodesPaged(): Flow<PagingData<Episode>> {
         val dbPrefs = DatabasePreferences.getInstance(appContext)
 
-        return dbPrefs.observeCurrentSource().flatMapLatest { source ->
+        // Combine database source changes + sync completion trigger
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source // Only need source, timestamp just triggers recreation
+        }.flatMapLatest { source ->
             val urlPattern = source.urlPattern
 
             Pager(
@@ -273,11 +314,12 @@ class ContentRepository private constructor(context: Context) {
         }
     }
 
-    // ========== Legacy API-First Methods (Still Used for Search, Genres) ==========
+    // ========== Database-First Content Methods (Refactored 2025-11-21) ==========
 
     /**
      * Get list of movies
-     * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
+     * REFACTORED (2025-11-21): ALL sources now use database-first for instant UX
+     * Background WorkManager sync keeps data fresh (no blocking API calls)
      * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
      * @param page Page number (starts from 1)
      * @param perPage Items per page (default: 20)
@@ -297,78 +339,35 @@ class ContentRepository private constructor(context: Context) {
 
             android.util.Log.i("ContentRepository", "getMovies() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
 
-            // For Namakade & FarsiPlex: Use database only (no structured API available)
-            if (currentSource == com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE ||
-                currentSource == com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX) {
-                android.util.Log.i("ContentRepository", "Using DATABASE for ${currentSource.displayName} movies")
-                try {
-                    ensureActive()
-                    val urlPattern = currentSource.urlPattern
-                    val cachedMovies = getContentDb().movieDao().getRecentMoviesFiltered(urlPattern, perPage * page).firstOrNull()
-                    ensureActive()
-                    if (!cachedMovies.isNullOrEmpty()) {
-                        // Implement pagination manually
-                        val startIndex = (page - 1) * perPage
-                        val endIndex = minOf(startIndex + perPage, cachedMovies.size)
-                        val paginatedMovies = if (startIndex < cachedMovies.size) {
-                            cachedMovies.subList(startIndex, endIndex)
-                        } else {
-                            emptyList()
-                        }
-                        val movies = paginatedMovies.map { it.toMovie() }
-
-                        // Store in cache
-                        moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database")
-
-                        return@withContext Result.success(movies)
-                    }
-                    return@withContext Result.success(emptyList())
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    return@withContext Result.failure(e)
-                }
-            }
-
-            // For Farsiland: Use API first, database as fallback
+            // REFACTOR (2025-11-21): ALL sources now use database-first for instant UX
+            // Background WorkManager sync keeps data fresh (no blocking API calls)
+            android.util.Log.i("ContentRepository", "Using DATABASE-FIRST for ${currentSource.displayName} movies")
             try {
-                // Try WordPress API first (has correct post publication dates)
-                ensureActive() // Check cancellation before API call
-                val wpMovies = ErrorHandler.retryWithExponentialBackoff {
-                    wordPressApi.getMovies(perPage = perPage, page = page)
+                ensureActive()
+                val urlPattern = currentSource.urlPattern
+                val cachedMovies = getContentDb().movieDao().getRecentMoviesFiltered(urlPattern, perPage * page).firstOrNull()
+                ensureActive()
+                if (!cachedMovies.isNullOrEmpty()) {
+                    // Implement pagination manually
+                    val startIndex = (page - 1) * perPage
+                    val endIndex = minOf(startIndex + perPage, cachedMovies.size)
+                    val paginatedMovies = if (startIndex < cachedMovies.size) {
+                        cachedMovies.subList(startIndex, endIndex)
+                    } else {
+                        emptyList()
+                    }
+                    val movies = paginatedMovies.map { it.toMovie() }
+
+                    // Store in cache
+                    moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
+                    Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database")
+
+                    return@withContext Result.success(movies)
                 }
-                ensureActive() // Check cancellation after API call
-                val movies = wpMovies.map { wpMovie -> wpMovie.toMovie() }
-
-                // Store in cache
-                moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
-                Log.d(TAG, "getMovies() - Cached ${movies.size} movies from API")
-
-                return@withContext Result.success(movies)
+                return@withContext Result.success(emptyList())
             } catch (e: Exception) {
                 e.printStackTrace()
-
-                // Fallback to database if API fails (offline mode)
-                try {
-                    ensureActive() // Check cancellation before DB query
-                    // CRITICAL FIX: Use offset for proper offline pagination
-                    val offset = (page - 1) * perPage
-                    val cachedMovies = getContentDb().movieDao().getRecentMoviesWithOffset(limit = perPage, offset = offset).firstOrNull()
-                    ensureActive() // Check cancellation after DB query
-                    if (!cachedMovies.isNullOrEmpty()) {
-                        val movies = cachedMovies.map { it.toMovie() }
-
-                        // Store in cache (fallback data)
-                        moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database (API fallback, page $page)")
-
-                        return@withContext Result.success(movies)
-                    }
-                } catch (dbError: Exception) {
-                    dbError.printStackTrace()
-                }
-
-                Result.failure(e)
+                return@withContext Result.failure(e)
             }
         }
 
@@ -404,7 +403,8 @@ class ContentRepository private constructor(context: Context) {
 
     /**
      * Get list of TV shows
-     * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
+     * REFACTORED (2025-11-21): ALL sources now use database-first for instant UX
+     * Background WorkManager sync keeps data fresh (no blocking API calls)
      * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
      */
     suspend fun getTvShows(page: Int = 1, perPage: Int = 20): Result<List<Series>> =
@@ -422,85 +422,42 @@ class ContentRepository private constructor(context: Context) {
 
             android.util.Log.i("ContentRepository", "getTvShows() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
 
-            // For Namakade & FarsiPlex: Use database only (no structured API available)
-            if (currentSource == com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE ||
-                currentSource == com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX) {
-                android.util.Log.i("ContentRepository", "Using DATABASE for ${currentSource.displayName} series")
-                try {
-                    ensureActive()
-                    val urlPattern = currentSource.urlPattern
-                    val cachedSeries = getContentDb().seriesDao().getRecentSeriesFiltered(urlPattern, perPage * page).firstOrNull()
-                    ensureActive()
-                    if (!cachedSeries.isNullOrEmpty()) {
-                        // Implement pagination manually
-                        val startIndex = (page - 1) * perPage
-                        val endIndex = minOf(startIndex + perPage, cachedSeries.size)
-                        val paginatedSeries = if (startIndex < cachedSeries.size) {
-                            cachedSeries.subList(startIndex, endIndex)
-                        } else {
-                            emptyList()
-                        }
-                        val series = paginatedSeries.map { it.toSeries() }
-
-                        // Store in cache
-                        seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getTvShows() - Cached ${series.size} series from database")
-
-                        return@withContext Result.success(series)
-                    }
-                    return@withContext Result.success(emptyList())
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    return@withContext Result.failure(e)
-                }
-            }
-
-            // For Farsiland/FarsiPlex: Use API first, database as fallback
+            // REFACTOR (2025-11-21): ALL sources now use database-first for instant UX
+            // Background WorkManager sync keeps data fresh (no blocking API calls)
+            android.util.Log.i("ContentRepository", "Using DATABASE-FIRST for ${currentSource.displayName} series")
             try {
-                // Try WordPress API first (has correct post publication dates)
-                ensureActive() // Check cancellation before API call
-                val wpShows = ErrorHandler.retryWithExponentialBackoff {
-                    wordPressApi.getTvShows(perPage = perPage, page = page)
+                ensureActive()
+                val urlPattern = currentSource.urlPattern
+                val cachedSeries = getContentDb().seriesDao().getRecentSeriesFiltered(urlPattern, perPage * page).firstOrNull()
+                ensureActive()
+                if (!cachedSeries.isNullOrEmpty()) {
+                    // Implement pagination manually
+                    val startIndex = (page - 1) * perPage
+                    val endIndex = minOf(startIndex + perPage, cachedSeries.size)
+                    val paginatedSeries = if (startIndex < cachedSeries.size) {
+                        cachedSeries.subList(startIndex, endIndex)
+                    } else {
+                        emptyList()
+                    }
+                    val series = paginatedSeries.map { it.toSeries() }
+
+                    // Store in cache
+                    seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
+                    Log.d(TAG, "getTvShows() - Cached ${series.size} series from database")
+
+                    return@withContext Result.success(series)
                 }
-                ensureActive() // Check cancellation after API call
-                val series = wpShows.map { wpShow -> wpShow.toSeries() }
-
-                // Store in cache
-                seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
-                Log.d(TAG, "getTvShows() - Cached ${series.size} series from API")
-
-                return@withContext Result.success(series)
+                return@withContext Result.success(emptyList())
             } catch (e: Exception) {
                 e.printStackTrace()
-
-                // Fallback to database if API fails (offline mode)
-                try {
-                    ensureActive() // Check cancellation before DB query
-                    // CRITICAL FIX: Use offset for proper offline pagination
-                    val offset = (page - 1) * perPage
-                    val urlPattern = currentSource.urlPattern
-                    val cachedSeries = getContentDb().seriesDao().getRecentSeriesFilteredWithOffset(urlPattern, limit = perPage, offset = offset).firstOrNull()
-                    ensureActive() // Check cancellation after DB query
-                    if (!cachedSeries.isNullOrEmpty()) {
-                        val series = cachedSeries.map { it.toSeries() }
-
-                        // Store in cache (fallback data)
-                        seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getTvShows() - Cached ${series.size} series from database (API fallback, page $page)")
-
-                        return@withContext Result.success(series)
-                    }
-                } catch (dbError: Exception) {
-                    dbError.printStackTrace()
-                }
-
-                Result.failure(e)
+                return@withContext Result.failure(e)
             }
         }
 
     /**
      * Get recent episodes (from all series)
-     * NEW: Database-only for Namakade/FarsiPlex (no structured API), API-first for Farsiland
+     * REFACTORED (2025-11-21): ALL sources now use database-first for instant UX
+     * Background WorkManager sync keeps data fresh (no blocking API calls)
      * OPTIMIZED: Uses 30-second cache to avoid redundant queries from multiple observers
      */
     suspend fun getRecentEpisodes(page: Int = 1, perPage: Int = 20): Result<List<Episode>> =
@@ -518,79 +475,35 @@ class ContentRepository private constructor(context: Context) {
 
             android.util.Log.i("ContentRepository", "getRecentEpisodes() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
 
-            // For Namakade & FarsiPlex: Use database only (no structured API available)
-            if (currentSource == com.example.farsilandtv.data.database.DatabaseSource.NAMAKADE ||
-                currentSource == com.example.farsilandtv.data.database.DatabaseSource.FARSIPLEX) {
-                android.util.Log.i("ContentRepository", "Using DATABASE for ${currentSource.displayName} episodes")
-                try {
-                    ensureActive()
-                    val urlPattern = currentSource.urlPattern
-                    val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFiltered(urlPattern, perPage * page).firstOrNull()
-                    ensureActive()
-                    if (!cachedEpisodes.isNullOrEmpty()) {
-                        // Implement pagination manually
-                        val startIndex = (page - 1) * perPage
-                        val endIndex = minOf(startIndex + perPage, cachedEpisodes.size)
-                        val paginatedEpisodes = if (startIndex < cachedEpisodes.size) {
-                            cachedEpisodes.subList(startIndex, endIndex)
-                        } else {
-                            emptyList()
-                        }
-                        val episodes = paginatedEpisodes.map { it.toEpisode() }
-
-                        // Store in cache
-                        episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database")
-
-                        return@withContext Result.success(episodes)
-                    }
-                    return@withContext Result.success(emptyList())
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    return@withContext Result.failure(e)
-                }
-            }
-
-            // For Farsiland: Use API first, database as fallback
+            // REFACTOR (2025-11-21): ALL sources now use database-first for instant UX
+            // Background WorkManager sync keeps data fresh (no blocking API calls)
+            android.util.Log.i("ContentRepository", "Using DATABASE-FIRST for ${currentSource.displayName} episodes")
             try {
-                // Try WordPress API first (has correct publication order)
-                ensureActive() // Check cancellation before API call
-                val wpEpisodes = ErrorHandler.retryWithExponentialBackoff {
-                    wordPressApi.getEpisodes(perPage = perPage, page = page)
+                ensureActive()
+                val urlPattern = currentSource.urlPattern
+                val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFiltered(urlPattern, perPage * page).firstOrNull()
+                ensureActive()
+                if (!cachedEpisodes.isNullOrEmpty()) {
+                    // Implement pagination manually
+                    val startIndex = (page - 1) * perPage
+                    val endIndex = minOf(startIndex + perPage, cachedEpisodes.size)
+                    val paginatedEpisodes = if (startIndex < cachedEpisodes.size) {
+                        cachedEpisodes.subList(startIndex, endIndex)
+                    } else {
+                        emptyList()
+                    }
+                    val episodes = paginatedEpisodes.map { it.toEpisode() }
+
+                    // Store in cache
+                    episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
+                    Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database")
+
+                    return@withContext Result.success(episodes)
                 }
-                ensureActive() // Check cancellation after API call
-                val episodes = wpEpisodes.map { wpEpisode -> wpEpisode.toEpisode() }
-
-                // Store in cache
-                episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
-                Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from API")
-
-                return@withContext Result.success(episodes)
+                return@withContext Result.success(emptyList())
             } catch (e: Exception) {
                 e.printStackTrace()
-
-                // Fallback to database if API fails (offline mode)
-                try {
-                    ensureActive() // Check cancellation before DB query
-                    // CRITICAL FIX: Use offset for proper offline pagination
-                    val offset = (page - 1) * perPage
-                    val urlPattern = currentSource.urlPattern
-                    val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFilteredWithOffset(urlPattern, limit = perPage, offset = offset).firstOrNull()
-                    ensureActive() // Check cancellation after DB query
-                    if (!cachedEpisodes.isNullOrEmpty()) {
-                        val episodes = cachedEpisodes.map { it.toEpisode() }
-
-                        // Store in cache (fallback data)
-                        episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database (API fallback, page $page)")
-
-                        return@withContext Result.success(episodes)
-                    }
-                } catch (dbError: Exception) {
-                    dbError.printStackTrace()
-                }
-
-                Result.failure(e)
+                return@withContext Result.failure(e)
             }
         }
 

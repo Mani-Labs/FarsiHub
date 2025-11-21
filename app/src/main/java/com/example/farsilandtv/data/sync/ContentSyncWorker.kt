@@ -193,6 +193,10 @@ class ContentSyncWorker(
                 Log.i(TAG, "Efficiency: ${duration/totalItems}ms per item")
             }
 
+            // REFACTOR (2025-11-21): Trigger Paging auto-refresh after successful sync
+            // Notifies ContentRepository to invalidate Pagers and refresh UI
+            ContentRepository.getInstance(applicationContext).notifySyncCompleted()
+
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Sync failed: ${e.message}", e)
@@ -316,21 +320,24 @@ class ContentSyncWorker(
 
     /**
      * Sync movies added/updated since last sync
+     * REFACTOR (2025-11-21): Always pass null on first sync to fetch recent items
      */
     private suspend fun syncMovies(lastSyncTimestamp: Long): Int {
         try {
             // Convert timestamp to API format
+            // REFACTOR: First sync (lastSyncTimestamp == 0) should fetch recent items (no filter)
             val modifiedAfter = if (lastSyncTimestamp > 0) {
                 timestampToApiDate(lastSyncTimestamp)
             } else {
-                null // First sync - fetch all
+                null // First sync - fetch recent 20 items
             }
 
             Log.d(TAG, "Fetching movies modified after: $modifiedAfter")
 
-            // Fetch only modified items, up to 100 items
+            // Fetch only modified items, limit to 20 to avoid timeout
+            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
             val wpMovies = wordPressApi.getMovies(
-                perPage = 100,  // Increased from 20
+                perPage = 20,
                 page = 1,
                 modifiedAfter = modifiedAfter,
                 orderBy = "modified",
@@ -370,9 +377,10 @@ class ContentSyncWorker(
 
             Log.d(TAG, "Fetching series modified after: $modifiedAfter")
 
-            // Fetch only modified items, up to 100 items
+            // Fetch only modified items, limit to 20 to avoid timeout
+            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
             val wpShows = wordPressApi.getTvShows(
-                perPage = 100,  // Increased from 20
+                perPage = 20,
                 page = 1,
                 modifiedAfter = modifiedAfter,
                 orderBy = "modified",
@@ -444,9 +452,10 @@ class ContentSyncWorker(
 
             Log.d(TAG, "Fetching episodes modified after: $modifiedAfter")
 
-            // Fetch only modified items, up to 100 items
+            // Fetch only modified items, limit to 20 to avoid timeout
+            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
             val wpEpisodes = wordPressApi.getEpisodes(
-                perPage = 100,  // Increased from 20
+                perPage = 20,
                 page = 1,
                 modifiedAfter = modifiedAfter,
                 orderBy = "modified",

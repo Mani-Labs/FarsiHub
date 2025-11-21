@@ -121,6 +121,10 @@ class FarsiPlexSyncWorker(
                 Log.i(TAG, "FarsiPlex sync completed: No new content")
             }
 
+            // REFACTOR (2025-11-21): Trigger Paging auto-refresh after successful sync
+            // Notifies ContentRepository to invalidate Pagers and refresh UI
+            contentRepo.notifySyncCompleted()
+
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "FarsiPlex sync failed: ${e.message}", e)
