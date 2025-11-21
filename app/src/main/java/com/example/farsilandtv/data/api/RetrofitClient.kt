@@ -1,5 +1,6 @@
 package com.example.farsilandtv.data.api
 
+import android.content.Context
 import com.example.farsilandtv.FarsilandApp
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -154,7 +155,7 @@ object RetrofitClient {
                 }
             )
 
-            // Add User-Agent and cache control
+            // Add User-Agent header
             .addNetworkInterceptor { chain ->
                 var request = chain.request()
 
@@ -167,33 +168,20 @@ object RetrofitClient {
 
                 val response = chain.proceed(request)
 
-                // AUDIT FIX H2.3 + AUDIT #3 C2: Skip Cache-Control override for video URLs AND content pages
-                // Video endpoints: Often return signed URLs that expire quickly (< 5 minutes)
-                // Content pages: Embed video URLs that may expire before cache expires (10 min)
-                // Caching either for 10 minutes causes 403 Forbidden errors
-                val url = request.url.toString()
-                val isVideoEndpoint = url.contains("/wp-json/dooplayer/v2/") ||
-                                    url.contains("/video/") ||
-                                    url.contains(".mp4") ||
-                                    url.contains("player") ||
-                                    url.contains("stream") ||
-                                    url.contains("/series/") ||   // AUDIT #3 C2: Episode pages embed video URLs
-                                    url.contains("/movies/") ||    // AUDIT #3 C2: Movie pages embed video URLs
-                                    url.contains("/episode/")      // AUDIT #3 C2: Episode pages (alt pattern)
-
-                if (isVideoEndpoint) {
-                    // Respect server's Cache-Control for video endpoints
-                    android.util.Log.d("HTTP_CACHE", "Video endpoint detected - respecting server cache headers")
-                    response
-                } else {
-                    // Override server's Cache-Control to cache for 10 minutes
-                    // Reduced from 1 hour (3600s) to prevent stale content
-                    response.newBuilder()
-                        .removeHeader("Pragma")
-                        .removeHeader("Cache-Control")
-                        .header("Cache-Control", "public, max-age=600") // 10 minutes
-                        .build()
-                }
+                // EXTERNAL AUDIT FIX H1 (2025-11-21): Respect Server Cache-Control Headers
+                // Issue: Forcing max-age=600 (10 min) breaks when server sends signed URLs (expire < 5 min)
+                // Previous: Hardcoded exclusion list for video endpoints - brittle, breaks on API changes
+                // Fix: REMOVE cache override entirely - trust server's Cache-Control headers
+                // Benefits:
+                // 1. No more 403 Forbidden errors from expired signed URLs
+                // 2. Server controls caching policy (more flexible)
+                // 3. No maintenance burden when API structure changes
+                // 4. Works correctly with CDN rotation and dynamic content
+                //
+                // Note: If server sends no-cache, that's intentional - respect it
+                // If performance issues arise, fix on server (WordPress), not client
+                android.util.Log.d("HTTP_CACHE", "Respecting server Cache-Control headers")
+                response
             }
 
             // Log cache hits/misses and track last network fetch time
@@ -280,6 +268,17 @@ object RetrofitClient {
      * Get OkHttpClient for direct HTTP requests (used by scraper)
      */
     fun getHttpClient(): OkHttpClient = okHttpClient
+
+    /**
+     * EXTERNAL AUDIT FIX H2 (2025-11-21): Eagerly initialize cache on background thread
+     * Called from FarsilandApp.onCreate() to prevent main thread I/O
+     *
+     * This ensures the cache directory is created before first API call
+     * Prevents UI jank (20-80ms) when okHttpClient is lazily initialized
+     */
+    fun initializeCache(context: Context) {
+        getOrCreateCache(context)
+    }
 
     /**
      * Clear HTTP cache
