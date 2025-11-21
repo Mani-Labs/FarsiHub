@@ -88,7 +88,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.observeSyncCompletion().collect { _ ->
                 Log.d(TAG, "Sync completed - reloading content automatically")
-                loadContent()
+                // Don't call loadContent() as it triggers isLoading which clears watchlist rows
+                // Instead, just refresh the main content data
+                refreshContentWithoutLoadingState()
             }
         }
     }
@@ -126,6 +128,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 e.printStackTrace()
             } finally {
                 _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Refresh content without triggering loading state
+     * Used after sync completion to avoid clearing watchlist rows
+     */
+    private fun refreshContentWithoutLoadingState() {
+        viewModelScope.launch {
+            try {
+                // Clear cache to get fresh data
+                com.example.farsilandtv.data.api.RetrofitClient.clearCache()
+                repository.clearCache()
+                Log.d(TAG, "refreshContentWithoutLoadingState: Cleared caches")
+
+                // Reload content WITHOUT setting isLoading (prevents row clearing)
+                ErrorHandler.retryWithExponentialBackoff(times = 3) {
+                    loadGenres()
+                    loadFeaturedContent()
+
+                    // Load in parallel
+                    val moviesDeferred = async { loadMovies() }
+                    val seriesDeferred = async { loadSeries() }
+                    val episodesDeferred = async { loadEpisodes() }
+
+                    moviesDeferred.await()
+                    seriesDeferred.await()
+                    episodesDeferred.await()
+                }
+            } catch (e: Exception) {
+                _error.value = ErrorHandler.getErrorMessage(e)
+                e.printStackTrace()
             }
         }
     }
