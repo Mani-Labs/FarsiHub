@@ -185,6 +185,13 @@ abstract class AppDatabase : RoomDatabase() {
          * EXTERNAL AUDIT FIX C3: Data Migration from Old Database
          * Attempts to migrate playback history from old farsiland_database.db
          * Prevents data loss for users upgrading from older versions
+         *
+         * EXTERNAL AUDIT FIX C1.1 (2025-11-21): Dynamic database path for multi-user support
+         * Previous: Hardcoded '/data/data/...' path fails on secondary users (Guest, Work Profile)
+         * Fixed: Uses getDatabasePath() which returns correct path for current user
+         * Example paths:
+         *   Primary user: /data/data/com.example.farsilandtv/databases/farsiland_database.db
+         *   Secondary user: /data/user/10/com.example.farsilandtv/databases/farsiland_database.db
          */
         private val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(database: SupportSQLiteDatabase) {
@@ -223,10 +230,20 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_playback_positions_isCompleted_contentType ON playback_positions(isCompleted, contentType)"
                 )
 
+                // EXTERNAL AUDIT FIX C1.1: Dynamic database path
+                // Must use getDatabasePath() to support multi-user devices (Guest, Work Profile)
+                // Path varies by user: /data/data/... (primary) vs /data/user/10/... (secondary)
+                val oldDbPath = android.app.ActivityThread.currentApplication()
+                    ?.getDatabasePath("farsiland_database.db")
+                    ?.absolutePath
+                    ?: "/data/data/com.example.farsilandtv/databases/farsiland_database.db" // Fallback for edge cases
+
+                android.util.Log.i("AppDatabase", "MIGRATION 8→9: Attempting to migrate from: $oldDbPath")
+
                 // EXTERNAL AUDIT FIX C3: Migrate data from old database if it exists
                 try {
                     // Try to attach old database (may not exist for fresh installs)
-                    database.execSQL("ATTACH DATABASE '/data/data/com.example.farsilandtv/databases/farsiland_database.db' AS old_db")
+                    database.execSQL("ATTACH DATABASE '$oldDbPath' AS old_db")
 
                     // Check if old table exists
                     val cursor = database.query("SELECT name FROM old_db.sqlite_master WHERE type='table' AND name='playback_position'")
