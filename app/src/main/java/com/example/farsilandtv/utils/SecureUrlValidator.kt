@@ -26,20 +26,14 @@ object SecureUrlValidator {
     private const val TAG = "SecureUrlValidator"
 
     /**
-     * Whitelist of trusted content domains
-     * All content must be served from these domains over HTTPS
+     * AUDIT FIX C1: Use RemoteConfig for trusted domains
+     * Allows updating domains without APK releases
+     *
+     * Before: Hardcoded setOf(...) - required APK update for new domains
+     * After: RemoteConfig.trustedDomains - updatable via Firebase Remote Config
      */
-    private val TRUSTED_DOMAINS = setOf(
-        "farsiland.com",
-        "farsiplex.com",
-        "flnd.buzz",
-        "d1.flnd.buzz",
-        "d2.flnd.buzz",
-        "namakade.com",
-        "wp.farsiland.com",
-        "negahestan.com",
-        "media.negahestan.com"
-    )
+    private val TRUSTED_DOMAINS: Set<String>
+        get() = RemoteConfig.trustedDomains
 
     /**
      * AUDIT FIX M3.1: Whitelist of trusted domains that only support HTTP

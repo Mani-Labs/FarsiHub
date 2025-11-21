@@ -4,6 +4,7 @@ import com.example.farsilandtv.FarsilandApp
 import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.models.VideoUrl
 import com.example.farsilandtv.data.namakade.NamakadeApiService
+import com.example.farsilandtv.utils.RemoteConfig
 import com.example.farsilandtv.utils.SecureRegex
 import com.example.farsilandtv.utils.SecureUrlValidator
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +13,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Request
@@ -342,63 +345,52 @@ object VideoUrlScraper {
             val videoUrls = mutableListOf<VideoUrl>()
 
             // AUDIT FIX: True first-wins pattern using race condition avoidance
-            // Previous issue: Sequential await() blocked on slow servers even if fast ones completed
-            // Fix: Check completion status before awaiting, process whichever completes first
+            // AUDIT FIX H1: Reactive Channel-based approach (replaces 50ms polling loop)
+            // Previous issue: Polling with delay(50) caused CPU wakeups every 50ms
+            // New approach: Channel provides immediate notification when jobs complete
+            // Performance impact: Zero CPU usage while waiting vs constant polling
             coroutineScope {
-                // Launch all 5 API requests in parallel
+                // Channel to receive results immediately when available
+                val resultChannel = Channel<Pair<Int, List<VideoUrl>>>(Channel.UNLIMITED)
+
+                // Launch all 5 API requests in parallel, each sending to channel when complete
                 val jobs = (1..5).map { num ->
-                    async {
+                    launch {
                         val apiUrl = "https://farsiplex.com/wp-json/dooplayer/v2/$postId/$contentType/$num"
                         android.util.Log.d(TAG, "Trying API: $apiUrl")
-                        Pair(num, fetchFromDooPlayAPI(apiUrl, num))
-                    }
-                }
-
-                // Poll jobs until one completes with results
-                var foundResult = false
-                while (!foundResult && jobs.any { it.isActive }) {
-                    for (job in jobs) {
-                        // Only await jobs that have actually completed (non-blocking check)
-                        if (job.isCompleted && !job.isCancelled) {
-                            try {
-                                val (serverNum, urls) = job.await() // Now await is instant
-                                if (urls.isNotEmpty()) {
-                                    videoUrls.addAll(urls)
-                                    foundResult = true
-                                    android.util.Log.d(TAG, "Server $serverNum completed first with ${urls.size} URLs - cancelling slow servers")
-
-                                    // Cancel all remaining jobs
-                                    jobs.forEach { if (it != job) it.cancel() }
-                                    break
-                                }
-                            } catch (e: Exception) {
-                                android.util.Log.d(TAG, "Server request failed: ${e.message}")
-                            }
-                        }
-                    }
-
-                    // Small delay to avoid tight CPU loop (50ms polling interval)
-                    if (!foundResult && jobs.any { it.isActive }) {
-                        kotlinx.coroutines.delay(50)
-                    }
-                }
-
-                // If no server returned results, await all remaining jobs as fallback
-                if (!foundResult) {
-                    android.util.Log.d(TAG, "No fast server found URLs, waiting for all to finish...")
-                    for (job in jobs) {
                         try {
-                            if (!job.isCancelled) {
-                                val (_, urls) = job.await()
-                                if (urls.isNotEmpty()) {
-                                    videoUrls.addAll(urls)
-                                }
-                            }
+                            val urls = fetchFromDooPlayAPI(apiUrl, num)
+                            // Send result to channel (non-blocking)
+                            resultChannel.send(Pair(num, urls))
                         } catch (e: Exception) {
-                            // Job failed or was cancelled
+                            android.util.Log.d(TAG, "Server $num request failed: ${e.message}")
+                            // Send empty result to channel so we know job completed
+                            resultChannel.send(Pair(num, emptyList()))
                         }
                     }
                 }
+
+                // React immediately to results as they arrive (no polling delay)
+                var responsesReceived = 0
+                val totalRequests = 5
+                var foundResult = false
+
+                while (responsesReceived < totalRequests && !foundResult) {
+                    val (serverNum, urls) = resultChannel.receive() // Suspends until result available
+                    responsesReceived++
+
+                    if (urls.isNotEmpty()) {
+                        videoUrls.addAll(urls)
+                        foundResult = true
+                        android.util.Log.d(TAG, "Server $serverNum completed first with ${urls.size} URLs - cancelling others")
+
+                        // Cancel remaining jobs immediately to save bandwidth
+                        jobs.forEach { it.cancel() }
+                        break
+                    }
+                }
+
+                resultChannel.close()
             }
 
             android.util.Log.d(TAG, "First-wins pattern completed, found ${videoUrls.size} total URLs")
@@ -1529,7 +1521,8 @@ object VideoUrlScraper {
      */
     fun generateVideoUrls(seriesSlug: String, season: Int, episode: Int): List<VideoUrl> {
         val episodeNum = String.format("%02d", episode)
-        val mirrors = listOf("d1.flnd.buzz", "d2.flnd.buzz")
+        // AUDIT FIX C1: Use RemoteConfig for CDN mirrors (allows runtime updates)
+        val mirrors = RemoteConfig.cdnMirrors
         val qualities = listOf("1080", "720", "480")
 
         val videoUrls = mutableListOf<VideoUrl>()
@@ -1565,7 +1558,8 @@ object VideoUrlScraper {
      * Pattern: https://{mirror}/movies/{slug}/{quality}.mp4
      */
     private fun generateMovieUrls(movieSlug: String): List<VideoUrl> {
-        val mirrors = listOf("d1.flnd.buzz", "d2.flnd.buzz")
+        // AUDIT FIX C1: Use RemoteConfig for CDN mirrors (allows runtime updates)
+        val mirrors = RemoteConfig.cdnMirrors
         val qualities = listOf("1080", "720", "480")
 
         val videoUrls = mutableListOf<VideoUrl>()

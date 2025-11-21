@@ -23,7 +23,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CachedSeries::class,
         CachedEpisode::class,
         CachedGenre::class,
-        CachedVideoUrl::class
+        CachedVideoUrl::class,
+        // AUDIT FIX (FTS4): Register FTS entities to resolve "no such table" compilation error
+        CachedMovieFts::class,
+        CachedSeriesFts::class,
+        CachedEpisodeFts::class
     ],
     version = 2, // AUDIT FIX C1.2: Add FTS4 for fast search
     exportSchema = true

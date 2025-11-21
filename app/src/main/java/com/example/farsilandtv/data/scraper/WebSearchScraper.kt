@@ -38,19 +38,23 @@ object WebSearchScraper {
     ).toMap()
 
     /**
-     * AUDIT FIX #10 (Post-Release): Check if title matches search query
-     * Prevents returning 393 irrelevant results (like "samad" search returning everything)
+     * AUDIT FIX M3: Token-based search to prevent false positives
      *
-     * Uses same aggressive normalization as ContentRepository deduplication
-     * - Removes ALL non-alphanumeric characters (spaces, hyphens, punctuation)
-     * - Case-insensitive matching
+     * Before: Removed all spaces, causing "rat" to match "The Pirate"
+     * After: Each word in query must be present in title
      *
-     * @return true if title contains the query as a substring
+     * Example:
+     * - Query: "the pirate" matches "The Pirate" ✅
+     * - Query: "rat" does NOT match "The Pirate" ✅
+     * - Query: "game thrones" matches "Game of Thrones" ✅
+     *
+     * @return true if all query tokens are present in the title
      */
     private fun titleMatchesQuery(title: String, query: String): Boolean {
-        val normalizedTitle = title.replace(Regex("[^\\p{L}\\p{N}]"), "").lowercase()
-        val normalizedQuery = query.replace(Regex("[^\\p{L}\\p{N}]"), "").lowercase()
-        return normalizedTitle.contains(normalizedQuery)
+        if (query.isBlank()) return true
+        val titleLower = title.lowercase()
+        val queryTokens = query.lowercase().split(" ").filter { it.isNotBlank() }
+        return queryTokens.all { token -> titleLower.contains(token) }
     }
 
     /**

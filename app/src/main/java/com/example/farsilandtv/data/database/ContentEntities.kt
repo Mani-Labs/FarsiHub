@@ -3,6 +3,8 @@ package com.example.farsilandtv.data.database
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.Index
+import androidx.room.Fts4
+import androidx.room.ColumnInfo
 
 /**
  * Room entities for pre-populated content catalog
@@ -126,4 +128,54 @@ data class CachedVideoUrl(
     val mp4Url: String,
     val fileSizeMB: Float?,
     val cachedAt: Long  // Timestamp millis
+)
+
+/**
+ * AUDIT FIX (FTS4): FTS4 Virtual Entity for Movies
+ * Enables full-text search on movie titles
+ *
+ * Linked to CachedMovie via contentEntity.
+ * Room automatically manages sync between the two tables.
+ *
+ * Usage in DAO:
+ * ```sql
+ * SELECT m.* FROM cached_movies m
+ * JOIN cached_movies_fts fts ON m.id = fts.rowid
+ * WHERE cached_movies_fts MATCH :query
+ * ```
+ */
+@Entity(tableName = "cached_movies_fts")
+@Fts4(contentEntity = CachedMovie::class)
+data class CachedMovieFts(
+    @ColumnInfo(name = "rowid")
+    @PrimaryKey
+    val rowId: Long,
+    val title: String
+)
+
+/**
+ * AUDIT FIX (FTS4): FTS4 Virtual Entity for Series
+ * Enables full-text search on series titles
+ */
+@Entity(tableName = "cached_series_fts")
+@Fts4(contentEntity = CachedSeries::class)
+data class CachedSeriesFts(
+    @ColumnInfo(name = "rowid")
+    @PrimaryKey
+    val rowId: Long,
+    val title: String
+)
+
+/**
+ * AUDIT FIX (FTS4): FTS4 Virtual Entity for Episodes
+ * Enables full-text search on episode titles and series titles
+ */
+@Entity(tableName = "cached_episodes_fts")
+@Fts4(contentEntity = CachedEpisode::class)
+data class CachedEpisodeFts(
+    @ColumnInfo(name = "rowid")
+    @PrimaryKey
+    val rowId: Long,
+    val seriesTitle: String?,
+    val title: String
 )
