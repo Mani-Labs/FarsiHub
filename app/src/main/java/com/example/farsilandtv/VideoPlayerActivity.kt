@@ -18,7 +18,10 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withTimeout
 import com.example.farsilandtv.data.models.VideoUrl
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.data.repository.WatchlistRepository
@@ -477,7 +480,21 @@ class VideoPlayerActivity : AppCompatActivity() {
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
+    /**
+     * EXTERNAL AUDIT FIX C3: Check if activity is in valid lifecycle state before touching views
+     * Prevents WindowManager$BadTokenException and view leaks
+     */
+    private fun isActivityAlive(): Boolean {
+        return lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+    }
+
     private fun fetchVideoUrlsAndPlay() {
+        // EXTERNAL AUDIT FIX C3: Early lifecycle check
+        if (!isActivityAlive()) {
+            Log.w(TAG, "fetchVideoUrlsAndPlay called but activity is not in STARTED state, aborting")
+            return
+        }
+
         loadingIndicator.visibility = View.VISIBLE
         errorText.visibility = View.GONE
 
@@ -498,6 +515,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                 Log.d(TAG, "Content Title: $contentTitle")
                 Log.d(TAG, "Farsiland URL: $contentUrl")
                 Log.d(TAG, "========================================")
+
+                // EXTERNAL AUDIT FIX C3: Lifecycle check before showing Toast
+                if (!isActivityAlive()) {
+                    Log.w(TAG, "Activity destroyed during scraping setup, aborting")
+                    return@launch
+                }
 
                 // Fetch video URLs from the page
                 Toast.makeText(this@VideoPlayerActivity, "Fetching video...", Toast.LENGTH_SHORT).show()
@@ -558,6 +581,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                 Log.d(TAG, "  Quality: ${selectedVideo.quality}")
                 Log.d(TAG, "  URL: ${selectedVideo.url}")
                 Log.d(TAG, "========================================")
+
+                // EXTERNAL AUDIT FIX C3: Lifecycle check before showing Toast and starting playback
+                if (!isActivityAlive()) {
+                    Log.w(TAG, "Activity destroyed after scraping, aborting playback")
+                    return@launch
+                }
 
                 Toast.makeText(
                     this@VideoPlayerActivity,
@@ -778,10 +807,22 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     /**
      * Save current playback position to database
-     */
-    /**
-     * EXTERNAL AUDIT FIX C2.1: Add forceSync parameter to eliminate race condition
-     * @param forceSync If true, always use runBlocking (e.g., on back press)
+     *
+     * EXTERNAL AUDIT FIX C2: Replaced runBlocking with simple coroutine
+     *
+     * Previous Issue:
+     * - Used runBlocking on Main Thread during Activity destruction
+     * - Caused 5+ second ANR on slow storage (old TV boxes)
+     * - Android kills app if UI thread blocks >5 seconds
+     *
+     * New Solution:
+     * - Use regular lifecycleScope.launch (no blocking)
+     * - Best-effort save (acceptable for playback position)
+     * - No Main Thread blocking = No ANR risk
+     *
+     * Trade-off:
+     * - Position save might not complete if Activity destroyed immediately
+     * - Acceptable trade-off: Prevents ANR (critical) vs occasional position loss (minor)
      */
     private fun saveCurrentPosition(forceSync: Boolean = false) {
         synchronized(positionSaveLock) {
@@ -792,28 +833,12 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                 if (duration <= 0) return // Skip if duration not available yet
 
-                // H6 FIX + EXTERNAL AUDIT FIX C2.1: Use runBlocking when:
-                // 1. Activity is finishing/destroyed (isDestroying)
-                // 2. Caller explicitly requests sync (forceSync=true) - e.g., back press
-                // This prevents the race condition where lifecycleScope.launch fires
-                // but finish() executes before the DB write completes
-                val isDestroying = isFinishing || isDestroyed
-                if (isDestroying || forceSync) {
-                    // Use runBlocking to ensure synchronous execution before Activity death
-                    // This is acceptable here because:
-                    // 1. It's during destruction (user is leaving anyway)
-                    // 2. Prevents data loss from incomplete async operations
-                    // 3. Database write is fast (<50ms typically)
-                    runBlocking {
-                        try {
-                            savePositionToDatabase(position, duration)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error saving position on destroy", e)
-                        }
-                    }
-                } else {
-                    lifecycleScope.launch {
+                // EXTERNAL AUDIT FIX C2: Use async save (no blocking)
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
                         savePositionToDatabase(position, duration)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error saving position", e)
                     }
                 }
             } catch (e: Exception) {

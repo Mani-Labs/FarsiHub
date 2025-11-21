@@ -54,7 +54,11 @@ object RetrofitClient {
     @Volatile
     private var httpCache: Cache? = null
 
-    private fun getOrCreateCache(context: android.content.Context? = null): Cache {
+    /**
+     * EXTERNAL AUDIT FIX M1: Return nullable Cache instead of throwing exception
+     * Allows RetrofitClient to work even if accessed before Application.onCreate()
+     */
+    private fun getOrCreateCache(context: android.content.Context? = null): Cache? {
         httpCache?.let { return it }
 
         synchronized(this) {
@@ -64,14 +68,14 @@ object RetrofitClient {
             val appContext = context?.applicationContext
                 ?: FarsilandApp.instance?.applicationContext
 
-            // EXTERNAL AUDIT FIX C4.2: Remove temp directory fallback for Android 10+ compatibility
-            // Always require valid app context - fail fast if not available
+            // EXTERNAL AUDIT FIX M1: Safe fallback instead of crash
+            // Issue: If RetrofitClient accessed before Application.onCreate(), crash occurs
+            // Solution: Return null cache, OkHttp works fine without cache (just slower)
             if (appContext == null) {
-                throw IllegalStateException(
-                    "Application context not available for cache initialization. " +
-                    "This should not happen as OkHttpClient is lazily initialized. " +
-                    "Temp directory fallback removed for Android 10+ scoped storage compatibility."
-                )
+                android.util.Log.w("RetrofitClient", "Application context not available, HTTP cache disabled")
+                android.util.Log.w("RetrofitClient", "This can happen if RetrofitClient is accessed before Application.onCreate()")
+                android.util.Log.w("RetrofitClient", "Network requests will work but without caching")
+                return null
             }
 
             // Always use app cache directory (Android 10+ compatible)
@@ -79,7 +83,7 @@ object RetrofitClient {
             val cacheSize = 10L * 1024 * 1024 // 10 MB
             httpCache = Cache(cacheDir, cacheSize)
 
-            return httpCache!!
+            return httpCache
         }
     }
 

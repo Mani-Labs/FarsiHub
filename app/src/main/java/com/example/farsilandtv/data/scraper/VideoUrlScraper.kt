@@ -365,18 +365,34 @@ object VideoUrlScraper {
                 val resultChannel = Channel<Pair<Int, List<VideoUrl>>>(Channel.UNLIMITED)
 
                 // Launch all 5 API requests in parallel, each sending to channel when complete
+                // EXTERNAL AUDIT FIX C4: Wrap ENTIRE launch block in try/finally to prevent deadlock
+                // Issue: If exception occurs BEFORE try block (lines 370-371), send never executes
+                // Result: receive() hangs forever waiting for missing response
+                // Solution: Ensure resultChannel.send() ALWAYS executes, even on early crash
                 val jobs = (1..5).map { num ->
                     launch {
-                        val apiUrl = "https://$domain/wp-json/dooplayer/v2/$postId/$contentType/$num"
-                        android.util.Log.d(TAG, "Trying API: $apiUrl")
                         try {
-                            val urls = fetchFromDooPlayAPI(apiUrl, num)
-                            // Send result to channel (non-blocking)
-                            resultChannel.send(Pair(num, urls))
-                        } catch (e: Exception) {
-                            android.util.Log.d(TAG, "Server $num request failed: ${e.message}")
-                            // Send empty result to channel so we know job completed
-                            resultChannel.send(Pair(num, emptyList()))
+                            val apiUrl = "https://$domain/wp-json/dooplayer/v2/$postId/$contentType/$num"
+                            android.util.Log.d(TAG, "Trying API: $apiUrl")
+                            try {
+                                val urls = fetchFromDooPlayAPI(apiUrl, num)
+                                // Send result to channel (non-blocking)
+                                resultChannel.send(Pair(num, urls))
+                            } catch (e: Exception) {
+                                android.util.Log.d(TAG, "Server $num request failed: ${e.message}")
+                                // Send empty result to channel so we know job completed
+                                resultChannel.send(Pair(num, emptyList()))
+                            }
+                        } catch (e: Throwable) {
+                            // CRITICAL: Catch ALL exceptions (including CancellationException, OutOfMemoryError)
+                            // Even if early failure, we MUST send to prevent infinite hang
+                            android.util.Log.e(TAG, "CRITICAL: Server $num crashed before try block: ${e.message}")
+                            try {
+                                resultChannel.send(Pair(num, emptyList()))
+                            } catch (sendError: Exception) {
+                                // Channel might be closed, log but don't crash
+                                android.util.Log.e(TAG, "Failed to send error result for server $num: ${sendError.message}")
+                            }
                         }
                     }
                 }
@@ -500,74 +516,77 @@ object VideoUrlScraper {
 
     /**
      * Extract MP4 URLs from DooPlay API JSON response
+     *
+     * EXTERNAL AUDIT FIX M5: Use proper JSON parsing instead of regex
+     * Previous: Used regex to parse JSON (fragile, breaks on escaped quotes)
+     * Now: Uses org.json.JSONObject for safe, standard JSON parsing
      */
     private suspend fun extractUrlsFromDooPlayResponse(jsonResponse: String, serverNum: Int): List<VideoUrl> = withContext(Dispatchers.IO) {
         val videoUrls = mutableListOf<VideoUrl>()
 
         try {
+            // EXTERNAL AUDIT FIX M5: Parse JSON properly with JSONObject
+            val json = org.json.JSONObject(jsonResponse)
+
             // Check for embed_url (jwplayer page)
-            // Format: "embed_url":"https:\/\/farsiplex.com\/jwplayer\/?source=..."
-            // AUDIT FIX: Use SecureRegex to prevent ReDoS attacks
-            val embedPattern = Regex("""["']embed_url["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            val embedMatch = SecureRegex.findWithTimeout(embedPattern, jsonResponse)
-            if (embedMatch != null) {
-                val embedUrl = embedMatch.groupValues[1]
-                    .replace("\\/", "/") // Unescape JSON slashes
+            // Format: {"embed_url": "https://farsiplex.com/jwplayer/?source=..."}
+            if (json.has("embed_url")) {
+                val embedUrl = json.optString("embed_url", "")
+                if (embedUrl.isNotEmpty()) {
+                    android.util.Log.d(TAG, "Found embed URL (via JSON parsing): $embedUrl")
 
-                android.util.Log.d(TAG, "Found embed URL: $embedUrl")
+                    // Extract video URL from 'source' parameter and convert fake CDN to real
+                    // Format: https://farsiplex.com/jwplayer/?source=https%3A%2F%2Fcdn2.farsiland.com%2F...SadDam-720.mp4
+                    // Fake CDN: cdn2.farsiland.com
+                    // Real CDN: d1.flnd.buzz, d2.flnd.buzz, s1.farsicdn.buzz, s2.farsicdn.buzz
+                    try {
+                        val uri = java.net.URI(embedUrl)
+                        val queryParams = uri.query?.split("&")?.associate {
+                            val parts = it.split("=", limit = 2)
+                            parts[0] to (parts.getOrNull(1) ?: "")
+                        } ?: emptyMap()
 
-                // Extract video URL from 'source' parameter and convert fake CDN to real
-                // Format: https://farsiplex.com/jwplayer/?source=https%3A%2F%2Fcdn2.farsiland.com%2F...SadDam-720.mp4
-                // Fake CDN: cdn2.farsiland.com
-                // Real CDN: d1.flnd.buzz, d2.flnd.buzz, s1.farsicdn.buzz, s2.farsicdn.buzz
-                try {
-                    val uri = java.net.URI(embedUrl)
-                    val queryParams = uri.query?.split("&")?.associate {
-                        val parts = it.split("=", limit = 2)
-                        parts[0] to (parts.getOrNull(1) ?: "")
-                    } ?: emptyMap()
+                        val sourceUrl = queryParams["source"]
+                        if (!sourceUrl.isNullOrEmpty()) {
+                            val decodedUrl = java.net.URLDecoder.decode(sourceUrl, "UTF-8")
+                            val quality = detectQualityFromUrl(decodedUrl)
 
-                    val sourceUrl = queryParams["source"]
-                    if (!sourceUrl.isNullOrEmpty()) {
-                        val decodedUrl = java.net.URLDecoder.decode(sourceUrl, "UTF-8")
-                        val quality = detectQualityFromUrl(decodedUrl)
+                            android.util.Log.d(TAG, "Source URL: $decodedUrl")
+                            android.util.Log.d(TAG, "Detected quality: $quality")
 
-                        android.util.Log.d(TAG, "Source URL: $decodedUrl")
-                        android.util.Log.d(TAG, "Detected quality: $quality")
+                            // Convert fake CDN domain to real working CDN domains
+                            // cdn2.farsiland.com → d1.flnd.buzz and d2.flnd.buzz
+                            if (decodedUrl.contains("cdn2.farsiland.com", ignoreCase = true)) {
+                                val path = decodedUrl.substringAfter("cdn2.farsiland.com")
 
-                        // Convert fake CDN domain to real working CDN domains
-                        // cdn2.farsiland.com → d1.flnd.buzz and d2.flnd.buzz
-                        if (decodedUrl.contains("cdn2.farsiland.com", ignoreCase = true)) {
-                            val path = decodedUrl.substringAfter("cdn2.farsiland.com")
+                                // Create URLs for both mirrors
+                                val mirror1Url = "https://d1.flnd.buzz$path"
+                                val mirror2Url = "https://d2.flnd.buzz$path"
 
-                            // Create URLs for both mirrors
-                            val mirror1Url = "https://d1.flnd.buzz$path"
-                            val mirror2Url = "https://d2.flnd.buzz$path"
+                                videoUrls.add(VideoUrl(
+                                    url = mirror1Url,
+                                    quality = quality,
+                                    mirror = "Server ${serverNum}A"
+                                ))
+                                videoUrls.add(VideoUrl(
+                                    url = mirror2Url,
+                                    quality = quality,
+                                    mirror = "Server ${serverNum}B"
+                                ))
 
-                            videoUrls.add(VideoUrl(
-                                url = mirror1Url,
-                                quality = quality,
-                                mirror = "Server ${serverNum}A"
-                            ))
-                            videoUrls.add(VideoUrl(
-                                url = mirror2Url,
-                                quality = quality,
-                                mirror = "Server ${serverNum}B"
-                            ))
+                                android.util.Log.d(TAG, "Converted to real CDN URLs:")
+                                android.util.Log.d(TAG, "  Mirror 1: $mirror1Url ($quality)")
+                                android.util.Log.d(TAG, "  Mirror 2: $mirror2Url ($quality)")
 
-                            android.util.Log.d(TAG, "Converted to real CDN URLs:")
-                            android.util.Log.d(TAG, "  Mirror 1: $mirror1Url ($quality)")
-                            android.util.Log.d(TAG, "  Mirror 2: $mirror2Url ($quality)")
-
-                            // Return immediately - we got working URLs!
-                            return@withContext videoUrls
+                                // Return immediately - we got working URLs!
+                                return@withContext videoUrls
+                            }
                         }
+                    } catch (e: Exception) {
+                        android.util.Log.d(TAG, "Could not convert source URL to real CDN, falling back to jwplayer scraping")
                     }
-                } catch (e: Exception) {
-                    android.util.Log.d(TAG, "Could not convert source URL to real CDN, falling back to jwplayer scraping")
-                }
 
-                // FALLBACK: Fetch the jwplayer page (for older content or different CDN structures)
+                    // FALLBACK: Fetch the jwplayer page (for older content or different CDN structures)
                 var expectedQuality = ""
                 try {
                     val jwPlayerHtml = fetchHtml(embedUrl)
@@ -667,8 +686,9 @@ object VideoUrlScraper {
                         }
                     }
 
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "Error fetching jwplayer page: ${e.message}", e)
+                    } catch (e: Exception) {
+                        android.util.Log.e(TAG, "Error fetching jwplayer page: ${e.message}", e)
+                    }
                 }
             }
 
@@ -1488,6 +1508,8 @@ object VideoUrlScraper {
      * - https://d1.flnd.buzz/series/shoghal/01.1080.mp4
      * - https://d1.flnd.buzz/series/shoghal/01.720.mp4
      * - https://d1.flnd.buzz/series/shoghal/01.480.mp4
+     *
+     * EXTERNAL AUDIT FIX M3: Add validation and warnings for regex failures
      */
     private fun tryGenerateUrls(pageUrl: String): List<VideoUrl> {
         try {
@@ -1498,9 +1520,24 @@ object VideoUrlScraper {
 
             if (match != null) {
                 val slug = match.groupValues[1]
-                val season = match.groupValues[2].toIntOrNull() ?: 1
-                val episode = match.groupValues[3].toIntOrNull() ?: 1
+                val seasonStr = match.groupValues[2]
+                val episodeStr = match.groupValues[3]
 
+                // EXTERNAL AUDIT FIX M3: Validate parsed values before defaulting
+                val season = seasonStr.toIntOrNull()
+                val episode = episodeStr.toIntOrNull()
+
+                if (season == null || episode == null) {
+                    android.util.Log.e(TAG, "CRITICAL: Failed to parse season/episode numbers!")
+                    android.util.Log.e(TAG, "  URL: $pageUrl")
+                    android.util.Log.e(TAG, "  Parsed season: '$seasonStr' (int: $season)")
+                    android.util.Log.e(TAG, "  Parsed episode: '$episodeStr' (int: $episode)")
+                    android.util.Log.e(TAG, "  This will cause wrong video to play!")
+                    // Return empty to force error instead of silently playing wrong episode
+                    return emptyList()
+                }
+
+                android.util.Log.d(TAG, "Parsed series URL: slug=$slug, season=$season, episode=$episode")
                 return generateVideoUrls(slug, season, episode)
             }
 
@@ -1597,6 +1634,17 @@ object VideoUrlScraper {
     /**
      * Fetch HTML content from URL
      */
+    /**
+     * EXTERNAL AUDIT FIX C1: Fetch HTML with bounded reading to prevent OOM crashes
+     *
+     * Issue: Some pirate streaming sites serve 10-50MB HTML pages (minified JS bundles)
+     * Risk: Loading entire response into RAM causes OutOfMemoryError on 1GB devices
+     *
+     * Solution: Read max 2MB regardless of Content-Length header
+     * - Fast fail for known large sizes (Content-Length check)
+     * - Bounded read for chunked encoding (Content-Length = -1)
+     * - Prevents infinite reads from malicious/broken servers
+     */
     private suspend fun fetchHtml(url: String): String = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)
@@ -1608,7 +1656,38 @@ object VideoUrlScraper {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }
 
-            response.body?.string() ?: throw Exception("Empty response body")
+            val body = response.body ?: throw Exception("Empty response body")
+
+            // Step 1: Fast fail for known large sizes (via Content-Length header)
+            val contentLength = body.contentLength()
+            if (contentLength > 2_000_000) {
+                android.util.Log.w(TAG, "HTML response too large via header: $contentLength bytes (max 2MB)")
+                throw Exception("HTML response exceeds 2MB limit (Content-Length: $contentLength)")
+            }
+
+            // Step 2: BOUNDED READ - Read max 2MB, stops even if stream is larger/infinite
+            // Protects against chunked encoding (Content-Length = -1) and malicious servers
+            val maxBytes = 2L * 1024 * 1024 // 2MB hard limit
+            val source = body.source()
+            val buffer = okio.Buffer()
+            var totalRead = 0L
+
+            try {
+                while (totalRead < maxBytes) {
+                    val bytesRead = source.read(buffer, maxBytes - totalRead)
+                    if (bytesRead == -1L) break // End of stream
+                    totalRead += bytesRead
+                }
+
+                if (totalRead >= maxBytes) {
+                    android.util.Log.w(TAG, "HTML response truncated at 2MB limit")
+                }
+
+                buffer.readUtf8()
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Error reading HTML response: ${e.message}")
+                throw Exception("Failed to read HTML response", e)
+            }
         }
     }
 

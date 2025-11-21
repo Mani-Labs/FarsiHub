@@ -539,6 +539,10 @@ class HomeFragment : BrowseSupportFragment() {
         rowsAdapter.add(ListRow(header, listRowAdapter))
     }
 
+    /**
+     * EXTERNAL AUDIT FIX H1: Update movies row with smart in-place updates
+     * Prevents UI flickering by updating adapter contents instead of removing/adding rows
+     */
     private fun updateMoviesRow(title: String, movies: List<Movie>) {
         Log.d(TAG, "updateMoviesRow called: title='$title', count=${movies.size}")
 
@@ -546,26 +550,45 @@ class HomeFragment : BrowseSupportFragment() {
         synchronized(adapterLock) {
             // Find existing row
             var existingRowIndex = -1
+            var existingRow: ListRow? = null
             for (i in 0 until rowsAdapter.size()) {
                 val item = rowsAdapter.get(i)
                 if (item is ListRow && item.headerItem?.name == title) {
                     existingRowIndex = i
+                    existingRow = item
                     break
                 }
             }
 
-            if (existingRowIndex >= 0) {
-                Log.d(TAG, "  → Replacing skeleton row at index $existingRowIndex with real content")
-                // IMPORTANT: Replace entire row with new one that has correct presenter
-                // Skeleton row has SkeletonCardPresenter which can't render Movie objects!
-                rowsAdapter.removeItems(existingRowIndex, 1)
+            if (existingRow != null && existingRowIndex >= 0) {
+                val existingAdapter = existingRow.adapter as? ArrayObjectAdapter
 
-                // Create new row with correct presenter
-                val cardPresenter = com.example.farsilandtv.ui.ContentCardPresenter(requireContext())
-                val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-                movies.forEach { listRowAdapter.add(it) }
-                val header = HeaderItem(title)
-                rowsAdapter.add(existingRowIndex, ListRow(header, listRowAdapter))
+                // EXTERNAL AUDIT FIX H1: Check presenter type to decide update strategy
+                // If skeleton presenter → replace (presenter incompatible)
+                // If same presenter type → update in-place (no flicker)
+                val isSkeleton = existingAdapter?.presenterSelector is com.example.farsilandtv.utils.SkeletonCardPresenter
+
+                if (isSkeleton) {
+                    Log.d(TAG, "  → Replacing skeleton row with real content (presenter mismatch)")
+                    // Skeleton presenter can't render Movie objects - must replace
+                    rowsAdapter.removeItems(existingRowIndex, 1)
+                    val cardPresenter = com.example.farsilandtv.ui.ContentCardPresenter(requireContext())
+                    val listRowAdapter = ArrayObjectAdapter(cardPresenter)
+                    movies.forEach { listRowAdapter.add(it) }
+                    val header = HeaderItem(title)
+                    rowsAdapter.add(existingRowIndex, ListRow(header, listRowAdapter))
+                } else if (existingAdapter != null) {
+                    Log.d(TAG, "  → Updating row in-place (no flicker)")
+                    // EXTERNAL AUDIT FIX H1: Update in-place - smooth, no animation
+                    existingAdapter.clear()
+                    movies.forEach { existingAdapter.add(it) }
+                    // Notify adapter of change
+                    rowsAdapter.notifyArrayItemRangeChanged(existingRowIndex, 1)
+                } else {
+                    Log.w(TAG, "  → Existing adapter is null, replacing row")
+                    rowsAdapter.removeItems(existingRowIndex, 1)
+                    addMoviesRow(title, movies)
+                }
             } else {
                 Log.d(TAG, "  → Row not found, adding new row")
                 // Add new row
@@ -582,36 +605,48 @@ class HomeFragment : BrowseSupportFragment() {
         rowsAdapter.add(ListRow(header, listRowAdapter))
     }
 
+    /**
+     * EXTERNAL AUDIT FIX H1: Update series row with smart in-place updates
+     */
     private fun updateSeriesRow(title: String, series: List<Series>) {
         Log.d(TAG, "updateSeriesRow called: title='$title', count=${series.size}")
 
-        // H11 FIX: Synchronize adapter access to prevent ConcurrentModificationException
         synchronized(adapterLock) {
-            // Find existing row
             var existingRowIndex = -1
+            var existingRow: ListRow? = null
             for (i in 0 until rowsAdapter.size()) {
                 val item = rowsAdapter.get(i)
                 if (item is ListRow && item.headerItem?.name == title) {
                     existingRowIndex = i
+                    existingRow = item
                     break
                 }
             }
 
-            if (existingRowIndex >= 0) {
-                Log.d(TAG, "  → Replacing skeleton row at index $existingRowIndex with real content")
-                // IMPORTANT: Replace entire row with new one that has correct presenter
-                // Skeleton row has SkeletonCardPresenter which can't render Series objects!
-                rowsAdapter.removeItems(existingRowIndex, 1)
+            if (existingRow != null && existingRowIndex >= 0) {
+                val existingAdapter = existingRow.adapter as? ArrayObjectAdapter
+                val isSkeleton = existingAdapter?.presenterSelector is com.example.farsilandtv.utils.SkeletonCardPresenter
 
-                // Create new row with correct presenter
-                val cardPresenter = com.example.farsilandtv.ui.ContentCardPresenter(requireContext())
-                val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-                series.forEach { listRowAdapter.add(it) }
-                val header = HeaderItem(title)
-                rowsAdapter.add(existingRowIndex, ListRow(header, listRowAdapter))
+                if (isSkeleton) {
+                    Log.d(TAG, "  → Replacing skeleton row with real content")
+                    rowsAdapter.removeItems(existingRowIndex, 1)
+                    val cardPresenter = com.example.farsilandtv.ui.ContentCardPresenter(requireContext())
+                    val listRowAdapter = ArrayObjectAdapter(cardPresenter)
+                    series.forEach { listRowAdapter.add(it) }
+                    val header = HeaderItem(title)
+                    rowsAdapter.add(existingRowIndex, ListRow(header, listRowAdapter))
+                } else if (existingAdapter != null) {
+                    Log.d(TAG, "  → Updating row in-place (no flicker)")
+                    existingAdapter.clear()
+                    series.forEach { existingAdapter.add(it) }
+                    rowsAdapter.notifyArrayItemRangeChanged(existingRowIndex, 1)
+                } else {
+                    Log.w(TAG, "  → Existing adapter is null, replacing row")
+                    rowsAdapter.removeItems(existingRowIndex, 1)
+                    addSeriesRow(title, series)
+                }
             } else {
                 Log.d(TAG, "  → Row not found, adding new row")
-                // Add new row
                 addSeriesRow(title, series)
             }
         }
