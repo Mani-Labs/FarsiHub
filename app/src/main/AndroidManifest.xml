@@ -44,6 +44,14 @@
             android:launchMode="singleTop">
             <!-- EXTERNAL AUDIT FIX #5 + AUDIT #3 C1: Enable deep linking for Android TV "Play Next" integration -->
             <!-- System launcher needs permission to open this activity from home screen -->
+            <!-- EXTERNAL AUDIT VERIFIED S6 (2025-11-21): Exported Activity - ACCEPTABLE -->
+            <!-- Audit flags: exported="true" allows any app to launch this activity (phishing/XSS risk) -->
+            <!-- Verdict: Acceptable for personal use behind firewalled network -->
+            <!--   - App deployed via APK for personal use only (not on Play Store) -->
+            <!--   - Network is firewalled (no external access) -->
+            <!--   - Required for Android TV "Play Next" feature (system deep linking) -->
+            <!--   - DetailsActivity validates all intent extras before loading data -->
+            <!--   - No WebViews used (no XSS risk) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -101,6 +109,15 @@
             android:theme="@style/Theme.FarsilandTV"
             android:screenOrientation="landscape"
             android:label="Settings" />
+
+        <!-- EXTERNAL AUDIT FIX C3: WorkManager foreground service declaration for Android 14+ -->
+        <!-- Required when FOREGROUND_SERVICE_DATA_SYNC permission is used (lines 8-9) -->
+        <!-- Without this, WorkManager.setForeground() throws SecurityException on API 34+ -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            tools:node="merge" />
 
         <!-- Firebase Cloud Messaging removed - service file disabled, would cause ClassNotFoundException crash -->
     </application>

@@ -16,6 +16,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Request
@@ -390,9 +391,17 @@ object VideoUrlScraper {
                                 resultChannel.send(Pair(num, emptyList()))
                             }
                         } catch (e: Throwable) {
-                            // CRITICAL: Catch ALL exceptions (including CancellationException, OutOfMemoryError)
-                            // Even if early failure, we MUST send to prevent infinite hang
-                            android.util.Log.e(TAG, "CRITICAL: Server $num crashed before try block: ${e.message}")
+                            // EXTERNAL AUDIT FIX C4: Proper handling of CancellationException
+                            // Issue: Catching Throwable swallows CancellationException, breaks structured concurrency
+                            // Solution: Send empty result to prevent deadlock, then rethrow CancellationException
+                            val isCancellation = e is kotlinx.coroutines.CancellationException
+
+                            if (isCancellation) {
+                                android.util.Log.d(TAG, "Server $num coroutine cancelled (parent timeout)")
+                            } else {
+                                android.util.Log.e(TAG, "CRITICAL: Server $num crashed: ${e.message}")
+                            }
+
                             try {
                                 resultChannel.send(Pair(num, emptyList()))
                             } catch (sendError: Exception) {
@@ -408,6 +417,10 @@ object VideoUrlScraper {
                                     }
                                 }
                             }
+
+                            // CRITICAL: Rethrow CancellationException to maintain structured concurrency
+                            // This allows parent coroutine to properly handle cancellation
+                            if (isCancellation) throw e
                         }
                     }
                 }
@@ -528,6 +541,9 @@ object VideoUrlScraper {
 
                     try {
                         while (totalRead < maxBytes) {
+                            // EXTERNAL AUDIT FIX C1: Check cancellation before blocking I/O
+                            // Prevents zombie threads when coroutine cancelled mid-read
+                            ensureActive()
                             val bytesRead = source.read(buffer, maxBytes - totalRead)
                             if (bytesRead == -1L) break // End of stream
                             totalRead += bytesRead
@@ -1335,6 +1351,9 @@ object VideoUrlScraper {
 
                     try {
                         while (totalRead < maxBytes) {
+                            // EXTERNAL AUDIT FIX C1: Check cancellation before blocking I/O
+                            // Prevents zombie threads when coroutine cancelled mid-read
+                            ensureActive()
                             val bytesRead = source.read(buffer, maxBytes - totalRead)
                             if (bytesRead == -1L) break // End of stream
                             totalRead += bytesRead
@@ -1428,6 +1447,9 @@ object VideoUrlScraper {
 
                         try {
                             while (totalRead < maxBytes) {
+                                // EXTERNAL AUDIT FIX C1: Check cancellation before blocking I/O
+                                // Prevents zombie threads when coroutine cancelled mid-read
+                                ensureActive()
                                 val bytesRead = source.read(buffer, maxBytes - totalRead)
                                 if (bytesRead == -1L) break
                                 totalRead += bytesRead
@@ -1734,6 +1756,14 @@ object VideoUrlScraper {
      * - Fast fail for known large sizes (Content-Length check)
      * - Bounded read for chunked encoding (Content-Length = -1)
      * - Prevents infinite reads from malicious/broken servers
+     *
+     * EXTERNAL AUDIT VERIFIED P5 (2025-11-21): 10MB Memory Limit - ACCEPTABLE
+     * Audit suggests: Reduce to 2-3MB to prevent memory churn
+     * Verdict: 10MB is acceptable for Nvidia Shield TV (2GB+ RAM)
+     * - Target device has sufficient RAM for 10MB allocations
+     * - Modern pirate sites require larger buffer to capture video URLs
+     * - Personal use on single device (not scaled deployment)
+     * - Bounded read prevents runaway memory usage (hard 10MB cap)
      */
     private suspend fun fetchHtml(url: String): String = withContext(Dispatchers.IO) {
         val request = Request.Builder()
@@ -1765,6 +1795,9 @@ object VideoUrlScraper {
 
             try {
                 while (totalRead < maxBytes) {
+                    // EXTERNAL AUDIT FIX C1: Check cancellation before blocking I/O
+                    // Prevents zombie threads when coroutine cancelled mid-read
+                    ensureActive()
                     val bytesRead = source.read(buffer, maxBytes - totalRead)
                     if (bytesRead == -1L) break // End of stream
                     totalRead += bytesRead
