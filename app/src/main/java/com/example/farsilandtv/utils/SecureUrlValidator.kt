@@ -26,14 +26,44 @@ object SecureUrlValidator {
     private const val TAG = "SecureUrlValidator"
 
     /**
+     * EXTERNAL AUDIT FIX C3: Hardcoded fallback domains for fresh installs
+     * Issue: If RemoteConfig hasn't initialized yet, TRUSTED_DOMAINS would be empty
+     * Result: All URLs rejected on first app launch → blank screen
+     * Solution: Use RemoteConfig with fallback to hardcoded defaults
+     */
+    private val DEFAULT_TRUSTED_DOMAINS: Set<String> = setOf(
+        "farsiland.com",
+        "farsiplex.com",
+        "namakade.com",
+        "flnd.buzz",
+        "d1.flnd.buzz",
+        "d2.flnd.buzz",
+        "farsicdn.buzz",
+        "s1.farsicdn.buzz",
+        "s2.farsicdn.buzz",
+        "wp.farsiland.com"
+    )
+
+    /**
      * AUDIT FIX C1: Use RemoteConfig for trusted domains
      * Allows updating domains without APK releases
      *
      * Before: Hardcoded setOf(...) - required APK update for new domains
-     * After: RemoteConfig.trustedDomains - updatable via Firebase Remote Config
+     * After: RemoteConfig.trustedDomains with fallback - updatable via Firebase Remote Config
+     *
+     * EXTERNAL AUDIT FIX C3: Added fallback to prevent empty domain list on fresh install
      */
     private val TRUSTED_DOMAINS: Set<String>
-        get() = RemoteConfig.trustedDomains
+        get() {
+            val remoteConfigDomains = RemoteConfig.trustedDomains
+            // EXTERNAL AUDIT FIX C3: Use fallback if RemoteConfig not initialized (empty set)
+            return if (remoteConfigDomains.isNotEmpty()) {
+                remoteConfigDomains
+            } else {
+                Log.d(TAG, "RemoteConfig not initialized, using DEFAULT_TRUSTED_DOMAINS")
+                DEFAULT_TRUSTED_DOMAINS
+            }
+        }
 
     /**
      * AUDIT FIX M3.1: Whitelist of trusted domains that only support HTTP

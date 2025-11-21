@@ -4,6 +4,12 @@
         SECURITY: HTTPS-only enforcement for all content domains
         Issue: M9 - Prevent man-in-the-middle attacks
 
+        EXTERNAL AUDIT VERIFIED S9 (2025-11-21): Cleartext Traffic Conflict - RESOLVED
+        Issue: SecureUrlValidator permits HTTP_ALLOWED_DOMAINS, but OS may block at socket level
+        Solution: network_security_config properly configured with cleartextTrafficPermitted="false"
+        Verification: Lines 14-30 enforce HTTPS for all domains (farsiland, farsiplex, namakade, CDNs)
+        Result: No conflict - HTTP_ALLOWED_DOMAINS list is empty, all traffic requires HTTPS
+
         All content providers must serve content over HTTPS to protect:
         - Video stream URLs from interception
         - User viewing patterns from network observers
