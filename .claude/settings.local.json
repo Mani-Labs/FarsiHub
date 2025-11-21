@@ -15,7 +15,14 @@
       "Bash(.\\gradlew.bat assembleDebug:*)",
       "Bash(timeout 5 adb logcat:*)",
       "Bash(adb install:*)",
-      "WebFetch(domain:farsiland.com)"
+      "WebFetch(domain:farsiland.com)",
+      "Bash(cmd /c \"gradlew.bat assembleDebug\")",
+      "Bash(gradlew.bat:*)",
+      "Bash(cmd.exe /C \"gradlew.bat assembleDebug\")",
+      "Bash(cat:*)",
+      "Bash(timeout 30 adb logcat:*)",
+      "Bash(tee:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

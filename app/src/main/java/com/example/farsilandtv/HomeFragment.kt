@@ -1308,7 +1308,7 @@ class HomeFragment : BrowseSupportFragment() {
      * Displays 6 items (mix of movies and series) with auto-rotation every 5 seconds
      */
     private fun addFeaturedCarouselRow(items: List<FeaturedContent>) {
-        // Remove existing featured row if any
+        // Remove existing featured row if any (including skeleton featured rows)
         removeFeaturedCarouselRow()
 
         val presenter = FeaturedCarouselPresenter()
@@ -1322,26 +1322,45 @@ class HomeFragment : BrowseSupportFragment() {
         val header = HeaderItem(-1, "")
         val featuredRow = ListRow(header, featuredRowAdapter)
 
-        // Insert at top (position 0)
-        rowsAdapter.add(0, featuredRow)
+        // Ensure navigation row exists before inserting featured carousel
+        // Insert after navigation row if it exists, otherwise at top
+        val insertPosition = if (rowsAdapter.size() > 0) {
+            val firstRow = rowsAdapter.get(0)
+            if (firstRow is ListRow && firstRow.headerItem?.name == "Navigation") {
+                1 // Insert after navigation
+            } else {
+                0 // Insert at top
+            }
+        } else {
+            0
+        }
+
+        rowsAdapter.add(insertPosition, featuredRow)
 
         // Start auto-rotation
         startCarouselRotation()
 
-        Log.d(TAG, "Added featured carousel with ${items.size} items")
+        Log.d(TAG, "Added featured carousel with ${items.size} items at position $insertPosition")
     }
 
     /**
      * Remove existing featured carousel row
      */
     private fun removeFeaturedCarouselRow() {
+        // Remove all rows with empty header name (both skeleton and real featured rows)
+        val rowsToRemove = mutableListOf<Int>()
         for (i in 0 until rowsAdapter.size()) {
             val item = rowsAdapter.get(i)
             // Featured row has empty header name
             if (item is ListRow && item.headerItem?.name == "") {
-                rowsAdapter.removeItems(i, 1)
-                break
+                rowsToRemove.add(i)
             }
+        }
+
+        // Remove in reverse order to maintain indices
+        for (index in rowsToRemove.reversed()) {
+            rowsAdapter.removeItems(index, 1)
+            Log.d(TAG, "Removed featured/skeleton row at index $index")
         }
     }
 
@@ -1425,11 +1444,35 @@ class HomeFragment : BrowseSupportFragment() {
         Log.d(TAG, "Hiding skeleton screens...")
         isShowingSkeleton = false
 
-        // Don't remove anything! Let updateMoviesRow/updateSeriesRow/updateEpisodesRow
-        // naturally replace skeleton content when data arrives.
-        // This fixes race condition where data arrives after hideSkeletonLoading() runs.
+        // Clean up any remaining skeleton rows that might be stuck
+        // This prevents the skeleton box from remaining visible when switching sources
+        cleanupSkeletonRows()
 
         Log.d(TAG, "Skeleton flag cleared - observer callbacks will replace skeleton content")
+    }
+
+    private fun cleanupSkeletonRows() {
+        // Remove all rows that contain SkeletonCard objects
+        val rowsToRemove = mutableListOf<Int>()
+        for (i in 0 until rowsAdapter.size()) {
+            val item = rowsAdapter.get(i)
+            if (item is ListRow) {
+                val adapter = item.adapter as? ArrayObjectAdapter
+                if (adapter != null && adapter.size() > 0) {
+                    val firstItem = adapter.get(0)
+                    if (firstItem is com.example.farsilandtv.utils.SkeletonCard) {
+                        rowsToRemove.add(i)
+                        Log.d(TAG, "Found skeleton row at index $i to remove")
+                    }
+                }
+            }
+        }
+
+        // Remove skeleton rows in reverse order to maintain indices
+        for (index in rowsToRemove.reversed()) {
+            rowsAdapter.removeItems(index, 1)
+            Log.d(TAG, "Removed skeleton row at index $index")
+        }
     }
 
     companion object {

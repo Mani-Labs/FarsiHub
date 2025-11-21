@@ -187,11 +187,22 @@ class ContentRepository private constructor(context: Context) {
      * REFACTOR (2025-11-21): Trigger Paging auto-refresh after sync completes
      * Called by WorkManager when background sync finishes
      * Emits new timestamp to invalidate Pager and refresh UI
+     * FIX: Also clear cache to force HomeFragment to refresh non-paging data
      */
     fun notifySyncCompleted() {
+        // Clear all caches to force fresh data load for non-paging methods
+        clearCache()
+
+        // Trigger Pager recreation for reactive flows
         _syncCompletionTrigger.value = System.currentTimeMillis()
-        Log.i(TAG, "Sync completion triggered - Pagers will auto-refresh")
+        Log.i(TAG, "Sync completion triggered - Cache cleared, Pagers will auto-refresh")
     }
+
+    /**
+     * Observe sync completion events
+     * FIX (2025-11-21): Allow ViewModels to observe sync completion for auto-refresh
+     */
+    fun observeSyncCompletion(): Flow<Long> = _syncCompletionTrigger
 
     /**
      * Get movies with Paging 3 (database-first, unlimited items, REACTIVE)

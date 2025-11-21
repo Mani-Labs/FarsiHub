@@ -67,6 +67,9 @@ class FarsilandApp : Application() {
 
         // Schedule periodic background sync for FarsiPlex (15 minutes)
         scheduleFarsiPlexSync()
+
+        // Re-enabled (2025-11-21): Testing sync behavior to diagnose hang issue
+        triggerImmediateSync()
     }
 
     /**
@@ -102,6 +105,25 @@ class FarsilandApp : Application() {
                     .apply()
             }
         }
+    }
+
+    /**
+     * REFACTOR (2025-11-21): Trigger immediate sync on app launch
+     * Fetches latest content in background without blocking UI
+     * Runs on every app launch to keep content fresh
+     */
+    private fun triggerImmediateSync() {
+        // Trigger Farsiland sync
+        val farsilandSyncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.ContentSyncWorker>()
+            .build()
+        androidx.work.WorkManager.getInstance(applicationContext).enqueue(farsilandSyncRequest)
+
+        // Trigger FarsiPlex sync
+        val farsiPlexSyncRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.farsilandtv.data.sync.FarsiPlexSyncWorker>()
+            .build()
+        androidx.work.WorkManager.getInstance(applicationContext).enqueue(farsiPlexSyncRequest)
+
+        Log.i(TAG, "Launch sync triggered for ALL sources (Farsiland + FarsiPlex)")
     }
 
     /**

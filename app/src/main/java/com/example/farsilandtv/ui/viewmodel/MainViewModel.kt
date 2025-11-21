@@ -15,6 +15,7 @@ import com.example.farsilandtv.data.models.FeaturedContent
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.ErrorHandler
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 
@@ -81,6 +82,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Removed auto-load from init to prevent race condition
     // Fragment will call loadContent() after observers are ready
+
+    init {
+        // Observe sync completion and auto-reload data
+        viewModelScope.launch {
+            repository.observeSyncCompletion().collect { _ ->
+                Log.d(TAG, "Sync completed - reloading content automatically")
+                loadContent()
+            }
+        }
+    }
 
     /**
      * Load all content (movies, series, genres) with retry logic

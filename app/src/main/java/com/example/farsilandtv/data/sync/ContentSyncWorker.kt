@@ -20,6 +20,7 @@ import com.example.farsilandtv.utils.SyncPreferences
 import com.example.farsilandtv.utils.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -418,14 +419,15 @@ class ContentSyncWorker(
             // Build immutable map locally first (no concurrent access issues)
             val tempCache = mutableMapOf<String, Int>()
 
-            contentDb.seriesDao().getAllSeries().collect { seriesList ->
-                seriesList.forEach { series ->
-                    // Store both original and normalized titles
-                    tempCache[series.title.lowercase()] = series.id
-                    val normalizedTitle = normalizeSeriesTitle(series.title).lowercase()
-                    if (normalizedTitle.isNotBlank()) {
-                        tempCache[normalizedTitle] = series.id
-                    }
+            // FIX (2025-11-21): Use first() instead of collect() to avoid infinite hang
+            // collect() blocks forever on continuous Flow, first() gets one emission and completes
+            val seriesList = contentDb.seriesDao().getAllSeries().first()
+            seriesList.forEach { series ->
+                // Store both original and normalized titles
+                tempCache[series.title.lowercase()] = series.id
+                val normalizedTitle = normalizeSeriesTitle(series.title).lowercase()
+                if (normalizedTitle.isNotBlank()) {
+                    tempCache[normalizedTitle] = series.id
                 }
             }
 
@@ -607,19 +609,56 @@ class ContentSyncWorker(
         // AUDIT FIX: Get thumbnail URL from embedded media (no network call!)
         val thumbnailUrl = this.embedded?.featuredMedia?.firstOrNull()?.sourceUrl
 
-        val seasonNum = acf?.get("season")?.toString()?.toIntOrNull() ?: 1
-        val episodeNum = acf?.get("episode")?.toString()?.toIntOrNull() ?: 1
+        // Try to extract from ACF first (if available)
+        var seasonNum = acf?.get("season")?.toString()?.toIntOrNull() ?: 1
+        var episodeNum = acf?.get("episode")?.toString()?.toIntOrNull() ?: 1
 
         // Extract series title from ACF
-        val seriesTitle = acf?.get("series_title")?.toString()
+        var seriesTitle = acf?.get("series_title")?.toString()
             ?: acf?.get("show_name")?.toString()
             ?: acf?.get("show_title")?.toString()
+
+        // FALLBACK: Parse from title if ACF is missing (common patterns)
+        if (seriesTitle.isNullOrBlank()) {
+            // Try to extract from title patterns like:
+            // "Robate Salibi EP05" -> series: "Robate Salibi", episode: 5
+            // "Eshghe Abadi SE02 EP45" -> series: "Eshghe Abadi", season: 2, episode: 45
+            // "Karnaval EP18 Part 2" -> series: "Karnaval", episode: 18
+            val titleText = this.title.rendered
+
+            // Pattern for "Series Name SE## EP##" or "Series Name S#E##"
+            val seasonEpisodePattern = Regex("(.+?)\\s+S[E]?(\\d+)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+            // Pattern for "Series Name EP##"
+            val episodeOnlyPattern = Regex("(.+?)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+
+            when {
+                seasonEpisodePattern.matches(titleText) -> {
+                    val match = seasonEpisodePattern.find(titleText)!!
+                    seriesTitle = match.groupValues[1].trim()
+                    seasonNum = match.groupValues[2].toIntOrNull() ?: 1
+                    episodeNum = match.groupValues[3].toIntOrNull() ?: 1
+                }
+                episodeOnlyPattern.matches(titleText) -> {
+                    val match = episodeOnlyPattern.find(titleText)!!
+                    seriesTitle = match.groupValues[1].trim()
+                    episodeNum = match.groupValues[2].toIntOrNull() ?: 1
+                }
+                else -> {
+                    // Can't parse - use full title as series name
+                    seriesTitle = titleText
+                }
+            }
+
+            if (seriesTitle != titleText) {
+                Log.d(TAG, "Episode ${this.id}: Extracted '$seriesTitle' S${seasonNum}E${episodeNum} from title '$titleText'")
+            }
+        }
 
         // Link episode to series by matching series title
         val seriesId = if (!seriesTitle.isNullOrBlank()) {
             findSeriesIdByTitle(seriesTitle)
         } else {
-            Log.w(TAG, "Episode ${this.id} has no series title in ACF fields")
+            Log.w(TAG, "Episode ${this.id} has no series title (ACF missing, title parsing failed)")
             0
         }
 
