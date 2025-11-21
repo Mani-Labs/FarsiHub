@@ -56,6 +56,9 @@ class VideoPlayerActivity : AppCompatActivity() {
     private lateinit var loadingIndicator: ProgressBar
     private lateinit var errorText: TextView
     private var player: ExoPlayer? = null
+
+    // Flag to defer video URL fetching until activity is started
+    private var pendingVideoFetch = false
     private var cache: SimpleCache? = null
 
     // M6 FIX: Network monitoring during playback
@@ -488,12 +491,18 @@ class VideoPlayerActivity : AppCompatActivity() {
         return lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }
 
-    private fun fetchVideoUrlsAndPlay() {
+    private fun fetchVideoUrlsAndPlay(skipLifecycleCheck: Boolean = false) {
         // EXTERNAL AUDIT FIX C3: Early lifecycle check
-        if (!isActivityAlive()) {
-            Log.w(TAG, "fetchVideoUrlsAndPlay called but activity is not in STARTED state, aborting")
+        // If activity not started yet, defer the fetch until onStart()
+        // Skip check when called from onStart() (we know it's safe then)
+        if (!skipLifecycleCheck && !isActivityAlive()) {
+            Log.w(TAG, "fetchVideoUrlsAndPlay called but activity is not in STARTED state, deferring until onStart()")
+            pendingVideoFetch = true
             return
         }
+
+        // Clear pending flag since we're executing now
+        pendingVideoFetch = false
 
         loadingIndicator.visibility = View.VISIBLE
         errorText.visibility = View.GONE
@@ -517,7 +526,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 Log.d(TAG, "========================================")
 
                 // EXTERNAL AUDIT FIX C3: Lifecycle check before showing Toast
-                if (!isActivityAlive()) {
+                // Skip this check when called from onStart() (we know it's safe then)
+                if (!skipLifecycleCheck && !isActivityAlive()) {
                     Log.w(TAG, "Activity destroyed during scraping setup, aborting")
                     return@launch
                 }
@@ -583,7 +593,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 Log.d(TAG, "========================================")
 
                 // EXTERNAL AUDIT FIX C3: Lifecycle check before showing Toast and starting playback
-                if (!isActivityAlive()) {
+                // Skip this check when called from onStart() (we know it's safe then)
+                if (!skipLifecycleCheck && !isActivityAlive()) {
                     Log.w(TAG, "Activity destroyed after scraping, aborting playback")
                     return@launch
                 }
@@ -1122,6 +1133,12 @@ class VideoPlayerActivity : AppCompatActivity() {
 
             Log.d(TAG, "Player restored: position=${state.position}ms, playing=${state.wasPlaying}")
         }
+
+            // Execute pending video fetch if it was deferred from onCreate/onNewIntent
+            if (pendingVideoFetch) {
+                Log.d(TAG, "Executing deferred video fetch now that activity is started")
+                fetchVideoUrlsAndPlay(skipLifecycleCheck = true)  // Skip check - we're in onStart()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error in onStart() - failed to restore player", e)
             Toast.makeText(this, "Error restoring playback: ${e.message}", Toast.LENGTH_SHORT).show()

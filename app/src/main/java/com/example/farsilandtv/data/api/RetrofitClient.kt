@@ -155,7 +155,7 @@ object RetrofitClient {
                 }
             )
 
-            // Add User-Agent header
+            // Add User-Agent and cache control
             .addNetworkInterceptor { chain ->
                 var request = chain.request()
 
@@ -168,20 +168,37 @@ object RetrofitClient {
 
                 val response = chain.proceed(request)
 
-                // EXTERNAL AUDIT FIX H1 (2025-11-21): Respect Server Cache-Control Headers
-                // Issue: Forcing max-age=600 (10 min) breaks when server sends signed URLs (expire < 5 min)
-                // Previous: Hardcoded exclusion list for video endpoints - brittle, breaks on API changes
-                // Fix: REMOVE cache override entirely - trust server's Cache-Control headers
-                // Benefits:
-                // 1. No more 403 Forbidden errors from expired signed URLs
-                // 2. Server controls caching policy (more flexible)
-                // 3. No maintenance burden when API structure changes
-                // 4. Works correctly with CDN rotation and dynamic content
+                // EXTERNAL AUDIT FIX H1 CORRECTED (2025-11-21): Selective Cache Override
+                // Issue: Forcing max-age=600 breaks when server sends signed URLs (expire < 5 min)
+                // Solution: ONLY respect server headers for video/player endpoints (signed URLs)
+                //           KEEP cache override for content endpoints (movies/series lists)
                 //
-                // Note: If server sends no-cache, that's intentional - respect it
-                // If performance issues arise, fix on server (WordPress), not client
-                android.util.Log.d("HTTP_CACHE", "Respecting server Cache-Control headers")
-                response
+                // Why this works:
+                // 1. Content lists (/movies, /tvshows) don't expire - safe to cache 10 min
+                // 2. Video URLs (/dooplayer, /player) use signed URLs - respect server's short TTL
+                // 3. WordPress sends no-cache for most endpoints - need override for content
+                val url = request.url.toString()
+                val isVideoOrPlayerEndpoint = url.contains("/wp-json/dooplayer/") ||
+                                             url.contains("/player") ||
+                                             url.contains("/video/") ||
+                                             url.contains(".mp4") ||
+                                             url.contains("/stream/")
+
+                if (isVideoOrPlayerEndpoint) {
+                    // Respect server's Cache-Control for video/player endpoints
+                    // These may have signed URLs that expire quickly
+                    android.util.Log.d("HTTP_CACHE", "Video/player endpoint - respecting server cache headers")
+                    response
+                } else {
+                    // Override server's Cache-Control for content endpoints
+                    // WordPress sends no-cache, but content lists are safe to cache
+                    android.util.Log.d("HTTP_CACHE", "Content endpoint - applying 10min cache")
+                    response.newBuilder()
+                        .removeHeader("Pragma")
+                        .removeHeader("Cache-Control")
+                        .header("Cache-Control", "public, max-age=600") // 10 minutes
+                        .build()
+                }
             }
 
             // Log cache hits/misses and track last network fetch time

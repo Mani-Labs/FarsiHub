@@ -566,7 +566,9 @@ class HomeFragment : BrowseSupportFragment() {
                 // EXTERNAL AUDIT FIX H1: Check presenter type to decide update strategy
                 // If skeleton presenter → replace (presenter incompatible)
                 // If same presenter type → update in-place (no flicker)
-                val isSkeleton = existingAdapter?.presenterSelector is com.example.farsilandtv.utils.SkeletonCardPresenter
+                // FIX: Check if adapter contains SkeletonCard objects instead of presenter type
+                val isSkeleton = existingAdapter?.size() ?: 0 > 0 &&
+                                existingAdapter?.get(0) is com.example.farsilandtv.utils.SkeletonCard
 
                 if (isSkeleton) {
                     Log.d(TAG, "  → Replacing skeleton row with real content (presenter mismatch)")
@@ -625,7 +627,9 @@ class HomeFragment : BrowseSupportFragment() {
 
             if (existingRow != null && existingRowIndex >= 0) {
                 val existingAdapter = existingRow.adapter as? ArrayObjectAdapter
-                val isSkeleton = existingAdapter?.presenterSelector is com.example.farsilandtv.utils.SkeletonCardPresenter
+                // FIX: Check if adapter contains SkeletonCard objects instead of presenter type
+                val isSkeleton = existingAdapter?.size() ?: 0 > 0 &&
+                                existingAdapter?.get(0) is com.example.farsilandtv.utils.SkeletonCard
 
                 if (isSkeleton) {
                     Log.d(TAG, "  → Replacing skeleton row with real content")
