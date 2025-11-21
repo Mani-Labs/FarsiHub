@@ -9,6 +9,7 @@ import com.example.farsilandtv.utils.SecureRegex
 import com.example.farsilandtv.utils.SecureUrlValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -397,12 +398,39 @@ object VideoUrlScraper {
                     }
                 }
 
-                // Collect results from ALL servers (each server may have different qualities)
+                // EXTERNAL AUDIT FIX H2: Early return for fast playback start
+                // Previous: Waited for all 5 servers (10s+ if one server is slow)
+                // Now: Return as soon as we get working URLs, or wait max 3 seconds
                 var responsesReceived = 0
                 val totalRequests = 5
+                val startTime = System.currentTimeMillis()
+                val maxWaitMs = 3000L // 3 second timeout for fast UX
 
                 while (responsesReceived < totalRequests) {
-                    val (serverNum, urls) = resultChannel.receive() // Suspends until result available
+                    // Check if we have enough URLs and exceeded min wait time
+                    if (videoUrls.isNotEmpty() && (System.currentTimeMillis() - startTime) > 500L) {
+                        android.util.Log.d(TAG, "Early return: Got ${videoUrls.size} URLs in ${System.currentTimeMillis() - startTime}ms")
+                        break
+                    }
+
+                    // Check total timeout
+                    val remainingTime = maxWaitMs - (System.currentTimeMillis() - startTime)
+                    if (remainingTime <= 0) {
+                        android.util.Log.w(TAG, "Timeout: Only received $responsesReceived/$totalRequests responses in 3s")
+                        break
+                    }
+
+                    // Receive with timeout
+                    val result = try {
+                        withTimeout(remainingTime) {
+                            resultChannel.receive()
+                        }
+                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                        android.util.Log.w(TAG, "Timeout waiting for remaining servers")
+                        break
+                    }
+
+                    val (serverNum, urls) = result
                     responsesReceived++
 
                     if (urls.isNotEmpty()) {
