@@ -93,8 +93,13 @@ object VideoUrlScraper {
     private const val TAG = "VideoUrlScraper"
     private val httpClient = RetrofitClient.getHttpClient()
 
-    // Thread-safe cache for video URLs (page URL -> cached URLs with timestamp)
-    private val urlCache = ConcurrentHashMap<String, CachedUrls>()
+    // EXTERNAL AUDIT FIX C2: LRU cache with size limit to prevent OOM
+    // Previous: ConcurrentHashMap with no size limit → OOM after days of use
+    // Solution: android.util.LruCache with 100-entry limit (thread-safe, auto-evicts oldest)
+    // Memory impact: ~10KB per entry × 100 = ~1MB max (vs unlimited growth)
+    private val urlCache = object : android.util.LruCache<String, CachedUrls>(100) {
+        override fun sizeOf(key: String, value: CachedUrls): Int = 1
+    }
     private const val CACHE_DURATION = 5 * 60 * 1000L // 5 minutes in milliseconds
 
     /**
@@ -134,7 +139,7 @@ object VideoUrlScraper {
             }
 
             // Check cache first (use normalized URL as cache key)
-            urlCache[pageUrl]?.let { cached ->
+            urlCache.get(pageUrl)?.let { cached ->
                 val cacheAge = System.currentTimeMillis() - cached.timestamp
                 if (cacheAge < CACHE_DURATION) {
                     val remainingTime = (CACHE_DURATION - cacheAge) / 1000
@@ -206,7 +211,7 @@ object VideoUrlScraper {
                 }
 
                 // Cache the result
-                urlCache[pageUrl] = CachedUrls(secureUrls, System.currentTimeMillis())
+                urlCache.put(pageUrl, CachedUrls(secureUrls, System.currentTimeMillis()))
                 android.util.Log.d(TAG, "SUCCESS: Found ${secureUrls.size} secure video URLs from $sourceType")
                 android.util.Log.d(TAG, "URLs cached for ${CACHE_DURATION / 1000}s")
                 android.util.Log.d(TAG, "========================================")
@@ -261,7 +266,7 @@ object VideoUrlScraper {
             if (videoUrl != null) {
                 val urlsList = listOf(videoUrl)
                 // Cache the result
-                urlCache[pageUrl] = CachedUrls(urlsList, System.currentTimeMillis())
+                urlCache.put(pageUrl, CachedUrls(urlsList, System.currentTimeMillis()))
                 android.util.Log.d(TAG, "SUCCESS: Found 1 video URL from Namakade")
                 android.util.Log.d(TAG, "URL: ${videoUrl.url}")
                 android.util.Log.d(TAG, "========================================")
@@ -916,13 +921,27 @@ object VideoUrlScraper {
 
     /**
      * Extract URL from JavaScript onclick or similar attributes
-     * Note: This is a synchronous helper function, ReDoS protection handled by input size limits
+     * EXTERNAL AUDIT FIX H2: ReDoS protection via input size limits
+     * Previous: Unbounded regex on malicious JS → catastrophic backtracking
+     * Solution: 10KB size limit + simple patterns without nested quantifiers
+     *
+     * Note: Must remain synchronous (called from non-suspend functions)
+     * ReDoS protection: Input truncation to 10KB prevents exponential regex time
      */
     private fun extractUrlFromJavaScript(javaScript: String): String? {
         if (javaScript.isEmpty()) return null
 
-        // EXTERNAL AUDIT FIX S5: Simpler approach - Just use pre-compiled regex (not suspend function)
-        // ReDoS risk mitigated by: 1) Input size limits in caller, 2) Simple patterns with no nested quantifiers
+        // EXTERNAL AUDIT FIX H2: Apply strict size limit before regex processing
+        // Prevents ReDoS attacks with catastrophic backtracking on malicious payloads
+        // 10KB limit is generous for legitimate onclick handlers but blocks attack vectors
+        val safeInput = if (javaScript.length > 10000) {
+            android.util.Log.w(TAG, "JavaScript string too long (${javaScript.length} chars), truncating to 10KB for safety")
+            javaScript.substring(0, 10000)
+        } else {
+            javaScript
+        }
+
+        // Simplified patterns without nested quantifiers to minimize backtracking risk
         val patterns = listOf(
             Regex("""https?://[^\s"'<>()]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE), // Direct URL
             Regex("""'([^']*\.mp4[^']*)'""", RegexOption.IGNORE_CASE), // Single quoted
@@ -930,7 +949,13 @@ object VideoUrlScraper {
         )
 
         for (pattern in patterns) {
-            val match = pattern.find(javaScript)
+            val match = try {
+                pattern.find(safeInput)
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Regex error on pattern: ${e.message}")
+                null
+            }
+
             if (match != null) {
                 // If regex has groups, get the first group, otherwise get the full match
                 val url = if (match.groupValues.size > 1) {
@@ -1756,8 +1781,8 @@ object VideoUrlScraper {
      * Useful for forcing fresh scraping or clearing memory
      */
     fun clearCache() {
-        val cacheSize = urlCache.size
-        urlCache.clear()
+        val cacheSize = urlCache.size()
+        urlCache.evictAll()
         android.util.Log.d(TAG, "Cache cleared. Removed $cacheSize cached entries")
     }
 
@@ -1778,13 +1803,14 @@ object VideoUrlScraper {
      * Get cache statistics for debugging
      */
     fun getCacheStats(): String {
-        val size = urlCache.size
-        val totalUrls = urlCache.values.sumOf { it.urls.size }
+        val size = urlCache.size()
+        val snapshot = urlCache.snapshot()
+        val totalUrls = snapshot.values.sumOf { it.urls.size }
         val avgAge = if (size > 0) {
             val now = System.currentTimeMillis()
-            urlCache.values.map { (now - it.timestamp) / 1000 }.average()
+            snapshot.values.map { (now - it.timestamp) / 1000 }.average()
         } else 0.0
 
-        return "Cache: $size pages, $totalUrls URLs, avg age: ${avgAge.toInt()}s"
+        return "Cache: $size/$100 pages (max 100), $totalUrls URLs, avg age: ${avgAge.toInt()}s"
     }
 }

@@ -117,16 +117,29 @@ object RetrofitClient {
      * OkHttpClient with caching, logging and timeouts
      * OPTIMIZED: Connection pooling, HTTP/2, DNS caching (2025-11-10)
      * AUDIT FIX C1.3: Safe cache initialization
+     * EXTERNAL AUDIT FIX H1: Robust handling when accessed before Application ready
      */
     private val okHttpClient: OkHttpClient by lazy {
+        val cache = try {
+            getOrCreateCache()
+        } catch (e: Exception) {
+            android.util.Log.e("RetrofitClient", "Failed to initialize cache, continuing without it: ${e.message}")
+            null
+        }
+
+        if (cache == null) {
+            android.util.Log.w("RetrofitClient", "OkHttpClient initialized WITHOUT caching")
+            android.util.Log.w("RetrofitClient", "This is safe but reduces performance")
+        }
+
         OkHttpClient.Builder()
             // Optimized timeouts for better UX - users don't wait too long for failed requests
             .connectTimeout(20, TimeUnit.SECONDS)  // Reduced from 60s
             .readTimeout(25, TimeUnit.SECONDS)     // Reduced from 30s
             .writeTimeout(25, TimeUnit.SECONDS)     // Reduced from 30s
 
-            // HTTP Cache (AUDIT FIX C1.3: Use safe initialization)
-            .cache(getOrCreateCache())
+            // HTTP Cache (null is safe - OkHttp works fine without cache)
+            .cache(cache)
 
             // Performance optimizations (2025-11-10)
             .connectionPool(connectionPool)  // 10 idle connections for faster reuse
