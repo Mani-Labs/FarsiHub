@@ -339,16 +339,27 @@ object VideoUrlScraper {
 
             android.util.Log.d(TAG, "Content type: $contentType")
 
+            // Extract domain from pageUrl (supports both farsiland.com and farsiplex.com)
+            val domain = try {
+                java.net.URL(pageUrl).host
+            } catch (e: Exception) {
+                // Fallback to farsiplex.com if URL parsing fails
+                "farsiplex.com"
+            }
+            android.util.Log.d(TAG, "Using API domain: $domain")
+
             // AUDIT FIX H2.1: First-wins pattern - return as soon as ANY server responds
             // Previous issue: awaitAll() waited for all 5 servers even if server 1 responded in 0.5s
             // Fixed: Return immediately when first server responds with valid URLs, cancel others
             val videoUrls = mutableListOf<VideoUrl>()
 
-            // AUDIT FIX: True first-wins pattern using race condition avoidance
             // AUDIT FIX H1: Reactive Channel-based approach (replaces 50ms polling loop)
             // Previous issue: Polling with delay(50) caused CPU wakeups every 50ms
             // New approach: Channel provides immediate notification when jobs complete
             // Performance impact: Zero CPU usage while waiting vs constant polling
+            //
+            // IMPORTANT: We must collect URLs from ALL servers, not just first response!
+            // Different servers return different qualities (server 1=720p, server 2=1080p, etc.)
             coroutineScope {
                 // Channel to receive results immediately when available
                 val resultChannel = Channel<Pair<Int, List<VideoUrl>>>(Channel.UNLIMITED)
@@ -356,7 +367,7 @@ object VideoUrlScraper {
                 // Launch all 5 API requests in parallel, each sending to channel when complete
                 val jobs = (1..5).map { num ->
                     launch {
-                        val apiUrl = "https://farsiplex.com/wp-json/dooplayer/v2/$postId/$contentType/$num"
+                        val apiUrl = "https://$domain/wp-json/dooplayer/v2/$postId/$contentType/$num"
                         android.util.Log.d(TAG, "Trying API: $apiUrl")
                         try {
                             val urls = fetchFromDooPlayAPI(apiUrl, num)
@@ -370,30 +381,24 @@ object VideoUrlScraper {
                     }
                 }
 
-                // React immediately to results as they arrive (no polling delay)
+                // Collect results from ALL servers (each server may have different qualities)
                 var responsesReceived = 0
                 val totalRequests = 5
-                var foundResult = false
 
-                while (responsesReceived < totalRequests && !foundResult) {
+                while (responsesReceived < totalRequests) {
                     val (serverNum, urls) = resultChannel.receive() // Suspends until result available
                     responsesReceived++
 
                     if (urls.isNotEmpty()) {
+                        android.util.Log.d(TAG, "Server $serverNum returned ${urls.size} URLs")
                         videoUrls.addAll(urls)
-                        foundResult = true
-                        android.util.Log.d(TAG, "Server $serverNum completed first with ${urls.size} URLs - cancelling others")
-
-                        // Cancel remaining jobs immediately to save bandwidth
-                        jobs.forEach { it.cancel() }
-                        break
                     }
                 }
 
                 resultChannel.close()
             }
 
-            android.util.Log.d(TAG, "First-wins pattern completed, found ${videoUrls.size} total URLs")
+            android.util.Log.d(TAG, "Collected URLs from all servers, found ${videoUrls.size} total URLs")
 
             if (videoUrls.isNotEmpty()) {
                 // Remove duplicates and sort by quality
