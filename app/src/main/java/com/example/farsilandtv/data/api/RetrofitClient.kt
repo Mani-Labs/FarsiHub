@@ -202,11 +202,12 @@ object RetrofitClient {
                 var request = chain.request()
 
                 // AUDIT FIX #3: Safe access to Application instance with null check
+                // CRITICAL FIX: Default to offline mode when app instance unavailable
                 val isNetworkAvailable = try {
                     val appInstance = FarsilandApp.instance
                     if (appInstance == null) {
-                        android.util.Log.w("RetrofitClient", "Application instance not available, assuming network is available")
-                        true // Fail gracefully - assume network available
+                        android.util.Log.w("RetrofitClient", "Application instance not available, forcing offline mode (use cache)")
+                        false // CRITICAL FIX: Safer default - use cache when uncertain
                     } else {
                         val connectivityManager = appInstance.getSystemService(
                             android.content.Context.CONNECTIVITY_SERVICE

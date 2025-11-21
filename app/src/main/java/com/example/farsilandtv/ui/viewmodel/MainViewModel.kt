@@ -22,10 +22,17 @@ import kotlinx.coroutines.async
  * ViewModel for main browse screen
  * Loads movies, TV shows, and genres from Farsiland.com
  * NEW: Uses AndroidViewModel to access Application context for database
+ *
+ * CRITICAL FIX: Lazy repository initialization to prevent ANR
+ * - Repository init triggers database creation and migrations
+ * - MIGRATION_9_10 runs heavy DELETE with GROUP BY on main thread
+ * - Lazy init defers until first use in viewModelScope (background thread)
  */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = ContentRepository.getInstance(application.applicationContext)
+    private val repository by lazy {
+        ContentRepository.getInstance(application.applicationContext)
+    }
 
     // Feature #18: Paging 3 - Unlimited scrolling (replaces 300-item caps)
     // These flows are database-backed and can handle unlimited items efficiently

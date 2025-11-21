@@ -308,14 +308,16 @@ class ContentRepository private constructor(context: Context) {
                 // Fallback to database if API fails (offline mode)
                 try {
                     ensureActive() // Check cancellation before DB query
-                    val cachedMovies = getContentDb().movieDao().getRecentMovies(perPage).firstOrNull()
+                    // CRITICAL FIX: Use offset for proper offline pagination
+                    val offset = (page - 1) * perPage
+                    val cachedMovies = getContentDb().movieDao().getRecentMoviesWithOffset(limit = perPage, offset = offset).firstOrNull()
                     ensureActive() // Check cancellation after DB query
                     if (!cachedMovies.isNullOrEmpty()) {
                         val movies = cachedMovies.map { it.toMovie() }
 
                         // Store in cache (fallback data)
                         moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database (API fallback)")
+                        Log.d(TAG, "getMovies() - Cached ${movies.size} movies from database (API fallback, page $page)")
 
                         return@withContext Result.success(movies)
                     }
@@ -431,15 +433,17 @@ class ContentRepository private constructor(context: Context) {
                 // Fallback to database if API fails (offline mode)
                 try {
                     ensureActive() // Check cancellation before DB query
+                    // CRITICAL FIX: Use offset for proper offline pagination
+                    val offset = (page - 1) * perPage
                     val urlPattern = currentSource.urlPattern
-                    val cachedSeries = getContentDb().seriesDao().getRecentSeriesFiltered(urlPattern, perPage).firstOrNull()
+                    val cachedSeries = getContentDb().seriesDao().getRecentSeriesFilteredWithOffset(urlPattern, limit = perPage, offset = offset).firstOrNull()
                     ensureActive() // Check cancellation after DB query
                     if (!cachedSeries.isNullOrEmpty()) {
                         val series = cachedSeries.map { it.toSeries() }
 
                         // Store in cache (fallback data)
                         seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getTvShows() - Cached ${series.size} series from database (API fallback)")
+                        Log.d(TAG, "getTvShows() - Cached ${series.size} series from database (API fallback, page $page)")
 
                         return@withContext Result.success(series)
                     }
@@ -525,15 +529,17 @@ class ContentRepository private constructor(context: Context) {
                 // Fallback to database if API fails (offline mode)
                 try {
                     ensureActive() // Check cancellation before DB query
+                    // CRITICAL FIX: Use offset for proper offline pagination
+                    val offset = (page - 1) * perPage
                     val urlPattern = currentSource.urlPattern
-                    val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFiltered(urlPattern, perPage).firstOrNull()
+                    val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFilteredWithOffset(urlPattern, limit = perPage, offset = offset).firstOrNull()
                     ensureActive() // Check cancellation after DB query
                     if (!cachedEpisodes.isNullOrEmpty()) {
                         val episodes = cachedEpisodes.map { it.toEpisode() }
 
                         // Store in cache (fallback data)
                         episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
-                        Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database (API fallback)")
+                        Log.d(TAG, "getRecentEpisodes() - Cached ${episodes.size} episodes from database (API fallback, page $page)")
 
                         return@withContext Result.success(episodes)
                     }
@@ -1503,13 +1509,26 @@ class ContentRepository private constructor(context: Context) {
      *
      * AUDIT FIX #4: Use static SimpleDateFormat with synchronized access
      * Reduces GC pressure and improves performance in loops
+     *
+     * CRITICAL FIX: WordPress returns dates without 'Z' timezone suffix
+     * Must normalize before parsing to prevent DateTimeParseException
      */
     private fun parseDateToTimestamp(dateStr: String): Long {
         return try {
+            // CRITICAL FIX: WordPress returns local time without 'Z' suffix
+            // Example: "2023-12-25T10:30:00" (missing Z)
+            // Instant.parse() requires: "2023-12-25T10:30:00Z"
+            // Append 'Z' if not present to treat as UTC
+            val normalized = if (dateStr.matches(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"))) {
+                "${dateStr}Z"
+            } else {
+                dateStr
+            }
+
             // AUDIT FIX #17: java.time.Instant is thread-safe - no locking required
             // Previous: synchronized(DATE_FORMATTER) caused global bottleneck
             // Now: Lock-free parsing (available since API 26, minSdk = 28)
-            java.time.Instant.parse(dateStr).toEpochMilli()
+            java.time.Instant.parse(normalized).toEpochMilli()
         } catch (e: Exception) {
             0L
         }

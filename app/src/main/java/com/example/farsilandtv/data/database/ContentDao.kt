@@ -17,6 +17,10 @@ interface CachedMovieDao {
     @Query("SELECT * FROM cached_movies ORDER BY lastUpdated DESC LIMIT :limit")
     fun getRecentMovies(limit: Int = 20): Flow<List<CachedMovie>>
 
+    // CRITICAL FIX: Offline pagination support with LIMIT and OFFSET
+    @Query("SELECT * FROM cached_movies ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    fun getRecentMoviesWithOffset(limit: Int, offset: Int): Flow<List<CachedMovie>>
+
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
     // OPTIMIZATION: Uses lastUpdated (website publish date) instead of dateAdded (scrape date) for correct chronological order
@@ -96,6 +100,10 @@ interface CachedSeriesDao {
     @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit")
     fun getRecentSeriesFiltered(urlPattern: String, limit: Int = 20): Flow<List<CachedSeries>>
 
+    // CRITICAL FIX: Offline pagination support with LIMIT and OFFSET
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    fun getRecentSeriesFilteredWithOffset(urlPattern: String, limit: Int, offset: Int): Flow<List<CachedSeries>>
+
     // Feature #18: Paging 3 for unlimited scrolling (replaces 300-item caps)
     @Query("SELECT * FROM cached_series ORDER BY dateAdded DESC")
     fun getSeriesPaged(): PagingSource<Int, CachedSeries>
@@ -170,6 +178,10 @@ interface CachedEpisodeDao {
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
     @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit")
     fun getRecentEpisodesFiltered(urlPattern: String, limit: Int = 20): Flow<List<CachedEpisode>>
+
+    // CRITICAL FIX: Offline pagination support with LIMIT and OFFSET
+    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    fun getRecentEpisodesFilteredWithOffset(urlPattern: String, limit: Int, offset: Int): Flow<List<CachedEpisode>>
 
     // Feature #18: Paging 3 for unlimited scrolling (replaces 300-item caps)
     @Query("SELECT * FROM cached_episodes ORDER BY dateAdded DESC")
