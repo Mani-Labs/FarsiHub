@@ -93,12 +93,19 @@ class ContentSyncWorker(
             val movieCount = syncMovies(lastSyncTimestamp)
             val seriesCount = syncSeries(lastSyncTimestamp)
 
-            // AUDIT FIX: Skip episode sync if series sync failed
-            // Prevents orphaned episodes with seriesId = 0
+            // AUDIT FIX C2: Enhanced check to prevent orphaned episodes
+            // Skip episode sync if:
+            // 1. Series sync failed (seriesCount < 0)
+            // 2. Series title cache not built (seriesTitleCache == null)
+            // This prevents episodes from being inserted with seriesId = 0
             val episodeCount = if (seriesCount >= 0 && seriesTitleCache != null) {
                 syncEpisodes(lastSyncTimestamp)
             } else {
-                Log.w(TAG, "Skipping episode sync - series sync failed or cache unavailable")
+                if (seriesCount < 0) {
+                    Log.e(TAG, "CRITICAL: Aborting episode sync - series sync FAILED")
+                } else {
+                    Log.w(TAG, "CRITICAL: Aborting episode sync - series cache unavailable")
+                }
                 0
             }
 
@@ -304,6 +311,7 @@ class ContentSyncWorker(
 
     /**
      * Sync series added/updated since last sync
+     * AUDIT FIX C2: Returns -1 on failure to prevent orphaned episodes
      */
     private suspend fun syncSeries(lastSyncTimestamp: Long): Int {
         try {
@@ -342,7 +350,8 @@ class ContentSyncWorker(
             return newSeries.size
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing series: ${e.message}", e)
-            return 0
+            // AUDIT FIX C2: Return -1 to signal failure (not 0 which means "0 new items")
+            return -1
         }
     }
 
@@ -419,13 +428,23 @@ class ContentSyncWorker(
     /**
      * Parse WordPress date string to timestamp
      * Example: "2023-12-25T10:30:00" -> milliseconds since epoch
+     * AUDIT FIX C5: Handles WordPress dates without timezone suffix
      */
     private fun parseDateToTimestamp(dateStr: String): Long {
         return try {
-            val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-            format.timeZone = java.util.TimeZone.getTimeZone("UTC")
-            format.parse(dateStr)?.time ?: 0L
+            // AUDIT FIX C5: WordPress returns local time without 'Z' suffix
+            // Append 'Z' if not present to treat as UTC
+            val normalizedDate = if (dateStr.matches(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"))) {
+                "${dateStr}Z"
+            } else {
+                dateStr
+            }
+
+            // Parse using ISO-8601 format
+            val instant = java.time.Instant.parse(normalizedDate)
+            instant.toEpochMilli()
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse date: '$dateStr' -> normalized: '${dateStr}Z'", e)
             0L
         }
     }

@@ -236,7 +236,14 @@ object NamakadeHtmlParser {
                     continue
                 }
 
-                val (parsedSeason, episode) = parseEpisodeNumber(episodeNumText)
+                // AUDIT FIX M1: Skip episode if parsing fails (returns null)
+                val episodeNumbers = parseEpisodeNumber(episodeNumText)
+                if (episodeNumbers == null) {
+                    android.util.Log.w("NamakadeHtmlParser", "Skipping episode - failed to parse number: '$episodeNumText'")
+                    continue
+                }
+
+                val (parsedSeason, episode) = episodeNumbers
                 // Use provided seasonNumber if available, otherwise use parsed season
                 val season = seasonNumber ?: parsedSeason
 
@@ -350,21 +357,36 @@ object NamakadeHtmlParser {
      * - "2 - 3" -> (season=2, episode=3)
      *
      * @param numerando Text from numerando div
-     * @return Pair of (season, episode)
+     * @return Pair of (season, episode) or null if parsing fails
+     * AUDIT FIX M1: Returns null instead of defaulting to 1 to prevent duplicate episodes
      */
-    private fun parseEpisodeNumber(numerando: String): Pair<Int, Int> {
+    private fun parseEpisodeNumber(numerando: String): Pair<Int, Int>? {
         val trimmed = numerando.trim()
 
         // Check if format is "season - episode"
         if (trimmed.contains("-")) {
             val parts = trimmed.split("-").map { it.trim() }
-            val season = parts.getOrNull(0)?.toIntOrNull() ?: 1
-            val episode = parts.getOrNull(1)?.toIntOrNull() ?: 1
+            val season = parts.getOrNull(0)?.toIntOrNull()
+            val episode = parts.getOrNull(1)?.toIntOrNull()
+
+            // AUDIT FIX M1: Return null if parsing fails instead of defaulting to 1
+            if (season == null || episode == null) {
+                android.util.Log.w("NamakadeHtmlParser", "Failed to parse episode number: '$numerando'")
+                return null
+            }
+
             return Pair(season, episode)
         }
 
         // Single number - treat as episode number, season 1
-        val episode = trimmed.toIntOrNull() ?: 1
+        val episode = trimmed.toIntOrNull()
+
+        // AUDIT FIX M1: Return null if parsing fails instead of defaulting to 1
+        if (episode == null) {
+            android.util.Log.w("NamakadeHtmlParser", "Failed to parse episode number: '$numerando'")
+            return null
+        }
+
         return Pair(1, episode)
     }
 

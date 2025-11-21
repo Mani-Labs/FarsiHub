@@ -1,12 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(Select-String -Pattern \"FINAL_AUDIT_RESPONSE|REMEDIATION_COMPLETE\")",
-      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat clean\")",
-      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat clean compileDebugKotlin\")",
-      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat clean compileDebugKotlin 2>&1 | Select-String -Pattern ''BUILD|error:|SUCCESS|FAILED''\")",
-      "Bash(cmd /c \"cd /d G:\\FarsiPlex && gradlew.bat clean assembleDebug 2>&1 | Select-String -Pattern ''BUILD|FAILED|SUCCESS|error:'' | Select-Object -Last 20\")",
-      "Bash(gradlew.bat clean:*)"
+      "Bash(.gradlew.bat compileDebugKotlin)",
+      "Bash(cmd /c gradlew.bat compileDebugKotlin)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

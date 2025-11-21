@@ -241,6 +241,7 @@ abstract class AppDatabase : RoomDatabase() {
         /**
          * Migration from version 9 to 10 (Phase 9b M7)
          * Adds performance indices to WatchlistMovie and EpisodeProgress
+         * AUDIT FIX C3: Sanitizes duplicates before creating unique index
          */
         private val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(database: SupportSQLiteDatabase) {
@@ -251,7 +252,21 @@ abstract class AppDatabase : RoomDatabase() {
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_watchlist_movies_isInWatchlist_lastWatched ON watchlist_movies(isInWatchlist, lastWatched)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_watchlist_movies_isCompleted_lastWatched ON watchlist_movies(isCompleted, lastWatched)")
 
-                // Add unique index to episode_progress to prevent duplicates
+                // AUDIT FIX C3: Remove duplicate episode_progress entries BEFORE creating unique index
+                // This prevents SQLiteConstraintException crash on app update
+                // Keeps the most recent entry (MAX(rowid)) for each episodeId
+                database.execSQL("""
+                    DELETE FROM episode_progress
+                    WHERE rowid NOT IN (
+                        SELECT MAX(rowid)
+                        FROM episode_progress
+                        GROUP BY episodeId
+                    )
+                """.trimIndent())
+
+                android.util.Log.i("AppDatabase", "MIGRATION 9→10: Removed duplicate episode_progress entries")
+
+                // NOW safe to create unique index (no duplicates exist)
                 database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_episode_progress_episodeId ON episode_progress(episodeId)")
             }
         }
@@ -265,6 +280,21 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // Add all migration paths first (data-preserving)
                     .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+
+                    // AUDIT FIX C4: Add onCreate callback for fresh installs
+                    // Ensures default data exists for users who install latest version directly
+                    .addCallback(object : RoomDatabase.Callback() {
+                        override fun onCreate(db: SupportSQLiteDatabase) {
+                            super.onCreate(db)
+                            // Insert default notification preferences
+                            // This fixes crash for fresh installs when accessing settings
+                            db.execSQL("""
+                                INSERT OR IGNORE INTO notification_preferences (id, lastUpdated)
+                                VALUES (1, ${System.currentTimeMillis()})
+                            """.trimIndent())
+                            android.util.Log.i("AppDatabase", "onCreate: Inserted default notification preferences")
+                        }
+                    })
 
                     // REMOVED: fallbackToDestructiveMigration() - causes data loss
                     // If migration fails, app will crash with clear error message

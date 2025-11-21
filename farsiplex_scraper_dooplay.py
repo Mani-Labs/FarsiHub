@@ -10,6 +10,7 @@ import sqlite3
 import json
 import time
 import re
+import hashlib
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -37,6 +38,22 @@ class FarsiPlexDooPlayScraper:
             'Referer': self.BASE_URL
         })
         self.init_database()
+
+    def generate_stable_id(self, slug: str) -> int:
+        """
+        Generate deterministic ID using MD5 hash
+
+        AUDIT FIX C1: Replaced Python's hash() which randomizes per process
+        Uses MD5 for stable, consistent IDs across scraper runs
+
+        Args:
+            slug: Content slug (e.g., "breaking-bad", "game-of-thrones-s01e01")
+
+        Returns:
+            Deterministic integer ID (max 8 digits)
+        """
+        hash_object = hashlib.md5(slug.encode('utf-8'))
+        return int(hash_object.hexdigest(), 16) % (10 ** 8)
 
     def init_database(self):
         """Initialize database with migration support"""
@@ -449,7 +466,8 @@ class FarsiPlexDooPlayScraper:
             cursor = conn.cursor()
 
             try:
-                movie_id = hash(movie_data['slug']) % (10 ** 8)
+                # AUDIT FIX C1: Use deterministic ID generation
+                movie_id = self.generate_stable_id(movie_data['slug'])
 
                 cursor.execute("""
                     INSERT OR REPLACE INTO movies (
@@ -630,7 +648,12 @@ class FarsiPlexDooPlayScraper:
 
             if not episode_number:
                 # Fallback: count episodes
-                episode_number = len(tvshow_data.get('seasons', [{}])[-1].get('episodes', [])) + 1
+                # AUDIT FIX M5: Guard against empty seasons list (IndexError)
+                seasons = tvshow_data.get('seasons', [])
+                if not seasons:
+                    print(f"  ⚠ Warning: TV show has no seasons data, skipping episode")
+                    continue  # Skip this episode
+                episode_number = len(seasons[-1].get('episodes', [])) + 1
 
             episode_data = {
                 'episode_number': episode_number,
@@ -665,7 +688,8 @@ class FarsiPlexDooPlayScraper:
             cursor = conn.cursor()
 
             try:
-                tvshow_id = hash(tvshow_data['slug']) % (10 ** 8)
+                # AUDIT FIX C1: Use deterministic ID generation
+                tvshow_id = self.generate_stable_id(tvshow_data['slug'])
 
                 # Save TV show (parent)
                 cursor.execute("""
@@ -710,7 +734,8 @@ class FarsiPlexDooPlayScraper:
 
                     # Save episodes (children of season)
                     for episode_data in season_data.get('episodes', []):
-                        episode_id = hash(episode_data['slug']) % (10 ** 8)
+                        # AUDIT FIX C1: Use deterministic ID generation
+                        episode_id = self.generate_stable_id(episode_data['slug'])
 
                         cursor.execute("""
                             INSERT OR REPLACE INTO episodes (
