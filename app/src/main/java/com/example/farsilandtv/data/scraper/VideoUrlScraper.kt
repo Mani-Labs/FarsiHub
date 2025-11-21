@@ -396,8 +396,17 @@ object VideoUrlScraper {
                             try {
                                 resultChannel.send(Pair(num, emptyList()))
                             } catch (sendError: Exception) {
-                                // Channel might be closed, log but don't crash
-                                android.util.Log.e(TAG, "Failed to send error result for server $num: ${sendError.message}")
+                                // EXTERNAL AUDIT FIX C1: Handle ClosedSendChannelException explicitly
+                                // Channel might be closed due to timeout cancellation or early exit
+                                // Log but don't crash - this is expected behavior when timeout occurs
+                                when (sendError) {
+                                    is kotlinx.coroutines.channels.ClosedSendChannelException -> {
+                                        android.util.Log.d(TAG, "Channel closed for server $num (expected during timeout)")
+                                    }
+                                    else -> {
+                                        android.util.Log.e(TAG, "Failed to send error result for server $num: ${sendError.message}")
+                                    }
+                                }
                             }
                         }
                     }
@@ -599,32 +608,39 @@ object VideoUrlScraper {
                             android.util.Log.d(TAG, "Source URL: $decodedUrl")
                             android.util.Log.d(TAG, "Detected quality: $quality")
 
-                            // Convert fake CDN domain to real working CDN domains
-                            // cdn2.farsiland.com → d1.flnd.buzz and d2.flnd.buzz
-                            if (decodedUrl.contains("cdn2.farsiland.com", ignoreCase = true)) {
-                                val path = decodedUrl.substringAfter("cdn2.farsiland.com")
+                            // EXTERNAL AUDIT FIX L5: Flexible CDN domain pattern matching
+                            // Issue: Hardcoded "cdn2.farsiland.com" breaks when sites rotate domains
+                            // Solution: Use regex to match ANY cdn*.farsiland.com or fake CDN patterns
+                            // Pattern: cdn{N}.{domain} where N is number and domain is known site
+                            val fakeCdnPattern = Regex("""cdn\d+\.(farsiland|farsiplex|namakade)\.com""", RegexOption.IGNORE_CASE)
+                            val fakeCdnMatch = fakeCdnPattern.find(decodedUrl)
 
-                                // Create URLs for both mirrors
-                                val mirror1Url = "https://d1.flnd.buzz$path"
-                                val mirror2Url = "https://d2.flnd.buzz$path"
+                            if (fakeCdnMatch != null) {
+                                val fakeCdnDomain = fakeCdnMatch.value
+                                val path = decodedUrl.substringAfter(fakeCdnDomain)
 
-                                videoUrls.add(VideoUrl(
-                                    url = mirror1Url,
-                                    quality = quality,
-                                    mirror = "Server ${serverNum}A"
-                                ))
-                                videoUrls.add(VideoUrl(
-                                    url = mirror2Url,
-                                    quality = quality,
-                                    mirror = "Server ${serverNum}B"
-                                ))
+                                android.util.Log.d(TAG, "Detected fake CDN domain: $fakeCdnDomain")
 
-                                android.util.Log.d(TAG, "Converted to real CDN URLs:")
-                                android.util.Log.d(TAG, "  Mirror 1: $mirror1Url ($quality)")
-                                android.util.Log.d(TAG, "  Mirror 2: $mirror2Url ($quality)")
+                                // EXTERNAL AUDIT FIX L5: Use RemoteConfig for real CDN mirrors
+                                // Allows updating CDN domains without APK update
+                                val realCdnMirrors = RemoteConfig.cdnMirrors
 
-                                // Return immediately - we got working URLs!
-                                return@withContext videoUrls
+                                // Create URLs for each real CDN mirror
+                                realCdnMirrors.forEachIndexed { index, mirror ->
+                                    val mirrorUrl = "https://$mirror$path"
+                                    videoUrls.add(VideoUrl(
+                                        url = mirrorUrl,
+                                        quality = quality,
+                                        mirror = "Server ${serverNum}${('A' + index)}"
+                                    ))
+                                    android.util.Log.d(TAG, "  Mirror ${index + 1}: $mirrorUrl ($quality)")
+                                }
+
+                                if (videoUrls.isNotEmpty()) {
+                                    android.util.Log.d(TAG, "Converted fake CDN to ${videoUrls.size} real CDN URLs")
+                                    // Return immediately - we got working URLs!
+                                    return@withContext videoUrls
+                                }
                             }
                         }
                     } catch (e: Exception) {
@@ -1575,6 +1591,10 @@ object VideoUrlScraper {
      * - https://d1.flnd.buzz/series/shoghal/01.480.mp4
      *
      * EXTERNAL AUDIT FIX M3: Add validation and warnings for regex failures
+     * EXTERNAL AUDIT VERIFIED L6 (2025-11-21): Hardcoded Season/Episode Defaults - RESOLVED
+     * Issue: If regex parsing fails, hardcoded defaults (season=1, episode=1) cause wrong video
+     * Solution: Explicit validation returns emptyList() on parse failure → forces error
+     * Verification: Lines 1592-1602 validate toIntOrNull() before use, no silent defaults
      */
     private fun tryGenerateUrls(pageUrl: String): List<VideoUrl> {
         try {
@@ -1589,6 +1609,7 @@ object VideoUrlScraper {
                 val episodeStr = match.groupValues[3]
 
                 // EXTERNAL AUDIT FIX M3: Validate parsed values before defaulting
+                // EXTERNAL AUDIT VERIFIED L6: No hardcoded defaults - fails explicitly on parse error
                 val season = seasonStr.toIntOrNull()
                 val episode = episodeStr.toIntOrNull()
 

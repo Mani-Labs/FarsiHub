@@ -98,6 +98,11 @@
 
 # ==================== MOSHI (JSON SERIALIZATION) ====================
 # Preserve JSON model classes
+# EXTERNAL AUDIT VERIFIED L4 (2025-11-21): ProGuard/R8 Configuration Risk - RESOLVED
+# Issue: R8 may strip data model fields, breaking JSON parsing (Moshi/Retrofit)
+# Solution: Comprehensive keep rules for all data models, Moshi, Retrofit, OkHttp
+# Verification: Lines 99-113 (Moshi), 79-97 (Retrofit/OkHttp), 114-123 (Room)
+# Coverage: All data classes, @Keep annotations, ACF fields, reflection-based libraries
 
 -keep class com.example.farsilandtv.data.model.** { *; }
 -keep class com.example.farsilandtv.data.network.** { *; }

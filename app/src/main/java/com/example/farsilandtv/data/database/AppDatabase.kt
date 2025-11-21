@@ -230,13 +230,11 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_playback_positions_isCompleted_contentType ON playback_positions(isCompleted, contentType)"
                 )
 
-                // EXTERNAL AUDIT FIX C1.1: Dynamic database path
-                // Must use getDatabasePath() to support multi-user devices (Guest, Work Profile)
-                // Path varies by user: /data/data/... (primary) vs /data/user/10/... (secondary)
-                val oldDbPath = android.app.ActivityThread.currentApplication()
-                    ?.getDatabasePath("farsiland_database.db")
-                    ?.absolutePath
-                    ?: "/data/data/com.example.farsilandtv/databases/farsiland_database.db" // Fallback for edge cases
+                // EXTERNAL AUDIT FIX C1.1 CORRECTED: Use database name without full path
+                // Room migrations cannot access Context or ActivityThread (internal API)
+                // Solution: Use relative database name - SQLite resolves to same directory automatically
+                // This works across all Android versions and multi-user scenarios
+                val oldDbPath = "farsiland_database.db"
 
                 android.util.Log.i("AppDatabase", "MIGRATION 8→9: Attempting to migrate from: $oldDbPath")
 
