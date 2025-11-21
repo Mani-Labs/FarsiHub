@@ -42,6 +42,15 @@
 
 **Result:** Clean UI transitions when switching sources
 
+### 5. Watchlist Rows Preservation ✅ FIXED
+**Problem:** Continue Watching and Monitored rows would disappear after sync completion
+**Solution:**
+- Created refreshContentWithoutLoadingState() to avoid triggering loading state
+- Loading state was causing HomeFragment to clear all rows including watchlist rows
+- Now refreshes content data without affecting watchlist-related rows
+
+**Result:** Continue Watching and Monitored rows persist through sync updates
+
 ## Files Modified
 
 1. **FarsilandApp.kt**
@@ -57,6 +66,7 @@
 
 4. **MainViewModel.kt**
    - Added sync completion observer to auto-reload content
+   - Added refreshContentWithoutLoadingState() to preserve watchlist rows
 
 5. **HomeFragment.kt**
    - Added cleanupSkeletonRows() to remove stuck skeleton screens
