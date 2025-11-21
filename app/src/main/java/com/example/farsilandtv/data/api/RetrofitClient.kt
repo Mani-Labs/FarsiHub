@@ -287,14 +287,35 @@ object RetrofitClient {
     fun getHttpClient(): OkHttpClient = okHttpClient
 
     /**
-     * EXTERNAL AUDIT FIX H2 (2025-11-21): Eagerly initialize cache on background thread
+     * EXTERNAL AUDIT FIX H2 + F3 (2025-11-21): Eagerly initialize cache on background thread
      * Called from FarsilandApp.onCreate() to prevent main thread I/O
      *
      * This ensures the cache directory is created before first API call
      * Prevents UI jank (20-80ms) when okHttpClient is lazily initialized
+     *
+     * EXTERNAL AUDIT FIX F3 (2025-11-21): Force okHttpClient initialization to prevent race condition
+     * Issue: If RetrofitClient accessed before this method runs, okHttpClient lazy val
+     *        initializes with cache=null and stays null forever
+     * Solution: Force okHttpClient initialization here to guarantee cache is available
+     * Result: Cache is ALWAYS initialized (no permanent null cache scenario)
      */
     fun initializeCache(context: Context) {
+        // Step 1: Create cache directory and HTTP cache
         getOrCreateCache(context)
+
+        // Step 2: Force okHttpClient lazy initialization while cache is available
+        // This prevents the race condition where okHttpClient initializes with null cache
+        @Suppress("UNUSED_EXPRESSION")
+        okHttpClient // Access lazy val to trigger initialization
+
+        // Step 3: Verify cache was successfully initialized
+        val cacheVerified = okHttpClient.cache != null
+        if (cacheVerified) {
+            android.util.Log.i("RetrofitClient", "HTTP cache initialized and verified: ${httpCache?.directory}")
+        } else {
+            android.util.Log.w("RetrofitClient", "WARNING: okHttpClient initialized without cache (race condition occurred)")
+            // This should never happen now that we force initialization, but log warning just in case
+        }
     }
 
     /**

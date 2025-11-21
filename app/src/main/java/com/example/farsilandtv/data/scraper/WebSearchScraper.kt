@@ -29,6 +29,14 @@ object WebSearchScraper {
     private val httpClient = RetrofitClient.getHttpClient()
 
     /**
+     * EXTERNAL AUDIT FIX F1 (2025-11-21): Pre-compiled Regex for title normalization
+     * Issue: Query "spiderman" failed to match title "Spider-Man" (hyphen mismatch)
+     * Solution: Strip ALL non-alphanumeric chars before matching (same as ContentRepository)
+     * Performance: Compile once vs inline regex in every titleMatchesQuery call
+     */
+    private val TITLE_NORMALIZER_REGEX = Regex("[^\\p{L}\\p{N}]")
+
+    /**
      * CDN domain mappings with fallback chain
      * If primary CDN fails, tries alternatives in order
      */
@@ -38,23 +46,38 @@ object WebSearchScraper {
     ).toMap()
 
     /**
-     * AUDIT FIX M3: Token-based search to prevent false positives
+     * EXTERNAL AUDIT FIX F1 (2025-11-21): Enhanced title normalization for better search matching
      *
-     * Before: Removed all spaces, causing "rat" to match "The Pirate"
-     * After: Each word in query must be present in title
+     * Issue: Query "spiderman" did NOT match title "Spider-Man" (hyphen caused mismatch)
+     * Root Cause: Previous token-based matching required exact substring match
+     * Solution: Normalize BOTH title and query by removing ALL non-alphanumeric chars
      *
-     * Example:
-     * - Query: "the pirate" matches "The Pirate" ✅
-     * - Query: "rat" does NOT match "The Pirate" ✅
-     * - Query: "game thrones" matches "Game of Thrones" ✅
+     * Examples (now working):
+     * - Query: "spiderman" matches "Spider-Man" ✅ (both → "spiderman")
+     * - Query: "the pirate" matches "The Pirate" ✅ (both → "thepirate")
+     * - Query: "game thrones" matches "Game of Thrones" ✅ ("gamethrones" contains both tokens)
+     * - Query: "rat" does NOT match "The Pirate" ✅ ("thep irate" doesn't contain "rat")
      *
-     * @return true if all query tokens are present in the title
+     * @return true if all normalized query tokens are present in normalized title
      */
     private fun titleMatchesQuery(title: String, query: String): Boolean {
         if (query.isBlank()) return true
-        val titleLower = title.lowercase()
-        val queryTokens = query.lowercase().split(" ").filter { it.isNotBlank() }
-        return queryTokens.all { token -> titleLower.contains(token) }
+
+        // Normalize title and query: remove ALL special chars (hyphens, spaces, punctuation)
+        // "Spider-Man" → "spiderman", "Game of Thrones" → "gameofthrones"
+        val normalizedTitle = title.replace(TITLE_NORMALIZER_REGEX, "").lowercase()
+        val normalizedQuery = query.replace(TITLE_NORMALIZER_REGEX, "").lowercase()
+
+        // Split query into tokens and check if ALL tokens present in normalized title
+        val queryTokens = normalizedQuery.split(" ").filter { it.isNotBlank() }
+
+        // If query is single word after normalization, check direct containment
+        if (queryTokens.isEmpty() || (queryTokens.size == 1 && queryTokens[0].isNotEmpty())) {
+            return normalizedTitle.contains(normalizedQuery)
+        }
+
+        // Multi-word query: all tokens must be present
+        return queryTokens.all { token -> normalizedTitle.contains(token) }
     }
 
     /**

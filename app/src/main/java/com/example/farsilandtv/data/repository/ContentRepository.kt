@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 
@@ -174,73 +175,101 @@ class ContentRepository private constructor(context: Context) {
     // ========== Feature #18: Paging 3 Methods (Database-First, Unlimited Items) ==========
 
     /**
-     * Get movies with Paging 3 (database-first, unlimited items)
+     * Get movies with Paging 3 (database-first, unlimited items, REACTIVE)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
      *
-     * NOTE: F3 audit item (reactive paging) - ViewModel should call this method again when source changes
-     * This ensures fresh Pager is created with new URL pattern
+     * EXTERNAL AUDIT FIX F2 (2025-11-21): Reactive paging with flatMapLatest
+     * Issue: UI shows stale data when user switches database source (Farsiland → Namakade)
+     * Solution: Observe database source changes and recreate Pager automatically
+     * Result: UI updates instantly when user switches sources (no app restart needed)
      *
-     * @return Flow of paged movies from database
+     * @return Flow of paged movies from database (auto-updates on source change)
      */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getMoviesPaged(): Flow<PagingData<Movie>> {
-        val urlPattern = getCurrentUrlPattern()
-        return Pager(
-            config = PagingConfig(
-                pageSize = 20,
-                prefetchDistance = 10,
-                enablePlaceholders = false,
-                initialLoadSize = 30
-            ),
-            pagingSourceFactory = { getContentDb().movieDao().getMoviesPagedFiltered(urlPattern) }
-        ).flow.map { pagingData ->
-            pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        return dbPrefs.observeCurrentSource().flatMapLatest { source ->
+            val urlPattern = source.urlPattern
+
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,
+                    prefetchDistance = 10,
+                    enablePlaceholders = false,
+                    initialLoadSize = 30
+                ),
+                pagingSourceFactory = { getContentDb().movieDao().getMoviesPagedFiltered(urlPattern) }
+            ).flow.map { pagingData ->
+                pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+            }
         }
     }
 
     /**
-     * Get TV series with Paging 3 (database-first, unlimited items)
+     * Get TV series with Paging 3 (database-first, unlimited items, REACTIVE)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
      *
-     * NOTE: F3 audit item (reactive paging) - ViewModel should call this method again when source changes
-     * This ensures fresh Pager is created with new URL pattern
+     * EXTERNAL AUDIT FIX F2 (2025-11-21): Reactive paging with flatMapLatest
+     * Issue: UI shows stale data when user switches database source (Farsiland → Namakade)
+     * Solution: Observe database source changes and recreate Pager automatically
+     * Result: UI updates instantly when user switches sources (no app restart needed)
      *
-     * @return Flow of paged series from database
+     * @return Flow of paged series from database (auto-updates on source change)
      */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getSeriesPaged(): Flow<PagingData<Series>> {
-        val urlPattern = getCurrentUrlPattern()
-        return Pager(
-            config = PagingConfig(
-                pageSize = 20,
-                prefetchDistance = 10,
-                enablePlaceholders = false,
-                initialLoadSize = 30
-            ),
-            pagingSourceFactory = { getContentDb().seriesDao().getSeriesPagedFiltered(urlPattern) }
-        ).flow.map { pagingData ->
-            pagingData.map { cachedSeries -> cachedSeries.toSeries() }
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        return dbPrefs.observeCurrentSource().flatMapLatest { source ->
+            val urlPattern = source.urlPattern
+
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,
+                    prefetchDistance = 10,
+                    enablePlaceholders = false,
+                    initialLoadSize = 30
+                ),
+                pagingSourceFactory = { getContentDb().seriesDao().getSeriesPagedFiltered(urlPattern) }
+            ).flow.map { pagingData ->
+                pagingData.map { cachedSeries -> cachedSeries.toSeries() }
+            }
         }
     }
 
     /**
-     * Get episodes with Paging 3 (database-first, unlimited items)
+     * Get episodes with Paging 3 (database-first, unlimited items, REACTIVE)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
-     * @return Flow of paged episodes from database
+     *
+     * EXTERNAL AUDIT FIX F2 (2025-11-21): Reactive paging with flatMapLatest
+     * Issue: UI shows stale data when user switches database source (Farsiland → Namakade)
+     * Solution: Observe database source changes and recreate Pager automatically
+     * Result: UI updates instantly when user switches sources (no app restart needed)
+     *
+     * @return Flow of paged episodes from database (auto-updates on source change)
      */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getEpisodesPaged(): Flow<PagingData<Episode>> {
-        val urlPattern = getCurrentUrlPattern()
-        return Pager(
-            config = PagingConfig(
-                pageSize = 20,
-                prefetchDistance = 10,
-                enablePlaceholders = false,
-                initialLoadSize = 30
-            ),
-            pagingSourceFactory = { getContentDb().episodeDao().getEpisodesPagedFiltered(urlPattern) }
-        ).flow.map { pagingData ->
-            pagingData.map { cachedEpisode -> cachedEpisode.toEpisode() }
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        return dbPrefs.observeCurrentSource().flatMapLatest { source ->
+            val urlPattern = source.urlPattern
+
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,
+                    prefetchDistance = 10,
+                    enablePlaceholders = false,
+                    initialLoadSize = 30
+                ),
+                pagingSourceFactory = { getContentDb().episodeDao().getEpisodesPagedFiltered(urlPattern) }
+            ).flow.map { pagingData ->
+                pagingData.map { cachedEpisode -> cachedEpisode.toEpisode() }
+            }
         }
     }
 
