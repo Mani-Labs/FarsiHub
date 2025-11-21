@@ -369,18 +369,13 @@ class VideoPlayerActivity : AppCompatActivity() {
                 mapOf("Referer" to referer)
             )
 
-        // EXTERNAL AUDIT FIX S2: Use singleton cache from Application
-        // Cache is initialized on background thread in Application.onCreate()
-        // This eliminates 50-120ms main thread I/O block during player initialization
-        cache = FarsilandApp.videoCache
+        // TEMPORARY FIX: Disable caching to prevent IllegalStateException crashes
+        // The SimpleCache was causing crashes with "IllegalStateException: null"
+        // TODO: Re-enable caching after fixing SimpleCache initialization issue
+        Log.d(TAG, "Caching temporarily disabled - using direct HTTP")
+        val dataSourceFactory = httpDataSourceFactory
 
-        // Wrap HTTP data source with cache for faster quality switches and replays
-        val cacheDataSourceFactory = CacheDataSource.Factory()
-            .setCache(cache!!)
-            .setUpstreamDataSourceFactory(httpDataSourceFactory)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-
-        val mediaSourceFactory = DefaultMediaSourceFactory(cacheDataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
         // M5 FIX: Shield TV optimized buffer configuration (2GB RAM device)
         // - 20s min buffer: Ensures smooth playback without stuttering
