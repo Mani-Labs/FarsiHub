@@ -6,12 +6,10 @@ import com.example.farsilandtv.data.namakade.NamakadeApiService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.util.concurrent.TimeUnit
 
 /**
  * Scraper for extracting episode lists from TV series pages
@@ -24,13 +22,19 @@ import java.util.concurrent.TimeUnit
  * - Episodes are in <li class="mark-*"> elements
  * - Each episode has a link to its page
  * - Rate limit: 500ms delay between requests
+ *
+ * EXTERNAL AUDIT FIX C1.2 (2025-11-21): Use RetrofitClient's configured HTTP client
+ * Previous: Created separate OkHttpClient without User-Agent header
+ * Issue: Security plugins (Wordfence, Cloudflare) block requests without browser User-Agent
+ * Fixed: Uses RetrofitClient.getHttpClient() which includes:
+ *   - Chrome 131 User-Agent header (prevents blocking)
+ *   - Connection pooling (reduces socket usage)
+ *   - HTTP/2 support (faster parallel requests)
  */
 object EpisodeListScraper {
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)  // Reduced from 30s for better UX
-        .readTimeout(20, TimeUnit.SECONDS)     // Reduced from 30s for better UX
-        .build()
+    // EXTERNAL AUDIT FIX C1.2: Use shared configured client instead of creating new instance
+    private val httpClient = RetrofitClient.getHttpClient()
 
     /**
      * Scrape episode list from series page

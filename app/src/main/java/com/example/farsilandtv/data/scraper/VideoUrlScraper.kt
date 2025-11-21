@@ -493,21 +493,26 @@ object VideoUrlScraper {
             // AUDIT FIX #12: Use 'use' to ensure response is always closed, even if reading fails
             val result: List<VideoUrl> = httpClient.newCall(request).await().use { response ->
                 if (response.isSuccessful) {
-                    // AUDIT FIX H2.2: Reduced from 5MB to 1MB to prevent ANR on low-power TV CPUs
+                    // EXTERNAL AUDIT FIX H2.1 (2025-11-21): Increased API limit to prevent JSON truncation
+                    // Previous: 1MB limit caused JSON parsing failures for larger API responses
+                    // Issue: DooPlay API returns large JSON (esp. with multiple quality options)
+                    //        Truncating at 1MB results in incomplete JSON → parsing exception
+                    // Solution: Increased to 5MB (safe for TV devices, prevents truncation)
                     // P1 FIX: Issue #3 - OOM Protection with BOUNDED READ for chunked encoding
                     // Problem: contentLength = -1 for chunked encoding, so header check fails
-                    // Solution: Read with hard 1MB limit regardless of Content-Length header
+                    // Solution: Read with hard 5MB limit regardless of Content-Length header
                     val body = response.body ?: return@use emptyList()
 
                     // Step 1: Fast fail for known large sizes (via Content-Length header)
+                    // EXTERNAL AUDIT FIX H2.1: Increased from 1MB to 5MB
+                    val maxBytes = 5L * 1024 * 1024 // 5MB hard limit (was 1MB)
                     val contentLength = body.contentLength()
-                    if (contentLength > 1_000_000) {
-                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 1MB)")
+                    if (contentLength > maxBytes) {
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 5MB)")
                         return@use emptyList()
                     }
 
-                    // Step 2: BOUNDED READ - Read max 1MB, stops even if stream is larger/infinite
-                    val maxBytes = 1L * 1024 * 1024 // 1MB hard limit (AUDIT FIX H2.2)
+                    // Step 2: BOUNDED READ - Read max 5MB, stops even if stream is larger/infinite
                     val source = body.source()
                     val buffer = okio.Buffer()
                     var totalRead = 0L
@@ -525,7 +530,7 @@ object VideoUrlScraper {
 
                     // If we hit the limit and there's more data, reject it
                     if (totalRead >= maxBytes && !source.exhausted()) {
-                        android.util.Log.w(TAG, "Response exceeded 1MB limit (likely malicious chunked stream)")
+                        android.util.Log.w(TAG, "Response exceeded 5MB limit (likely malicious chunked stream)")
                         return@use emptyList()
                     }
 
@@ -1700,7 +1705,11 @@ object VideoUrlScraper {
      * Issue: Some pirate streaming sites serve 10-50MB HTML pages (minified JS bundles)
      * Risk: Loading entire response into RAM causes OutOfMemoryError on 1GB devices
      *
-     * Solution: Read max 2MB regardless of Content-Length header
+     * EXTERNAL AUDIT FIX H2.1 (2025-11-21): Increased limit to prevent data truncation
+     * Previous: 2MB limit caused silent failures when video URL data located after 2MB mark
+     * Issue: Modern pirate sites inject base64 images/obfuscated JS at page top, pushing
+     *        actual video URL JSON to 5-8MB position → scraper fails silently
+     * Solution: Increased to 10MB limit (still safe for 1GB devices, prevents truncation)
      * - Fast fail for known large sizes (Content-Length check)
      * - Bounded read for chunked encoding (Content-Length = -1)
      * - Prevents infinite reads from malicious/broken servers
@@ -1719,15 +1728,16 @@ object VideoUrlScraper {
             val body = response.body ?: throw Exception("Empty response body")
 
             // Step 1: Fast fail for known large sizes (via Content-Length header)
+            // EXTERNAL AUDIT FIX H2.1: Increased from 2MB to 10MB
+            val maxBytes = 10L * 1024 * 1024 // 10MB hard limit (was 2MB)
             val contentLength = body.contentLength()
-            if (contentLength > 2_000_000) {
-                android.util.Log.w(TAG, "HTML response too large via header: $contentLength bytes (max 2MB)")
-                throw Exception("HTML response exceeds 2MB limit (Content-Length: $contentLength)")
+            if (contentLength > maxBytes) {
+                android.util.Log.w(TAG, "HTML response too large via header: $contentLength bytes (max 10MB)")
+                throw Exception("HTML response exceeds 10MB limit (Content-Length: $contentLength)")
             }
 
-            // Step 2: BOUNDED READ - Read max 2MB, stops even if stream is larger/infinite
+            // Step 2: BOUNDED READ - Read max 10MB, stops even if stream is larger/infinite
             // Protects against chunked encoding (Content-Length = -1) and malicious servers
-            val maxBytes = 2L * 1024 * 1024 // 2MB hard limit
             val source = body.source()
             val buffer = okio.Buffer()
             var totalRead = 0L
@@ -1740,7 +1750,7 @@ object VideoUrlScraper {
                 }
 
                 if (totalRead >= maxBytes) {
-                    android.util.Log.w(TAG, "HTML response truncated at 2MB limit")
+                    android.util.Log.w(TAG, "HTML response truncated at 10MB limit (was 2MB)")
                 }
 
                 buffer.readUtf8()
