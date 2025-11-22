@@ -1,0 +1,69 @@
+fix: Critical audit fixes - 8 issues resolved (notifications, data safety, performance)
+
+AUDIT FIX #1: Quiet Hours Logic (HIGH PRIORITY)
+- File: NotificationHelper.kt:157
+- Issue: Inverted boolean logic - OR instead of AND
+- Impact: ALL hours treated as quiet -> notifications permanently silenced
+- Fix: Changed || to && for normal case (quietHoursStart < quietHoursEnd)
+- Verified: 10 AM-2 PM now correctly quiet only during those hours
+
+AUDIT FIX #2: Database Migration Data Loss (HIGH PRIORITY)
+- File: AppDatabase.kt:243-396 (MIGRATION_8_9)
+- Issue: Assumed old DB has 'quality' column -> migration fails on old versions
+- Impact: Users lose ALL watch history on app update
+- Fix: Added checkColumnExists() helper + dynamic SQL generation
+- Result: Safe migration from any schema version without data loss
+
+AUDIT FIX #3: Rate Limit Race Condition (HIGH PRIORITY)
+- File: NamakadeApiService.kt:36-56
+- Issue: Non-atomic check-then-act pattern despite AtomicLong
+- Impact: Concurrent requests bypass 500ms delay -> server IP ban risk
+- Fix: Wrapped enforceRateLimit() in Mutex.withLock {}
+- Result: Guaranteed 500ms spacing between all requests
+
+AUDIT FIX #4: Blocking Network Calls (MEDIUM PRIORITY)
+- Files: EpisodeListScraper.kt:360, WebSearchScraper.kt:161,239,325
+- Issue: execute() blocks threads, ignores cancellation
+- Impact: Thread pool exhaustion during heavy search sessions
+- Fix: Replaced execute() with await() extension (4 locations)
+- Result: Threads freed instantly on cancellation
+
+AUDIT FIX #5: Data Corruption - Regex Filters (MEDIUM PRIORITY)
+- File: FarsiPlexMetadataScraper.kt:367,375
+- Issue A: Year "2023" extracted as "2520" from "25 May 2023"
+- Issue B: Rating "8.5/10" parsed as "8510.0"
+- Fix: Used regex capture groups instead of character filtering
+- Year: Regex matches (19|20)XX pattern
+- Rating: Regex matches first decimal number
+
+AUDIT FIX #6: Unsafe URL Concatenation (MEDIUM PRIORITY)
+- File: WebSearchScraper.kt:377,434
+- Issue: Domain + path without slash separator = malformed URL
+- Impact: 404 errors on Namakade search results
+- Fix: Ensured slash separator with string interpolation
+- Pattern: Use template with guaranteed slash between parts
+
+AUDIT FIX #7: Strict Episode Regex (MEDIUM PRIORITY)
+- File: EpisodeListScraper.kt:289
+- Issue: Pattern only matched "ep01", missed "ep-01", "episode.01"
+- Impact: Incomplete episode lists
+- Fix: Updated regex to allow optional separators and full word
+- Now matches: ep01, ep-01, ep.01, episode01, episode-01, episode.01
+
+AUDIT FIX #8: Inefficient Cache Keys (LOW PRIORITY)
+- File: VideoUrlScraper.kt:143,155,215,270,1865
+- Issue: Used original URL as cache key instead of normalized HTTPS
+- Impact: http:// and https:// versions cached separately
+- Fix: Use securePageUrl (normalized) as cache key consistently
+- Result: Single cache entry per content item
+
+Verification:
+- Compilation: BUILD SUCCESSFUL (compileDebugKotlin)
+- Files modified: 8 files
+- Code locations fixed: 20+ individual fixes
+- Impact: 3 HIGH priority, 4 MEDIUM priority, 1 LOW priority
+- Test status: All fixes validated by specialized agents
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>

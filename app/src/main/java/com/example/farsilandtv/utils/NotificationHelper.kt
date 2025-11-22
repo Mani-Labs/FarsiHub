@@ -153,10 +153,10 @@ class NotificationHelper(private val context: Context) {
         // Handle case where quiet hours span midnight
         // Example: 22:00 to 08:00 (10 PM to 8 AM)
         return if (quietHoursStart < quietHoursEnd) {
-            // Normal case: 08:00 to 22:00 means quiet hours are outside this range
-            currentHour < quietHoursEnd || currentHour >= quietHoursStart
+            // Normal case: 10:00 to 14:00 means quiet hours are between these times
+            currentHour >= quietHoursStart && currentHour < quietHoursEnd
         } else {
-            // Overnight case: 22:00 to 08:00 means quiet hours are between these times
+            // Overnight case: 22:00 to 08:00 means quiet hours span midnight
             currentHour >= quietHoursStart || currentHour < quietHoursEnd
         }
     }

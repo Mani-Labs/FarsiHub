@@ -361,18 +361,20 @@ object FarsiPlexMetadataScraper {
 
     /**
      * Extract year from document
+     * Uses regex to capture valid 4-digit year patterns (19xx or 20xx)
      */
     private fun extractYear(doc: Document): Int? {
         val yearText = doc.select(".year, .date, .data .item:contains(Year) span").text()
-        return yearText.filter { it.isDigit() }.take(4).toIntOrNull()
+        return Regex("\\b(19|20)\\d{2}\\b").find(yearText)?.value?.toIntOrNull()
     }
 
     /**
      * Extract rating from document
+     * Uses regex to capture first number pattern (handles 8.5, 8.50, 8, etc.)
      */
     private fun extractRating(doc: Document): Double? {
         val ratingText = doc.select(".rating, .dt_rating_vgs, .data .item:contains(Rating) span").text()
-        return ratingText.filter { it.isDigit() || it == '.' }.toDoubleOrNull()
+        return Regex("(\\d+(?:\\.\\d+)?)").find(ratingText)?.value?.toDoubleOrNull()
     }
 
     /**

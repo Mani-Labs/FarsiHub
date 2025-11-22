@@ -2,39 +2,63 @@
 
 ## Section 1: Project Overview
 
-**Name:** FarsiPlex Android TV Application
+**Name:** FarsiPlex Android TV Application (rebranding to FarsiHub)
 
-**Purpose:** Android TV streaming app for Farsi content
+**Purpose:** Android TV streaming app for Farsi content with phone & cast support planned
 
-**Target Platform:** Nvidia Shield TV (API 28-36)
+**Target Platform:** Nvidia Shield TV (API 28-36), expanding to phones
 
-**Architecture:** Hybrid Leanback + Jetpack Compose
+**Architecture:** Monolithic app with manual DI, migrating to modular Hilt-based architecture
+
+**Audit Status:** 30/33 fixes complete (91% - Production Ready)
+
+**Modernization Plan:** See docs/Farsihub-Modernization-Plan.md
 
 ---
 
 ## Section 2: Technology Stack
 
-**Language:** Kotlin
+**Language:** Kotlin 1.9+
+
+**Dependency Injection:**
+- Current: Manual singleton pattern with getInstance()
+- Target: Hilt 2.48+
 
 **UI Framework:**
-- Android Leanback (primary navigation & browsing)
-- Jetpack Compose (secondary, emerging UI framework)
+- Android Leanback (~85% of screens - primary)
+- Jetpack Compose (~15% - emerging, ContentRow, EpisodeCard, ErrorBoundary)
+- Compose TV Material 3 (added, partially used)
 
-**Database:**
-- AppDatabase (primary, consolidated storage)
-- FarsilandDatabase (deprecated, being migrated to AppDatabase)
-- Storage: Room with SQLite
+**Database Architecture (DUAL BY DESIGN - DO NOT MERGE):**
+- AppDatabase v10 (permanent user data: watchlist, favorites, playback positions)
+- ContentDatabase v2 (replaceable content catalog with FTS4 search)
+- Storage: Room 2.5+ with SQLite
+- Pattern: Atomic content refresh via database replacement
+- **CRITICAL:** This dual pattern is intentional and audit-approved - never consolidate!
 
-**Video Player:** ExoPlayer (with custom playback controls)
+**Video Player:**
+- Libraries: Media3 (androidx.media3:media3-exoplayer)
+- Implementation: Still using ExoPlayer v2 imports (migration 80% complete)
+- Cache: 100MB SimpleCache for video
 
-**Image Loading:** Coil (with lifecycle awareness improvements needed)
+**Image Loading:** Coil 2.x
+
+**Networking:**
+- HTTP: OkHttp + Retrofit with Moshi
+- Caching: 10MB HTTP cache + 50-entry in-memory LRU
+- Scraping: JSoup for HTML parsing
 
 **Async Patterns:**
-- Kotlin Coroutines
-- LiveData
-- StateFlow
+- Kotlin Coroutines (IO dispatcher, viewModelScope, lifecycleScope)
+- LiveData (legacy screens)
+- StateFlow (new screens only)
+- Paging 3 for content lists
 
-**Build System:** Gradle with Kotlin DSL
+**Background Processing:**
+- WorkManager for periodic sync (30-min intervals)
+- Workers: ContentSyncWorker, FarsiPlexSyncWorker
+
+**Build System:** Gradle 8.x with Kotlin DSL
 
 ---
 
@@ -55,42 +79,65 @@
 
 # Build with tests
 .\gradlew.bat build
+
+# Install on connected device
+.\gradlew.bat installDebug
 ```
 
 ---
 
 ## Section 4: Architecture Notes
 
+**Current Architecture (Monolithic):**
+- Single app module
+- Manual dependency injection via companion object singletons
+- No feature modules or layer separation
+
 **Navigation Pattern:**
 - Fragment-based navigation with Leanback BrowseFragment as main entry point
 - Activity-based details screens (DetailsActivity, SeriesDetailsActivity)
 - Modal dialogs for user actions (AddToPlaylistDialogFragment)
+- ViewModels: Only 2 exist (GenreFilterViewModel, MainViewModel)
 
 **Data Access Pattern:**
-- Repository pattern (VideoRepository, SeriesRepository, etc.)
-- DAOs for direct database access
-- Separation of concerns: Activities/Fragments → ViewModel → Repository → DAO
+- Repository pattern with manual singletons
+- Source-aware (Farsiland/FarsiPlex/Namakade)
+- Database-first with API fallback
+- 30-second TTL cache per repository
+- Direct DAO access (no abstraction layer)
 
 **State Management:**
-- ViewModel for screen-level state
-- LiveData for reactive updates
-- SavedStateHandle (being implemented for config changes)
+- LiveData for most screens
+- StateFlow in newer components only
+- No SavedStateHandle implementation yet
 
-**Database Architecture:**
-- AppDatabase: Consolidated primary database
-- FarsilandDatabase: Legacy database (being phased out, PlaybackPosition migration pending)
-- Transaction handling for critical operations (position saves)
+**Database Architecture (CRITICAL - DO NOT MODIFY):**
+- AppDatabase v10: User data (permanent)
+  - PlaybackPosition (migrated from FarsilandDatabase)
+  - Favorites, Watchlist, Playlists
+  - SearchHistory, NotificationPreferences
+- ContentDatabase v2: Content catalog (replaceable)
+  - CachedMovie, CachedSeries, CachedEpisode
+  - FTS4 virtual tables for search
+  - Atomically replaced during sync
 
 **Video Playback:**
-- ExoPlayer instance managed in PlaybackVideoFragment
+- Media3 libraries with ExoPlayer v2 imports
+- SimpleCache for video (100MB)
+- Playback position tracking in AppDatabase
 - Custom controls overlay for Android TV
-- Playback position tracking in database
+
+**API & Data Sources:**
+- Primary: WordPress REST API (Farsiland)
+- Scraping: Farsiland, FarsiPlex, Namakade
+- Video URLs always scraped (not stored)
+- Universal dedup logic across sources
 
 ---
 
 ## Section 5: Audit Remediation Status
 
-**Audit Date:** 2025-11-10
+**External Audit Date:** 2025-11-21
 
 **Total Issues Found:** 34 (33 verified, 1 false positive)
 
@@ -98,21 +145,22 @@
 - Critical Issues: 8 (C1-C8) - ✅ ALL FIXED
 - High Priority: 12 (H1-H12) - ✅ ALL FIXED
 - Medium Priority: 9 (M1-M9) - ✅ ALL FIXED
-- Low Priority: 5 (L1-L5) - ⚠️ PENDING (optional)
+- Low Priority: 5 (L1-L5) - ⚠️ PENDING (optional but recommended)
 - Dead Code: 3 (DC1-DC3) - ✅ ALL REMOVED
 
 **Remediation Status:** COMPLETE - Phase 9 Finished (30/33 fixes - 91%)
 
-**Key Issues Being Addressed:**
-1. Multiple Room Database instances consolidation
-2. Unsafe force unwraps and null handling
+**Key Issues Fixed:**
+1. Database consolidation (PlaybackPosition moved to AppDatabase)
+2. Null safety improvements (removed force unwraps)
 3. Memory leak prevention (BackgroundManager, ExoPlayer)
-4. Deprecated API migration (getSerializableExtra, onBackPressed)
-5. Lifecycle safety improvements
+4. Deprecated API migrations
+5. HTTP security (size limits, URL validation)
 6. Dead code removal
-7. Comprehensive testing suite implementation
 
-**Progress Tracking:** See docs/REMEDIATION_PROGRESS.md
+**Remaining Work:**
+- L1-L5: Low priority improvements (optional)
+- See docs/REMEDIATION_PROGRESS.md for details
 
 **Final Status:** 30/33 fixes complete (91%) - Production-ready
 
@@ -122,41 +170,52 @@
 
 ```
 G:\FarsiPlex\
-├── app/
+├── app/ (monolithic module)
 │   ├── src/
 │   │   └── main/
 │   │       ├── java/com/example/farsilandtv/
+│   │       │   ├── FarsilandApp.kt (application class, cache init)
 │   │       │   ├── MainActivity.kt (entry point)
 │   │       │   ├── DetailsActivity.kt (movie/series details)
 │   │       │   ├── SeriesDetailsActivity.kt (series detail view)
 │   │       │   ├── SearchActivity.kt (search interface)
 │   │       │   ├── VideoPlayerActivity.kt (playback screen)
 │   │       │   ├── data/
-│   │       │   │   ├── AppDatabase.kt (PRIMARY - consolidated database)
-│   │       │   │   ├── repository/ (data access layer)
-│   │       │   │   │   ├── VideoRepository.kt
-│   │       │   │   │   ├── SeriesRepository.kt
-│   │       │   │   │   └── ...
-│   │       │   │   └── db/ (DEPRECATED databases)
-│   │       │   │       └── FarsilandDatabase.kt
+│   │       │   │   ├── database/
+│   │       │   │   │   ├── AppDatabase.kt (user data - DO NOT MERGE)
+│   │       │   │   │   └── ContentDatabase.kt (content - replaceable)
+│   │       │   │   ├── repository/ (manual singletons)
+│   │       │   │   │   ├── ContentRepository.kt (main, with cache)
+│   │       │   │   │   ├── PlaybackRepository.kt
+│   │       │   │   │   ├── WatchlistRepository.kt
+│   │       │   │   │   └── ... (7+ repositories)
+│   │       │   │   ├── api/
+│   │       │   │   │   ├── WordPressApiService.kt
+│   │       │   │   │   ├── FarsiPlexApiService.kt
+│   │       │   │   │   └── NamakadeApiService.kt
+│   │       │   │   └── scraper/
+│   │       │   │       ├── VideoUrlScraper.kt
+│   │       │   │       └── WebSearchScraper.kt
 │   │       │   └── ui/
-│   │       │       ├── fragment/
-│   │       │       │   ├── HomeFragment.kt (browse screen)
-│   │       │       │   ├── PlaybackVideoFragment.kt (player controls)
-│   │       │       │   ├── MovieDetailsFragment.kt
-│   │       │       │   └── AddToPlaylistDialogFragment.kt
-│   │       │       └── compose/ (emerging Compose UI)
-│   │       │           ├── MoviesScreen.kt
-│   │       │           └── ...
+│   │       │       ├── fragment/ (Leanback-based)
+│   │       │       │   ├── HomeFragment.kt (main browse)
+│   │       │       │   ├── MoviesFragment.kt
+│   │       │       │   ├── ShowsFragment.kt
+│   │       │       │   └── PlaybackVideoFragment.kt
+│   │       │       └── compose/ (emerging - 15%)
+│   │       │           ├── ContentRow.kt
+│   │       │           ├── EpisodeCard.kt
+│   │       │           └── ErrorBoundary.kt
 │   │       └── AndroidManifest.xml
-│   └── build.gradle.kts
+│   ├── build.gradle.kts (all dependencies here)
+│   └── libs.versions.toml
+├── docs/
+│   ├── Farsihub-Modernization-Plan.md (UPDATED)
+│   └── REMEDIATION_PROGRESS.md
 └── settings.gradle.kts
 ```
 
-**Core Modules:**
-- `data/`: Database, repositories, and data access objects
-- `ui/`: Fragments, activities, and Compose screens
-- `domain/`: Business logic and models (if separated)
+**No Feature Modules Yet** - completely monolithic
 
 ---
 
@@ -166,20 +225,19 @@ G:\FarsiPlex\
 1. Run `.\gradlew.bat compileDebugKotlin` to check syntax
 2. Run `.\gradlew.bat test` to verify tests pass
 3. Verify no console warnings/errors
-4. Reference remediation phase in commit message (if applicable)
+4. Reference modernization phase if applicable
 
 **Testing Strategy:**
-- Unit tests for repositories and ViewModels
-- Integration tests for database operations
-- UI tests for critical fragments
-- Target minimum 60% code coverage for changed areas
+- Current: 97 tests (75% coverage) - database-focused
+- Missing: Repository unit tests, ViewModel tests
+- Target: 80% coverage across all layers
 
 **Test Suite Information:**
 - Total Tests: 97 automated tests
-- Unit Tests: 38 tests (PlaybackRepositoryTest, WatchlistRepositoryTest)
-- Integration Tests: 45 tests (PlaybackPositionDaoTest, WatchlistDaoTest)
-- UI Tests: 14 tests (HomeFragmentTest, PlaybackVideoFragmentTest)
-- Coverage Achieved: 75% (exceeds 60% target)
+- Unit Tests: Minimal (placeholder only)
+- Integration Tests: 45 tests (DAO tests)
+- UI Tests: 14 tests (Fragment tests)
+- Coverage: 75% (database layer only)
 - Documentation: See docs/PHASE_7_TEST_SUITE_SUMMARY.md
 
 **Test Execution:**
@@ -191,34 +249,82 @@ G:\FarsiPlex\
 .\gradlew.bat connectedDebugAndroidTest
 
 # Run specific test class
-.\gradlew.bat test --tests com.example.farsilandtv.data.repository.PlaybackRepositoryTest
+.\gradlew.bat test --tests "*PlaybackRepositoryTest"
 ```
 
 **Code Quality Standards:**
-- Follow existing Kotlin naming conventions
+- Follow Kotlin naming conventions
 - Use safe null handling (?.let, ?:, avoid !!)
 - Prefer immutable data structures
-- Document complex logic with comments
-- Avoid GlobalScope for async operations (use viewModelScope or lifecycleScope)
+- Document complex logic
+- Use lifecycleScope/viewModelScope (not GlobalScope)
+- Maintain thread-safe singletons until Hilt migration
 
-**Remediation Status:**
-- Phase 1-6: 21 fixes completed (database consolidation, memory leaks, null safety, security)
-- Phase 7: 97 automated tests created (75% coverage)
-- Phase 8: Architectural review passed, documentation finalized
-- Status: Production Ready
+**Current Gaps:**
+- No dependency injection framework
+- No modularization
+- Limited ViewModel usage (only 2)
+- Partial Media3 migration
+- No CI/CD pipeline
+- No monitoring/analytics
 
 ---
 
-## Section 8: Contacts & Resources
+## Section 8: Critical Implementation Rules
 
-**Project:** FarsiPlex Android TV App
+**DO NOT:**
+- Merge AppDatabase and ContentDatabase (intentionally separate)
+- Change applicationId from "com.example.farsilandtv"
+- Use WebViews in background workers without Looper
+- Remove getInstance() until Hilt is fully implemented
+- Force Media3/Compose adoption all at once
+
+**ALWAYS:**
+- Preserve existing user data during migrations
+- Test on real Shield TV after changes
+- Maintain backwards compatibility
+- Keep dual database pattern
+- Follow gradual migration approach
+
+---
+
+## Section 9: Modernization Roadmap
+
+**Phase Priority (2-3 weeks minimum viable):**
+1. Complete audit fixes (5 remaining) - IMMEDIATE
+2. Add Hilt DI framework - HIGH
+3. Complete Media3 migration - EASY WIN
+4. Modularize architecture - LONG TERM
+5. Add resilience/monitoring - OPERATIONAL
+6. Migrate to Compose TV - GRADUAL
+7. Add mobile/cast support - NEW FEATURES
+8. Setup CI/CD pipeline - FINAL
+
+**See:** docs/Farsihub-Modernization-Plan.md for detailed plan
+
+---
+
+## Section 10: Resources
+
+**Project:** FarsiPlex → FarsiHub (rebranding)
 **Repository:** G:\FarsiPlex
-**Build:** Gradle (Windows: gradlew.bat, Unix: ./gradlew)
-**Target Device:** Nvidia Shield TV (API 28-36)
+**Build:** Gradle (Windows: gradlew.bat)
+**Target Devices:**
+- Current: Nvidia Shield TV (API 28-36)
+- Future: Android phones (API 28+)
 
-**Key Technologies:**
+**Key Dependencies:**
 - Kotlin 1.9+
-- Android API 28 minimum, target 36
-- Room Database 2.5+
-- ExoPlayer 2.18+
-- Jetpack Compose (emerging)
+- Android API: min 28, target 35, compile 35
+- Room 2.5+ (dual databases)
+- Media3 (partial migration)
+- Jetpack Compose (15% adoption)
+- OkHttp + Retrofit + Moshi
+- Coil for images
+- WorkManager for sync
+- Paging 3 for lists
+
+**Data Sources:**
+- Farsiland WordPress API
+- FarsiPlex scraper
+- Namakade scraper

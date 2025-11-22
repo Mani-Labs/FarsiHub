@@ -6,10 +6,17 @@ import com.example.farsilandtv.data.namakade.NamakadeApiService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.io.IOException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Scraper for extracting episode lists from TV series pages
@@ -31,6 +38,40 @@ import org.jsoup.nodes.Element
  *   - Connection pooling (reduces socket usage)
  *   - HTTP/2 support (faster parallel requests)
  */
+/**
+ * EXTERNAL AUDIT FIX F2: Suspendable OkHttp Call extension to prevent zombie threads
+ *
+ * Problem: execute() is a blocking call that doesn't respond to coroutine cancellation
+ * Result: Cancelled coroutines leave threads blocked for 25 seconds (timeout)
+ * Impact: Thread pool exhaustion (64 max threads → 50+ zombies = app freeze)
+ *
+ * Solution: Use enqueue() with suspendCancellableCoroutine for proper cancellation
+ * - Coroutine cancellation triggers call.cancel() immediately
+ * - Frees thread instantly instead of waiting for timeout
+ * - Prevents thread pool exhaustion
+ */
+private suspend fun Call.await(): Response {
+    return suspendCancellableCoroutine { continuation ->
+        // Register cancellation handler BEFORE starting the call
+        continuation.invokeOnCancellation {
+            cancel() // Cancel OkHttp call immediately when coroutine is cancelled
+        }
+
+        enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response)
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                // Only resume with exception if coroutine is still active
+                if (continuation.isActive) {
+                    continuation.resumeWithException(e)
+                }
+            }
+        })
+    }
+}
+
 object EpisodeListScraper {
 
     // EXTERNAL AUDIT FIX C1.2: Use shared configured client instead of creating new instance
@@ -244,7 +285,8 @@ object EpisodeListScraper {
 
             // Extract season and episode from URL patterns
             // Pattern 1: /episodes/show-ep01/ or /episodes/show-ep01-part-2/
-            val episodePattern = Regex("""ep(\d+)""", RegexOption.IGNORE_CASE)
+            // Matches: ep01, ep-01, ep.01, episode01, episode-01, episode.01
+            val episodePattern = Regex("""ep(?:isode)?[-.]?(\d+)""", RegexOption.IGNORE_CASE)
             val episodeMatch = episodePattern.find(href)
             
             // Pattern 2: s01e05 style
@@ -315,7 +357,7 @@ object EpisodeListScraper {
             .get()
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
+        httpClient.newCall(request).await().use { response ->
             if (!response.isSuccessful) {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }

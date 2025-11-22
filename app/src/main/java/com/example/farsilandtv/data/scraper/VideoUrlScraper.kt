@@ -140,7 +140,7 @@ object VideoUrlScraper {
             }
 
             // Check cache first (use normalized URL as cache key)
-            urlCache.get(pageUrl)?.let { cached ->
+            urlCache.get(securePageUrl)?.let { cached ->
                 val cacheAge = System.currentTimeMillis() - cached.timestamp
                 if (cacheAge < CACHE_DURATION) {
                     val remainingTime = (CACHE_DURATION - cacheAge) / 1000
@@ -152,7 +152,7 @@ object VideoUrlScraper {
                 } else {
                     android.util.Log.d(TAG, "Cache EXPIRED (age: ${cacheAge / 1000}s)")
                     // Remove expired entry
-                    urlCache.remove(pageUrl)
+                    urlCache.remove(securePageUrl)
                 }
             }
 
@@ -212,7 +212,7 @@ object VideoUrlScraper {
                 }
 
                 // Cache the result
-                urlCache.put(pageUrl, CachedUrls(secureUrls, System.currentTimeMillis()))
+                urlCache.put(securePageUrl, CachedUrls(secureUrls, System.currentTimeMillis()))
                 android.util.Log.d(TAG, "SUCCESS: Found ${secureUrls.size} secure video URLs from $sourceType")
                 android.util.Log.d(TAG, "URLs cached for ${CACHE_DURATION / 1000}s")
                 android.util.Log.d(TAG, "========================================")
@@ -254,7 +254,7 @@ object VideoUrlScraper {
      * Extract video URLs from Namakade.com
      * Uses NamakadeApiService which has its own HTML parser
      *
-     * @param pageUrl Full URL to episode/movie page
+     * @param pageUrl Full URL to episode/movie page (already normalized to HTTPS)
      * @return ScraperResult with video URLs or error
      */
     private suspend fun extractFromNamakade(pageUrl: String): ScraperResult<List<VideoUrl>> {
@@ -266,7 +266,7 @@ object VideoUrlScraper {
 
             if (videoUrl != null) {
                 val urlsList = listOf(videoUrl)
-                // Cache the result
+                // Cache the result (pageUrl is already normalized to HTTPS from main function)
                 urlCache.put(pageUrl, CachedUrls(urlsList, System.currentTimeMillis()))
                 android.util.Log.d(TAG, "SUCCESS: Found 1 video URL from Namakade")
                 android.util.Log.d(TAG, "URL: ${videoUrl.url}")
@@ -1860,13 +1860,16 @@ object VideoUrlScraper {
     /**
      * Clear cache entry for a specific page URL
      * Useful for forcing re-scraping of a specific episode/movie
+     * Automatically normalizes URL to HTTPS to match cache key format
      */
     fun clearCacheForUrl(pageUrl: String) {
-        val removed = urlCache.remove(pageUrl)
+        // Normalize URL to match how it's cached in extractVideoUrls()
+        val normalizedUrl = SecureUrlValidator.normalizeToHttps(pageUrl) ?: pageUrl
+        val removed = urlCache.remove(normalizedUrl)
         if (removed != null) {
-            android.util.Log.d(TAG, "Cleared cache for: $pageUrl")
+            android.util.Log.d(TAG, "Cleared cache for: $pageUrl (normalized: $normalizedUrl)")
         } else {
-            android.util.Log.d(TAG, "No cache entry found for: $pageUrl")
+            android.util.Log.d(TAG, "No cache entry found for: $pageUrl (normalized: $normalizedUrl)")
         }
     }
 

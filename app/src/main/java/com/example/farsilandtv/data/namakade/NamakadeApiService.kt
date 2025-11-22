@@ -7,6 +7,8 @@ import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.models.VideoUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -31,21 +33,27 @@ class NamakadeApiService {
     companion object {
         private const val RATE_LIMIT_DELAY_MS = 500L
         private val lastRequestTime = AtomicLong(0L)
+        private val rateLimitMutex = Mutex()
 
         /**
          * Enforce rate limiting between requests
-         * Thread-safe implementation using AtomicLong
+         * Thread-safe implementation using Mutex to prevent race conditions
+         *
+         * Ensures atomic check-delay-update operation to prevent concurrent
+         * coroutines from bypassing the 500ms delay during batch syncs
          */
         private suspend fun enforceRateLimit() {
-            val now = System.currentTimeMillis()
-            val last = lastRequestTime.get()
-            val timeSinceLastRequest = now - last
+            rateLimitMutex.withLock {
+                val now = System.currentTimeMillis()
+                val last = lastRequestTime.get()
+                val timeSinceLastRequest = now - last
 
-            if (timeSinceLastRequest < RATE_LIMIT_DELAY_MS) {
-                delay(RATE_LIMIT_DELAY_MS - timeSinceLastRequest)
+                if (timeSinceLastRequest < RATE_LIMIT_DELAY_MS) {
+                    delay(RATE_LIMIT_DELAY_MS - timeSinceLastRequest)
+                }
+
+                lastRequestTime.set(System.currentTimeMillis())
             }
-
-            lastRequestTime.set(System.currentTimeMillis())
         }
     }
 

@@ -1,8 +1,9 @@
 # Firebase Cloud Messaging Setup Guide
 
-**Application:** FarsiPlex Android TV
+**Application:** FarsiPlex Android TV (Rebranding to FarsiHub)
 **Feature:** Push Notifications for New Episodes & Seasons
-**Status:** ⚠️ PLACEHOLDER CONFIG - REQUIRES SETUP
+**Status:** ⚠️ CURRENTLY DISABLED - PLACEHOLDER CONFIG
+**Audit Note:** Firebase integration exists but is disabled (no google-services.json)
 
 ---
 

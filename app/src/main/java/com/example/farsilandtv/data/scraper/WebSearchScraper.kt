@@ -5,11 +5,52 @@ import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.io.IOException
 import java.net.URLEncoder
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * EXTERNAL AUDIT FIX F2: Suspendable OkHttp Call extension to prevent zombie threads
+ *
+ * Problem: execute() is a blocking call that doesn't respond to coroutine cancellation
+ * Result: Cancelled coroutines leave threads blocked for 25 seconds (timeout)
+ * Impact: Thread pool exhaustion (64 max threads → 50+ zombies = app freeze)
+ *
+ * Solution: Use enqueue() with suspendCancellableCoroutine for proper cancellation
+ * - Coroutine cancellation triggers call.cancel() immediately
+ * - Frees thread instantly instead of waiting for timeout
+ * - Prevents thread pool exhaustion
+ */
+private suspend fun Call.await(): Response {
+    return suspendCancellableCoroutine { continuation ->
+        // Register cancellation handler BEFORE starting the call
+        continuation.invokeOnCancellation {
+            cancel() // Cancel OkHttp call immediately when coroutine is cancelled
+        }
+
+        enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response)
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                // Only resume with exception if coroutine is still active
+                if (continuation.isActive) {
+                    continuation.resumeWithException(e)
+                }
+            }
+        })
+    }
+}
 
 /**
  * Web Search Scraper for FarsiPlex and Namakade websites
@@ -117,7 +158,7 @@ object WebSearchScraper {
                 okhttp3.Request.Builder()
                     .url(searchUrl)
                     .build()
-            ).execute().use { response ->
+            ).await().use { response ->
                 if (!response.isSuccessful) {
                     Log.e(TAG, "Farsiland search failed: ${response.code}")
                     return@withContext results
@@ -195,7 +236,7 @@ object WebSearchScraper {
                 okhttp3.Request.Builder()
                     .url(searchUrl)
                     .build()
-            ).execute().use { response ->
+            ).await().use { response ->
                 if (!response.isSuccessful) {
                     Log.e(TAG, "FarsiPlex search failed: ${response.code}")
                     return@withContext results
@@ -281,7 +322,7 @@ object WebSearchScraper {
                 okhttp3.Request.Builder()
                     .url(searchUrl)
                     .build()
-            ).execute().use { response ->
+            ).await().use { response ->
                 if (!response.isSuccessful) {
                     Log.e(TAG, "Namakade search failed: ${response.code}")
                     return@withContext results
@@ -333,7 +374,11 @@ object WebSearchScraper {
                             description = "",
                             posterUrl = if (posterUrl.isNotEmpty()) posterUrl else null,
                             backdropUrl = null,
-                            farsilandUrl = if (link.startsWith("http")) link else "https://namakade.com$link",
+                            farsilandUrl = if (link.startsWith("http")) {
+                                link
+                            } else {
+                                "https://namakade.com/${link.removePrefix("/")}"
+                            },
                             year = null,
                             rating = null,
                             totalSeasons = 0,
@@ -390,7 +435,11 @@ object WebSearchScraper {
                             description = "",
                             posterUrl = if (posterUrl.isNotEmpty()) posterUrl else null,
                             backdropUrl = null,
-                            farsilandUrl = if (link.startsWith("http")) link else "https://namakade.com$link",
+                            farsilandUrl = if (link.startsWith("http")) {
+                                link
+                            } else {
+                                "https://namakade.com/${link.removePrefix("/")}"
+                            },
                             year = extractYear(title),
                             rating = null,
                             runtime = null,

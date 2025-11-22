@@ -240,6 +240,31 @@ abstract class AppDatabase : RoomDatabase() {
          *   Secondary user: /data/user/10/com.example.farsilandtv/databases/farsiland_database.db
          */
         private val MIGRATION_8_9 = object : Migration(8, 9) {
+            /**
+             * Helper function to check if a column exists in a table
+             * Prevents "no such column" errors during migration from old schemas
+             */
+            private fun checkColumnExists(
+                db: SupportSQLiteDatabase,
+                dbName: String,
+                tableName: String,
+                columnName: String
+            ): Boolean {
+                val cursor = db.query("PRAGMA $dbName.table_info($tableName)")
+                try {
+                    val nameIndex = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameIndex)
+                        if (name == columnName) {
+                            return true
+                        }
+                    }
+                } finally {
+                    cursor.close()
+                }
+                return false
+            }
+
             override fun migrate(database: SupportSQLiteDatabase) {
                 // Create playback_positions table
                 // Uses composite primary key (contentId, contentType) to ensure
@@ -315,6 +340,22 @@ abstract class AppDatabase : RoomDatabase() {
                         // Previous: INSERT OR REPLACE picked random row when duplicates exist
                         // Fix: GROUP BY + MAX(lastWatchedAt) ensures we keep the MOST RECENT entry
                         // This prevents users from losing "Completed" status or recent progress
+                        //
+                        // EXTERNAL AUDIT FIX D8 (2025-11-22): Column Existence Check - Prevents Migration Failure
+                        // Issue: Accessing non-existent 'quality' column causes "no such column" error and migration abort
+                        // Users upgrading from very old versions lose ALL watch history
+                        // Fix: Check if columns exist before accessing them, use defaults for missing columns
+
+                        // Check if optional columns exist in old schema
+                        val qualityColumnExists = checkColumnExists(database, "old_db", "playback_position", "quality")
+                        val completedAtColumnExists = checkColumnExists(database, "old_db", "playback_position", "completedAt")
+
+                        android.util.Log.i("AppDatabase", "MIGRATION 8→9: Old schema - quality column: $qualityColumnExists, completedAt column: $completedAtColumnExists")
+
+                        // Build SELECT dynamically based on old schema
+                        val qualitySelect = if (qualityColumnExists) "COALESCE(MAX(quality), '720p')" else "'720p'"
+                        val completedAtSelect = if (completedAtColumnExists) "MAX(completedAt)" else "NULL"
+
                         database.execSQL("""
                             INSERT OR REPLACE INTO playback_positions
                             (contentId, contentType, contentTitle, contentUrl, position, duration, quality, lastWatchedAt, isCompleted, completedAt)
@@ -325,10 +366,10 @@ abstract class AppDatabase : RoomDatabase() {
                                 MAX(contentUrl) as contentUrl,
                                 MAX(position) as position,
                                 MAX(duration) as duration,
-                                COALESCE(MAX(quality), '720p') as quality,
+                                $qualitySelect as quality,
                                 MAX(lastWatchedAt) as lastWatchedAt,
                                 MAX(isCompleted) as isCompleted,
-                                MAX(completedAt) as completedAt
+                                $completedAtSelect as completedAt
                             FROM old_db.playback_position
                             GROUP BY contentId, contentType
                             HAVING lastWatchedAt = MAX(lastWatchedAt)
