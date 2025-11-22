@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import org.jsoup.Jsoup
 
 /**
@@ -527,37 +528,116 @@ class ContentRepository private constructor(context: Context) {
     }
 
     /**
-     * Get episodes for a TV show
-     * Check database first (all sources have pre-populated episodes)
-     * Fallback to scraping if database is empty
+     * Get episodes for a TV show with Smart Refresh
+     *
+     * AUDIT FIX (Stale Cache): Implements cache-then-refresh pattern
+     * - Returns cached episodes immediately (Fast UX)
+     * - Launches background refresh to check for new episodes
+     * - Saves new episodes to DB (reactive UI updates automatically)
+     *
+     * @param seriesId Series ID
+     * @param seriesUrl URL to series page for scraping
+     * @return Map of season number to list of episodes
      */
     suspend fun getEpisodes(seriesId: Int, seriesUrl: String): Result<Map<Int, List<Episode>>> =
         withContext(Dispatchers.IO) {
             try {
                 android.util.Log.d(TAG, "getEpisodes() - seriesId: $seriesId, URL: $seriesUrl")
 
-                // Check database first for all sources (episodes are pre-populated)
-                android.util.Log.d(TAG, "Checking database for episodes")
+                // 1. Load from Database (Fast Path - return immediately)
                 val cachedEpisodes = getContentDb().episodeDao().getEpisodesForSeries(seriesId).firstOrNull()
 
+                // 2. Launch background refresh (don't block UI)
+                // This ensures episodes are always fresh without sacrificing UX
+                launch {
+                    try {
+                        refreshEpisodesFromWeb(seriesId, seriesUrl)
+                    } catch (e: Exception) {
+                        android.util.Log.w(TAG, "Background episode refresh failed: ${e.message}")
+                        // Don't propagate error - cached data is still valid
+                    }
+                }
+
+                // 3. Return cached data if available (UI gets instant response)
                 if (!cachedEpisodes.isNullOrEmpty()) {
                     android.util.Log.d(TAG, "Found ${cachedEpisodes.size} episodes in database")
                     val episodes = cachedEpisodes.map { it.toEpisode() }
                     val episodesBySeason = episodes.groupBy { it.season }
                     return@withContext Result.success(episodesBySeason)
-                } else {
-                    android.util.Log.w(TAG, "No episodes found in database for series $seriesId, falling back to scraping")
                 }
 
-                // Fallback: Scrape the series page
-                android.util.Log.d(TAG, "Scraping episodes from URL")
-                val episodesBySeason = episodeScraper.scrapeEpisodeList(seriesUrl, seriesId)
-                Result.success(episodesBySeason)
+                // 4. If database is empty, wait for web scrape (first time only)
+                android.util.Log.w(TAG, "No episodes in database, waiting for web scrape")
+                val webEpisodesMap = refreshEpisodesFromWeb(seriesId, seriesUrl)
+                Result.success(webEpisodesMap)
+
             } catch (e: Exception) {
                 ErrorHandler.logError(TAG, "Failed to get episodes for series $seriesId", e)
                 Result.failure(e)
             }
         }
+
+    /**
+     * Scrape episodes from web, save to database, and update series metadata
+     *
+     * AUDIT FIX (Stale Cache): This is the missing piece - saves episodes to DB
+     * Previous code scraped but never saved, causing repeated scraping
+     *
+     * @param seriesId Series ID
+     * @param seriesUrl URL to series page
+     * @return Map of season number to list of episodes
+     */
+    private suspend fun refreshEpisodesFromWeb(seriesId: Int, seriesUrl: String): Map<Int, List<Episode>> {
+        android.util.Log.d(TAG, "Refreshing episodes from web for series $seriesId")
+
+        try {
+            // 1. Scrape episodes from web
+            val episodesBySeason = episodeScraper.scrapeEpisodeList(seriesUrl, seriesId)
+            val allEpisodes = episodesBySeason.values.flatten()
+
+            if (allEpisodes.isEmpty()) {
+                android.util.Log.w(TAG, "No episodes found on web for series $seriesId")
+                return emptyMap()
+            }
+
+            android.util.Log.d(TAG, "Scraped ${allEpisodes.size} episodes from web")
+
+            // 2. Convert to CachedEpisode and save to database
+            val cachedEpisodes = allEpisodes.map { episode ->
+                CachedEpisode(
+                    episodeId = episode.id,
+                    seriesId = seriesId,
+                    seriesTitle = episode.seriesTitle ?: "",
+                    season = episode.season,
+                    episode = episode.episode,
+                    title = episode.title,
+                    description = episode.description,
+                    thumbnailUrl = episode.thumbnailUrl,
+                    farsilandUrl = episode.farsilandUrl,
+                    airDate = episode.airDate,
+                    runtime = null,  // Runtime not available from scraper
+                    dateAdded = System.currentTimeMillis(),
+                    lastUpdated = System.currentTimeMillis()
+                )
+            }
+
+            // CRITICAL FIX: Save episodes to database (was missing!)
+            getContentDb().episodeDao().insertEpisodes(cachedEpisodes)
+            android.util.Log.i(TAG, "✓ Saved ${cachedEpisodes.size} episodes to database")
+
+            // 3. Update series metadata (total seasons/episodes)
+            val totalSeasons = episodesBySeason.keys.maxOrNull() ?: 0
+            val totalEpisodes = allEpisodes.size
+            updateSeriesMetadata(seriesId, totalSeasons, totalEpisodes)
+            android.util.Log.d(TAG, "✓ Updated series metadata: $totalSeasons seasons, $totalEpisodes episodes")
+
+            return episodesBySeason
+
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error refreshing episodes from web: ${e.message}", e)
+            throw e // Propagate to caller
+        }
+    }
 
     /**
      * Get video URLs for episode or movie
