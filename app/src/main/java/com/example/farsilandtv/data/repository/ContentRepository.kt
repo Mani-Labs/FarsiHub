@@ -1195,42 +1195,63 @@ class ContentRepository private constructor(context: Context) {
             try {
                 Log.d("ContentRepository", "Starting batch sync for new content since $sinceTimestamp")
 
-                // Batch API call: Fetch recent movies and series in parallel
-                val moviesDeferred = async {
-                    try {
+                val allNewMovies = mutableListOf<com.example.farsilandtv.data.models.wordpress.WPMovie>()
+                val allNewSeries = mutableListOf<com.example.farsilandtv.data.models.wordpress.WPTvShow>()
+
+                // AUDIT FIX 1.1: Paginate movies until reaching old content
+                var moviesPage = 1
+                var keepFetchingMovies = true
+                while (keepFetchingMovies) {
+                    ensureActive()
+                    val wpMovies = try {
                         ErrorHandler.retryWithExponentialBackoff {
-                            wordPressApi.getMovies(perPage = 50, page = 1)
+                            wordPressApi.getMovies(perPage = 50, page = moviesPage)
                         }
                     } catch (e: Exception) {
-                        Log.e("ContentRepository", "Failed to fetch movies in batch sync", e)
-                        emptyList()
+                        Log.e("ContentRepository", "Failed to fetch movies page $moviesPage", e)
+                        break
+                    }
+
+                    if (wpMovies.isEmpty()) {
+                        keepFetchingMovies = false
+                    } else {
+                        val oldestTimestamp = wpMovies.minOfOrNull { parseDateToTimestamp(it.date) } ?: 0
+                        allNewMovies.addAll(wpMovies.filter { parseDateToTimestamp(it.date) > sinceTimestamp })
+                        Log.d("ContentRepository", "Movies pg$moviesPage: ${wpMovies.size} fetched, ${allNewMovies.size} total new")
+
+                        if (oldestTimestamp <= sinceTimestamp) keepFetchingMovies = false
+                        else moviesPage++
                     }
                 }
 
-                val seriesDeferred = async {
-                    try {
+                // AUDIT FIX 1.1: Paginate series until reaching old content
+                var seriesPage = 1
+                var keepFetchingSeries = true
+                while (keepFetchingSeries) {
+                    ensureActive()
+                    val wpSeries = try {
                         ErrorHandler.retryWithExponentialBackoff {
-                            wordPressApi.getTvShows(perPage = 50, page = 1)
+                            wordPressApi.getTvShows(perPage = 50, page = seriesPage)
                         }
                     } catch (e: Exception) {
-                        Log.e("ContentRepository", "Failed to fetch series in batch sync", e)
-                        emptyList()
+                        Log.e("ContentRepository", "Failed to fetch series page $seriesPage", e)
+                        break
+                    }
+
+                    if (wpSeries.isEmpty()) {
+                        keepFetchingSeries = false
+                    } else {
+                        val oldestTimestamp = wpSeries.minOfOrNull { parseDateToTimestamp(it.date) } ?: 0
+                        allNewSeries.addAll(wpSeries.filter { parseDateToTimestamp(it.date) > sinceTimestamp })
+                        Log.d("ContentRepository", "Series pg$seriesPage: ${wpSeries.size} fetched, ${allNewSeries.size} total new")
+
+                        if (oldestTimestamp <= sinceTimestamp) keepFetchingSeries = false
+                        else seriesPage++
                     }
                 }
 
-                val wpMovies = moviesDeferred.await()
-                val wpSeries = seriesDeferred.await()
-
-                // Filter for new content only
-                val newMovies = wpMovies.filter { movie ->
-                    val movieTimestamp = parseDateToTimestamp(movie.date)
-                    movieTimestamp > sinceTimestamp
-                }
-
-                val newSeries = wpSeries.filter { series ->
-                    val seriesTimestamp = parseDateToTimestamp(series.date)
-                    seriesTimestamp > sinceTimestamp
-                }
+                val newMovies = allNewMovies
+                val newSeries = allNewSeries
 
                 // Cache in database for offline access
                 if (newMovies.isNotEmpty()) {

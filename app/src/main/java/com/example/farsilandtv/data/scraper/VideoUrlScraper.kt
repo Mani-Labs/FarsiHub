@@ -1219,82 +1219,70 @@ object VideoUrlScraper {
             android.util.Log.d(TAG, "Found ${downloadRows.size} download elements")
             val videoUrls = mutableListOf<VideoUrl>()
 
-            for ((index, row) in downloadRows.withIndex()) {
-                try {
-                    // Get the fileid from hidden input
-                    val fileidInput = row.select("input[name=fileid]").firstOrNull()
-                    if (fileidInput == null) {
-                        android.util.Log.d(TAG, "Element $index has no fileid input")
-                        continue
-                    }
-
-                    val fileid = fileidInput.attr("value")
-                    if (fileid.isEmpty()) {
-                        android.util.Log.d(TAG, "Element $index has empty fileid")
-                        continue
-                    }
-
-                    // Try multiple methods to extract quality
-                    var quality = "unknown"
-
-                    // Method 1: strong.quality
-                    val qualityElement = row.select("strong.quality").firstOrNull()
-                    if (qualityElement != null) {
-                        val qualityText = qualityElement.text().trim()
-                        quality = if (qualityText.isNotEmpty()) "${qualityText}p" else quality
-                    }
-
-                    // Method 2: Look for quality patterns in text (480, 720, 1080)
-                    if (quality == "unknown") {
-                        val rowText = row.text()
-                        val qualityPattern = Regex("""(\d{3,4})p?""")
-                        val match = qualityPattern.find(rowText)
-                        if (match != null) {
-                            quality = "${match.groupValues[1]}p"
-                        }
-                    }
-
-                    // Method 3: Check for quality class names
-                    if (quality == "unknown") {
-                        val classNames = row.classNames().joinToString(" ")
-                        when {
-                            classNames.contains("1080") -> quality = "1080p"
-                            classNames.contains("720") -> quality = "720p"
-                            classNames.contains("480") -> quality = "480p"
-                        }
-                    }
-
-                    android.util.Log.d(TAG, "Element $index: fileid=$fileid, quality=$quality")
-
-                    // POST to /get/ with the fileid to get both mirror URLs
-                    val mirrorUrls = postToGetEndpoint(fileid)
-                    if (mirrorUrls.isNotEmpty()) {
-                        // Add each mirror URL as a separate VideoUrl object
-                        mirrorUrls.forEach { videoUrl ->
-                            // Extract quality from URL if we didn't get it from HTML
-                            val finalQuality = if (quality == "unknown") {
-                                VideoUrl.extractQuality(videoUrl)
-                            } else {
-                                quality
+            // AUDIT FIX 2.1: Parallelize POST requests for faster video URL resolution
+            coroutineScope {
+                val deferredUrls = downloadRows.mapIndexedNotNull { index, row ->
+                    async {
+                        try {
+                            // Get the fileid from hidden input
+                            val fileidInput = row.select("input[name=fileid]").firstOrNull()
+                                ?: return@async null
+            
+                            val fileid = fileidInput.attr("value")
+                            if (fileid.isEmpty()) return@async null
+            
+                            // Extract quality
+                            var quality = "unknown"
+            
+                            // Method 1: strong.quality
+                            row.select("strong.quality").firstOrNull()?.let {
+                                val qualityText = it.text().trim()
+                                if (qualityText.isNotEmpty()) quality = "${qualityText}p"
                             }
-
-                            val mirror = VideoUrl.extractMirror(videoUrl)
-                            videoUrls.add(
-                                VideoUrl(
-                                    url = videoUrl,
-                                    quality = finalQuality,
-                                    mirror = mirror
-                                )
-                            )
-                            android.util.Log.d(TAG, "Got video URL from fileid: $videoUrl (quality: $finalQuality, mirror: $mirror)")
+            
+                            // Method 2: Quality patterns in text
+                            if (quality == "unknown") {
+                                val qualityPattern = Regex("""(\\d{3,4})p?""")
+                                qualityPattern.find(row.text())?.let {
+                                    quality = "${it.groupValues[1]}p"
+                                }
+                            }
+            
+                            // Method 3: Class names
+                            if (quality == "unknown") {
+                                val classNames = row.classNames().joinToString(" ")
+                                quality = when {
+                                    classNames.contains("1080") -> "1080p"
+                                    classNames.contains("720") -> "720p"
+                                    classNames.contains("480") -> "480p"
+                                    else -> "unknown"
+                                }
+                            }
+            
+                            // POST to /get/ endpoint (parallel execution)
+                            val mirrorUrls = postToGetEndpoint(fileid)
+                            if (mirrorUrls.isEmpty()) return@async null
+            
+                            // Create VideoUrl objects
+                            mirrorUrls.map { videoUrl ->
+                                val finalQuality = if (quality == "unknown") {
+                                    VideoUrl.extractQuality(videoUrl)
+                                } else {
+                                    quality
+                                }
+                                val mirror = VideoUrl.extractMirror(videoUrl)
+                                VideoUrl(url = videoUrl, quality = finalQuality, mirror = mirror)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e(TAG, "Error processing download row $index", e)
+                            null
                         }
-                    } else {
-                        android.util.Log.w(TAG, "No URLs returned from /get/ for fileid: $fileid")
                     }
-
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "Error processing element $index", e)
                 }
+            
+                // Await all parallel requests and flatten results
+                val results = deferredUrls.awaitAll().filterNotNull().flatten()
+                videoUrls.addAll(results)
             }
 
             if (videoUrls.isNotEmpty()) {
@@ -1694,7 +1682,7 @@ object VideoUrlScraper {
 
         for (mirror in mirrors) {
             for (quality in qualities) {
-                val url = "https://$mirror/series/$seriesSlug/$episodeNum.$quality.mp4"
+                val url = "https://$mirror/series/$seriesSlug/s${String.format("%02d", season)}/$episodeNum.$quality.mp4"
                 videoUrls.add(
                     VideoUrl(
                         url = url,
