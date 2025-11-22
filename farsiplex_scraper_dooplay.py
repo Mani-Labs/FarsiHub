@@ -33,11 +33,18 @@ class FarsiPlexDooPlayScraper:
         self.delay = delay
         self.db_lock = Lock()  # Thread-safe database access
         self.session = requests.Session()
+        # AUDIT FIX #18: Match User-Agent with Android app (RetrofitClient.kt)
+        # Ensures consistent behavior across Python scraper and Kotlin app
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             'Referer': self.BASE_URL
         })
         self.init_database()
+        # AUDIT FIX #16: Persistent database connection to prevent thrashing
+        # Issue: Opening/closing connection per item causes massive I/O overhead
+        # Solution: Reuse single connection for entire session (protected by db_lock)
+        self.db_conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+        print(f"✓ Persistent database connection established")
 
     def generate_stable_id(self, slug: str) -> int:
         """
@@ -461,9 +468,9 @@ class FarsiPlexDooPlayScraper:
 
     def save_movie_to_db(self, movie_data: Dict):
         """Save movie to database (thread-safe)"""
+        # AUDIT FIX #16: Reuse persistent connection instead of creating new one per item
         with self.db_lock:  # Ensure thread-safe database access
-            conn = sqlite3.connect(self.db_path, timeout=30.0)  # Increase timeout
-            cursor = conn.cursor()
+            cursor = self.db_conn.cursor()
 
             try:
                 # AUDIT FIX C1: Use deterministic ID generation
@@ -512,13 +519,11 @@ class FarsiPlexDooPlayScraper:
                         video.get('player_type')
                     ))
 
-                conn.commit()
+                self.db_conn.commit()
 
             except Exception as e:
                 print(f"  ✗ DB Error: {e}")
-                conn.rollback()
-            finally:
-                conn.close()
+                self.db_conn.rollback()
 
     def scrape_tvshow(self, tvshow_item: Dict) -> Optional[Dict]:
         """Scrape TV show with all seasons and episodes"""
@@ -652,7 +657,7 @@ class FarsiPlexDooPlayScraper:
                 seasons = tvshow_data.get('seasons', [])
                 if not seasons:
                     print(f"  ⚠ Warning: TV show has no seasons data, skipping episode")
-                    continue  # Skip this episode
+                    return None  # Skip this episode
                 episode_number = len(seasons[-1].get('episodes', [])) + 1
 
             episode_data = {
@@ -683,9 +688,9 @@ class FarsiPlexDooPlayScraper:
 
     def save_tvshow_to_db(self, tvshow_data: Dict):
         """Save TV show with parent/child relationships (thread-safe)"""
+        # AUDIT FIX #16: Reuse persistent connection instead of creating new one per item
         with self.db_lock:  # Ensure thread-safe database access
-            conn = sqlite3.connect(self.db_path, timeout=30.0)  # Increase timeout
-            cursor = conn.cursor()
+            cursor = self.db_conn.cursor()
 
             try:
                 # AUDIT FIX C1: Use deterministic ID generation
@@ -773,13 +778,23 @@ class FarsiPlexDooPlayScraper:
                         print(f"✓ ({len(video_sources)} videos)")
                         time.sleep(self.delay)
 
-                conn.commit()
+                self.db_conn.commit()
 
             except Exception as e:
                 print(f"  ✗ DB Error: {e}")
-                conn.rollback()
-            finally:
-                conn.close()
+                self.db_conn.rollback()
+
+    def close(self):
+        """
+        Close database connection
+        AUDIT FIX #16: Proper cleanup of persistent connection
+        """
+        if hasattr(self, 'db_conn') and self.db_conn:
+            try:
+                self.db_conn.close()
+                print("✓ Database connection closed")
+            except Exception as e:
+                print(f"⚠ Error closing database: {e}")
 
     def run_full_scrape(self, parallel=False, max_workers=5):
         """
@@ -900,7 +915,11 @@ def main():
     args = parser.parse_args()
 
     scraper = FarsiPlexDooPlayScraper(db_path="Farsiplex.db", delay=args.delay)
-    scraper.run_full_scrape(parallel=args.parallel, max_workers=args.workers)
+    try:
+        scraper.run_full_scrape(parallel=args.parallel, max_workers=args.workers)
+    finally:
+        # AUDIT FIX #16: Always close database connection on exit
+        scraper.close()
 
 
 if __name__ == "__main__":

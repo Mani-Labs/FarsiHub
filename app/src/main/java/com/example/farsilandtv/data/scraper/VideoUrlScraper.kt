@@ -106,6 +106,26 @@ object VideoUrlScraper {
     }
     private const val CACHE_DURATION = 5 * 60 * 1000L // 5 minutes in milliseconds
 
+    // AUDIT FIX #28: Pre-compiled regex patterns to avoid object churn
+    // Issue: Regex objects created in loops/hot paths cause GC pressure
+    // Solution: Compile once, reuse everywhere
+    private val FAKE_CDN_PATTERN = Regex("""cdn\d+\.(farsiland|farsiplex|namakade)\.com""", RegexOption.IGNORE_CASE)
+    private val SOURCES_ARRAY_PATTERN = Regex("""sources\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+    private val SOURCE_OBJECT_PATTERN = Regex("""\{\s*file\s*:\s*["']([^"']+)["'](?:[^}]*label\s*:\s*["']([^"']+)["'])?[^}]*\}""", RegexOption.IGNORE_CASE)
+    private val M3U8_FILE_PATTERN = Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)"""", RegexOption.IGNORE_CASE)
+    private val MP4_FILE_PATTERN = Regex(""""file"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE)
+    private val MP4_FILE2_PATTERN = Regex(""""file2"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE)
+    private val MP4_URL_PATTERN = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
+    private val RESOLUTION_PATTERN = Regex("""RESOLUTION=(\d+)x(\d+)""")
+    private val BANDWIDTH_PATTERN = Regex("""BANDWIDTH=(\d+)""")
+    private val QUALITY_PATTERN = Regex("""(\d{3,4})p?""")
+    private val SERIES_URL_PATTERN = Regex("""/series/([^/]+)/s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
+    private val MOVIE_URL_PATTERN = Regex("""/movies/([^/]+)""", RegexOption.IGNORE_CASE)
+    private val QUALITY_1080_PATTERN = Regex("""\b1080p?\b""", RegexOption.IGNORE_CASE)
+    private val QUALITY_720_PATTERN = Regex("""\b720p?\b""", RegexOption.IGNORE_CASE)
+    private val QUALITY_480_PATTERN = Regex("""\b480p?\b""", RegexOption.IGNORE_CASE)
+    private val QUALITY_360_PATTERN = Regex("""\b360p?\b""", RegexOption.IGNORE_CASE)
+
     /**
      * Extract video URLs from episode or movie page
      *
@@ -130,7 +150,10 @@ object VideoUrlScraper {
             val normalizedUrl = SecureUrlValidator.normalizeToHttps(pageUrl)
             if (normalizedUrl == null) {
                 android.util.Log.e(TAG, "SECURITY: Rejected insecure or untrusted URL: $pageUrl")
+                // AUDIT FIX #30: Use localized string resource
                 return@withContext ScraperResult.ParseError(
+                    // Note: Context not available in object, using hardcoded string
+                    // TODO: Refactor VideoUrlScraper to accept Context for proper localization
                     "Security: Only HTTPS URLs from trusted domains are allowed",
                     SecurityException("Cleartext HTTP traffic not permitted")
                 )
@@ -646,7 +669,8 @@ object VideoUrlScraper {
                             // Issue: Hardcoded "cdn2.farsiland.com" breaks when sites rotate domains
                             // Solution: Use regex to match ANY cdn*.farsiland.com or fake CDN patterns
                             // Pattern: cdn{N}.{domain} where N is number and domain is known site
-                            val fakeCdnPattern = Regex("""cdn\d+\.(farsiland|farsiplex|namakade)\.com""", RegexOption.IGNORE_CASE)
+                            // AUDIT FIX #28: Use pre-compiled regex pattern
+                            val fakeCdnPattern = FAKE_CDN_PATTERN
                             val fakeCdnMatch = fakeCdnPattern.find(decodedUrl)
 
                             if (fakeCdnMatch != null) {
@@ -690,8 +714,8 @@ object VideoUrlScraper {
                     // METHOD 1: Extract from jwplayer sources array (supports multiple qualities)
                     // Pattern: sources:[{file:"url1.mp4",label:"1080p"},{file:"url2.mp4",label:"720p"}]
                     // SECURITY: Use timeout-protected regex to prevent ReDoS attacks
-                    val sourcesArrayPattern = Regex("""sources\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
-                    val sourcesMatch = SecureRegex.findWithTimeout(sourcesArrayPattern, jwPlayerHtml)
+                    // AUDIT FIX #28: Use pre-compiled regex pattern
+                    val sourcesMatch = SecureRegex.findWithTimeout(SOURCES_ARRAY_PATTERN, jwPlayerHtml)
 
                     if (sourcesMatch != null) {
                         val sourcesContent = sourcesMatch.groupValues[1]
@@ -699,7 +723,8 @@ object VideoUrlScraper {
 
                         // Extract each source object: {file:"url",label:"quality"}
                         // SECURITY: Simplified pattern to reduce backtracking risk
-                        val sourcePattern = Regex("""\{\s*file\s*:\s*["']([^"']+)["'](?:[^}]*label\s*:\s*["']([^"']+)["'])?[^}]*\}""", RegexOption.IGNORE_CASE)
+                        // AUDIT FIX #28: Use pre-compiled regex pattern
+                        val sourcePattern = SOURCE_OBJECT_PATTERN
                         val sourceMatches = SecureRegex.findAllWithTimeout(sourcePattern, sourcesContent)
 
                         for (sourceMatch in sourceMatches) {
@@ -902,12 +927,15 @@ object VideoUrlScraper {
                     val playerId = item.attr("data-playerid").ifEmpty { item.attr("data-post") }
                     android.util.Log.d(TAG, "Player item $index: playerId=$playerId")
 
-                    // Try to extract quality from text
+                    // AUDIT FIX #22: Improved quality detection with word boundary regex
+                    // Issue: contains("1080") matches "1080 Hours" or "11080"
+                    // Solution: Use regex with word boundaries to match quality patterns only
+                    // AUDIT FIX #28: Use pre-compiled regex patterns
                     val qualityText = item.select(".title, span").text()
                     val quality = when {
-                        qualityText.contains("1080", ignoreCase = true) -> "1080p"
-                        qualityText.contains("720", ignoreCase = true) -> "720p"
-                        qualityText.contains("480", ignoreCase = true) -> "480p"
+                        QUALITY_1080_PATTERN.containsMatchIn(qualityText) -> "1080p"
+                        QUALITY_720_PATTERN.containsMatchIn(qualityText) -> "720p"
+                        QUALITY_480_PATTERN.containsMatchIn(qualityText) -> "480p"
                         else -> "720p"
                     }
 
@@ -995,10 +1023,12 @@ object VideoUrlScraper {
 
         // EXTERNAL AUDIT FIX H2: Apply strict size limit before regex processing
         // Prevents ReDoS attacks with catastrophic backtracking on malicious payloads
-        // 10KB limit is generous for legitimate onclick handlers but blocks attack vectors
-        val safeInput = if (javaScript.length > 10000) {
-            android.util.Log.w(TAG, "JavaScript string too long (${javaScript.length} chars), truncating to 10KB for safety")
-            javaScript.substring(0, 10000)
+        // AUDIT FIX #13: Increased from 10KB to 100KB to prevent URL truncation
+        // Issue: 10KB was too aggressive, missing video URLs in large JavaScript blocks
+        // Solution: 100KB limit still protects against ReDoS while allowing full URL extraction
+        val safeInput = if (javaScript.length > 100000) {
+            android.util.Log.w(TAG, "JavaScript string too long (${javaScript.length} chars), truncating to 100KB for safety")
+            javaScript.substring(0, 100000)
         } else {
             javaScript
         }
@@ -1036,13 +1066,15 @@ object VideoUrlScraper {
 
     /**
      * Detect video quality from URL
+     * AUDIT FIX #22: Use word boundary regex to avoid false matches
+     * AUDIT FIX #28: Use pre-compiled regex patterns
      */
     private fun detectQualityFromUrl(url: String): String {
         return when {
-            url.contains("1080", ignoreCase = true) || url.contains("fhd", ignoreCase = true) -> "1080p"
-            url.contains("720", ignoreCase = true) || url.contains("hd", ignoreCase = true) -> "720p"
-            url.contains("480", ignoreCase = true) -> "480p"
-            url.contains("360", ignoreCase = true) || url.contains("sd", ignoreCase = true) -> "360p"
+            QUALITY_1080_PATTERN.containsMatchIn(url) || url.contains("fhd", ignoreCase = true) -> "1080p"
+            QUALITY_720_PATTERN.containsMatchIn(url) || url.contains("hd", ignoreCase = true) -> "720p"
+            QUALITY_480_PATTERN.containsMatchIn(url) -> "480p"
+            QUALITY_360_PATTERN.containsMatchIn(url) || url.contains("sd", ignoreCase = true) -> "360p"
             else -> VideoUrl.extractQuality(url)
         }
     }
@@ -1074,8 +1106,8 @@ object VideoUrlScraper {
                 // Check for stream info line
                 if (line.startsWith("#EXT-X-STREAM-INF:")) {
                     // Extract resolution (e.g., RESOLUTION=1920x1080)
-                    val resolutionPattern = Regex("""RESOLUTION=(\d+)x(\d+)""")
-                    val resolutionMatch = resolutionPattern.find(line)
+                    // AUDIT FIX #28: Use pre-compiled regex pattern
+                    val resolutionMatch = RESOLUTION_PATTERN.find(line)
 
                     if (resolutionMatch != null) {
                         val height = resolutionMatch.groupValues[2]
@@ -1090,8 +1122,8 @@ object VideoUrlScraper {
 
                     // Extract bandwidth for quality estimation if resolution not available
                     if (currentQuality == null) {
-                        val bandwidthPattern = Regex("""BANDWIDTH=(\d+)""")
-                        val bandwidthMatch = bandwidthPattern.find(line)
+                        // AUDIT FIX #28: Use pre-compiled regex pattern
+                        val bandwidthMatch = BANDWIDTH_PATTERN.find(line)
 
                         if (bandwidthMatch != null) {
                             val bandwidth = bandwidthMatch.groupValues[1].toLongOrNull() ?: 0

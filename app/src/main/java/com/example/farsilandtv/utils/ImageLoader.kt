@@ -111,7 +111,8 @@ object ImageLoader {
             placeholder(R.drawable.image_placeholder)
             error(R.drawable.movie)
             size(480, 270) // Standard card size
-            scale(Scale.FILL)
+            // AUDIT FIX #25: Changed from Scale.FILL to Scale.FIT to prevent aspect ratio distortion
+            scale(Scale.FIT)
             memoryCachePolicy(CachePolicy.ENABLED)
             diskCachePolicy(CachePolicy.ENABLED)
         }
@@ -127,6 +128,8 @@ object ImageLoader {
      *
      * AUDIT FIX C1.1: Now accepts lifecycle-aware CoroutineScope to prevent memory leaks
      * Caller MUST pass lifecycleScope or viewModelScope
+     *
+     * AUDIT FIX #27: Use applicationContext to prevent Activity context leak
      *
      * @param context Android context
      * @param scope Lifecycle-aware CoroutineScope (lifecycleScope or viewModelScope)
@@ -147,7 +150,9 @@ object ImageLoader {
         cardHeight: Int = 270,
         preloadRange: Int = 3
     ) {
-        val loader = getImageLoader(context)
+        // AUDIT FIX #27: Use applicationContext to prevent memory leak
+        val appContext = context.applicationContext
+        val loader = getImageLoader(appContext)
 
         // Preload items in range [currentPosition - 3, currentPosition + 3]
         // AUDIT FIX C1.1: Use provided lifecycle-aware scope instead of creating new one
@@ -163,7 +168,8 @@ object ImageLoader {
                 val imageUrl = imageUrlProvider(position)
                 if (!imageUrl.isNullOrEmpty()) {
                     // Preload into cache
-                    val request = ImageRequest.Builder(context)
+                    // AUDIT FIX #27: Use applicationContext to prevent context leak
+                    val request = ImageRequest.Builder(appContext)
                         .data(imageUrl)
                         .size(cardWidth, cardHeight)
                         .memoryCachePolicy(CachePolicy.ENABLED)
@@ -186,6 +192,8 @@ object ImageLoader {
      * AUDIT FIX C1.1: Now accepts lifecycle-aware CoroutineScope to prevent memory leaks
      * Caller MUST pass lifecycleScope or viewModelScope
      *
+     * AUDIT FIX #27: Use applicationContext to prevent Activity context leak
+     *
      * @param context Android context
      * @param scope Lifecycle-aware CoroutineScope (lifecycleScope or viewModelScope)
      * @param imageUrl Image URL to preload
@@ -201,11 +209,14 @@ object ImageLoader {
     ) {
         if (imageUrl.isNullOrEmpty()) return
 
-        val loader = getImageLoader(context)
+        // AUDIT FIX #27: Use applicationContext to prevent memory leak
+        val appContext = context.applicationContext
+        val loader = getImageLoader(appContext)
 
         // AUDIT FIX C1.1: Use provided lifecycle-aware scope instead of creating new one
         scope.launch(Dispatchers.IO) {
-            val request = ImageRequest.Builder(context)
+            // AUDIT FIX #27: Use applicationContext to prevent context leak
+            val request = ImageRequest.Builder(appContext)
                 .data(imageUrl)
                 .size(width, height)
                 .memoryCachePolicy(CachePolicy.ENABLED)

@@ -239,11 +239,14 @@ abstract class ContentDatabase : RoomDatabase() {
 
             // AUDIT FIX #13: Prevent ANR - check main thread BEFORE synchronized block
             // If database doesn't exist and we're on main thread, fail fast instead of blocking
+            // AUDIT FIX #26: Fire-and-forget asset copy prevented - database MUST be initialized
+            // in FarsilandApp.onCreate() on background thread (see FarsilandApp.kt:204-216)
             val dbFile = context.applicationContext.getDatabasePath(databaseName)
             if (!dbFile.exists() && android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
                 throw IllegalStateException(
                     "Database not initialized. Cannot copy database from assets on Main Thread (would cause ANR). " +
                     "Database must be pre-initialized in Application.onCreate() on background thread. " +
+                    "See FarsilandApp.initializeContentDatabase() for proper initialization. " +
                     "Current source: ${source.displayName} ($databaseName)"
                 )
             }

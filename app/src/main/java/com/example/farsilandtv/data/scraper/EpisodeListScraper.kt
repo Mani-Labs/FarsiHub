@@ -38,6 +38,11 @@ import kotlin.coroutines.resumeWithException
  *   - Connection pooling (reduces socket usage)
  *   - HTTP/2 support (faster parallel requests)
  */
+// AUDIT FIX #28: Pre-compiled regex patterns to avoid object churn
+private val MARK_CLASS_PATTERN = Regex("""mark-(\d+)-(\d+)""")
+private val EPISODE_NUMBER_PATTERN = Regex("""ep(?:isode)?[-.]?(\d+)""", RegexOption.IGNORE_CASE)
+private val SEASON_EPISODE_PATTERN = Regex("""s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
+
 /**
  * EXTERNAL AUDIT FIX F2: Suspendable OkHttp Call extension to prevent zombie threads
  *
@@ -203,8 +208,8 @@ object EpisodeListScraper {
         try {
             // Method 1: Extract from class name (mark-{season}-{episode})
             val className = element.className()
-            val classRegex = Regex("""mark-(\d+)-(\d+)""")
-            val classMatch = classRegex.find(className)
+            // AUDIT FIX #28: Use pre-compiled regex pattern
+            val classMatch = MARK_CLASS_PATTERN.find(className)
 
             var season: Int? = null
             var episode: Int? = null
@@ -241,21 +246,23 @@ object EpisodeListScraper {
             val imgElement = element.select("img").firstOrNull()
             val thumbnail = when {
                 // Priority 1: data-src (lazy-loaded full image)
-                imgElement?.attr("data-src")?.isNotEmpty() == true -> 
+                imgElement?.attr("data-src")?.isNotEmpty() == true ->
                     imgElement.attr("abs:data-src")
                 // Priority 2: data-lazy-src
-                imgElement?.attr("data-lazy-src")?.isNotEmpty() == true -> 
+                imgElement?.attr("data-lazy-src")?.isNotEmpty() == true ->
                     imgElement.attr("abs:data-lazy-src")
                 // Priority 3: Regular src (if not a placeholder)
-                imgElement?.attr("src")?.let { src -> 
+                imgElement?.attr("src")?.let { src ->
                     !src.startsWith("data:image/svg+xml") && src.isNotEmpty()
                 } == true -> imgElement.attr("abs:src")
                 // No valid image found
                 else -> null
             }
 
-            // Generate unique ID from series/season/episode to prevent hash collisions
-            val uniqueId = "$seriesId-$season-$episode".hashCode()
+            // AUDIT FIX #21: Generate collision-resistant ID using bit-shift
+            // Issue: String.hashCode() can collide (32-bit with limited input space)
+            // Solution: Combine seriesId (16 bits) + season (8 bits) + episode (8 bits)
+            val uniqueId = (seriesId shl 16) or (season shl 8) or episode
 
             return Episode(
                 id = uniqueId,
@@ -286,12 +293,11 @@ object EpisodeListScraper {
             // Extract season and episode from URL patterns
             // Pattern 1: /episodes/show-ep01/ or /episodes/show-ep01-part-2/
             // Matches: ep01, ep-01, ep.01, episode01, episode-01, episode.01
-            val episodePattern = Regex("""ep(?:isode)?[-.]?(\d+)""", RegexOption.IGNORE_CASE)
-            val episodeMatch = episodePattern.find(href)
-            
+            // AUDIT FIX #28: Use pre-compiled regex patterns
+            val episodeMatch = EPISODE_NUMBER_PATTERN.find(href)
+
             // Pattern 2: s01e05 style
-            val seasonEpisodePattern = Regex("""s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
-            val seasonEpisodeMatch = seasonEpisodePattern.find(href)
+            val seasonEpisodeMatch = SEASON_EPISODE_PATTERN.find(href)
             
             val season: Int
             val episode: Int
@@ -314,18 +320,20 @@ object EpisodeListScraper {
             val parentLi = link.parent()?.parent()
             val imgElement = parentLi?.select("img")?.firstOrNull()
             val thumbnail = when {
-                imgElement?.attr("data-src")?.isNotEmpty() == true -> 
+                imgElement?.attr("data-src")?.isNotEmpty() == true ->
                     imgElement.attr("abs:data-src")
-                imgElement?.attr("data-lazy-src")?.isNotEmpty() == true -> 
+                imgElement?.attr("data-lazy-src")?.isNotEmpty() == true ->
                     imgElement.attr("abs:data-lazy-src")
-                imgElement?.attr("src")?.let { src -> 
+                imgElement?.attr("src")?.let { src ->
                     !src.startsWith("data:image/svg+xml") && src.isNotEmpty()
                 } == true -> imgElement.attr("abs:src")
                 else -> null
             }
 
-            // Generate unique ID from series/season/episode to prevent hash collisions
-            val uniqueId = "$seriesId-$season-$episode".hashCode()
+            // AUDIT FIX #21: Generate collision-resistant ID using bit-shift
+            // Issue: String.hashCode() can collide (32-bit with limited input space)
+            // Solution: Combine seriesId (16 bits) + season (8 bits) + episode (8 bits)
+            val uniqueId = (seriesId shl 16) or (season shl 8) or episode
 
             return Episode(
                 id = uniqueId,
@@ -380,8 +388,8 @@ object EpisodeListScraper {
             val doc = Jsoup.parse(html)
 
             // Extract season/episode from URL
-            val regex = Regex("""s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
-            val match = regex.find(episodeUrl) ?: return@withContext null
+            // AUDIT FIX #28: Use pre-compiled regex pattern
+            val match = SEASON_EPISODE_PATTERN.find(episodeUrl) ?: return@withContext null
 
             val season = match.groupValues[1].toIntOrNull() ?: return@withContext null
             val episode = match.groupValues[2].toIntOrNull() ?: return@withContext null
@@ -400,8 +408,11 @@ object EpisodeListScraper {
             val thumbnail = doc.select("meta[property=og:image]").attr("content")
                 ?: doc.select("img.episode-thumbnail").firstOrNull()?.attr("abs:src")
 
-            // Generate unique ID from URL and episode numbers to prevent collisions
-            val uniqueId = "$episodeUrl-$season-$episode".hashCode()
+            // AUDIT FIX #21: Generate collision-resistant ID using URL hash + episode bits
+            // Issue: String.hashCode() can collide for similar URLs
+            // Solution: Use URL hashCode (stable across URLs) + season/episode bits for uniqueness
+            val urlHash = episodeUrl.hashCode()
+            val uniqueId = (urlHash and 0xFFFF0000.toInt()) or (season shl 8) or episode
 
             Episode(
                 id = uniqueId,

@@ -83,20 +83,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Removed auto-load from init to prevent race condition
     // Fragment will call loadContent() after observers are ready
 
+    // AUDIT FIX #19: Track refresh job to prevent race conditions
+    private var refreshJob: kotlinx.coroutines.Job? = null
+
     init {
         // Observe sync completion and auto-reload data
+        // AUDIT FIX #19: Cancel pending refresh before starting new one
         viewModelScope.launch {
             repository.observeSyncCompletion().collect { _ ->
                 Log.d(TAG, "Sync completed - reloading content automatically")
-                // Don't call loadContent() as it triggers isLoading which clears watchlist rows
-                // Instead, just refresh the main content data
-                refreshContentWithoutLoadingState()
+
+                // Cancel any pending refresh to prevent duplicate requests
+                refreshJob?.cancel()
+
+                // Start new refresh and track the job
+                refreshJob = launch {
+                    // Don't call loadContent() as it triggers isLoading which clears watchlist rows
+                    // Instead, just refresh the main content data
+                    refreshContentWithoutLoadingState()
+                }
             }
         }
     }
 
     /**
      * Load all content (movies, series, genres) with retry logic
+     * AUDIT FIX #14: Partial loading - each content type loads independently
      */
     fun loadContent() {
         viewModelScope.launch {
@@ -104,20 +116,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _error.value = null
 
             try {
-                // Load with retry mechanism
-                ErrorHandler.retryWithExponentialBackoff(times = 3) {
-                    // Load genres first
-                    loadGenres()
+                // AUDIT FIX #14: Use supervisorScope for independent failure handling
+                // If one content type fails, others still load successfully
+                kotlinx.coroutines.supervisorScope {
+                    // Load genres first (non-blocking failures)
+                    async {
+                        try {
+                            loadGenres()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load genres: ${e.message}")
+                        }
+                    }
 
-                    // Load featured content for carousel
-                    loadFeaturedContent()
+                    // Load featured content for carousel (non-blocking failures)
+                    async {
+                        try {
+                            loadFeaturedContent()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load featured content: ${e.message}")
+                        }
+                    }
 
-                    // Load movies, series, and episodes in ACTUAL parallel (using async/await)
-                    val moviesDeferred = async { loadMovies() }
-                    val seriesDeferred = async { loadSeries() }
-                    val episodesDeferred = async { loadEpisodes() }
+                    // Load movies, series, and episodes independently
+                    val moviesDeferred = async {
+                        try {
+                            loadMovies()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load movies: ${e.message}")
+                            _error.postValue(ErrorHandler.getErrorMessage(e))
+                        }
+                    }
 
-                    // Wait for all to complete
+                    val seriesDeferred = async {
+                        try {
+                            loadSeries()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load series: ${e.message}")
+                        }
+                    }
+
+                    val episodesDeferred = async {
+                        try {
+                            loadEpisodes()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load episodes: ${e.message}")
+                        }
+                    }
+
+                    // Wait for all to complete (failures don't propagate)
                     moviesDeferred.await()
                     seriesDeferred.await()
                     episodesDeferred.await()
@@ -135,6 +181,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Refresh content without triggering loading state
      * Used after sync completion to avoid clearing watchlist rows
+     * AUDIT FIX #19: Added to use supervisorScope for independent failures
      */
     private fun refreshContentWithoutLoadingState() {
         viewModelScope.launch {
@@ -145,14 +192,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.d(TAG, "refreshContentWithoutLoadingState: Cleared caches")
 
                 // Reload content WITHOUT setting isLoading (prevents row clearing)
-                ErrorHandler.retryWithExponentialBackoff(times = 3) {
-                    loadGenres()
-                    loadFeaturedContent()
+                // AUDIT FIX #19: Use supervisorScope for independent failure handling
+                kotlinx.coroutines.supervisorScope {
+                    // Load genres (non-blocking failures)
+                    async {
+                        try {
+                            loadGenres()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to refresh genres: ${e.message}")
+                        }
+                    }
 
-                    // Load in parallel
-                    val moviesDeferred = async { loadMovies() }
-                    val seriesDeferred = async { loadSeries() }
-                    val episodesDeferred = async { loadEpisodes() }
+                    // Load featured content (non-blocking failures)
+                    async {
+                        try {
+                            loadFeaturedContent()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to refresh featured content: ${e.message}")
+                        }
+                    }
+
+                    // Load in parallel with independent error handling
+                    val moviesDeferred = async {
+                        try {
+                            loadMovies()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to refresh movies: ${e.message}")
+                        }
+                    }
+
+                    val seriesDeferred = async {
+                        try {
+                            loadSeries()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to refresh series: ${e.message}")
+                        }
+                    }
+
+                    val episodesDeferred = async {
+                        try {
+                            loadEpisodes()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to refresh episodes: ${e.message}")
+                        }
+                    }
 
                     moviesDeferred.await()
                     seriesDeferred.await()
@@ -167,6 +250,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Force refresh content (clears cache and reloads) with retry logic
+     * AUDIT FIX #14: Updated to use supervisorScope for independent failures
      */
     fun forceRefresh() {
         viewModelScope.launch {
@@ -179,15 +263,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.clearCache()
                 Log.d(TAG, "forceRefresh: Cleared all caches")
 
-                // Reload with retry mechanism
-                ErrorHandler.retryWithExponentialBackoff(times = 3) {
-                    loadGenres()
-                    loadFeaturedContent()
+                // AUDIT FIX #14: Use supervisorScope for independent failure handling
+                kotlinx.coroutines.supervisorScope {
+                    // Load genres (non-blocking failures)
+                    async {
+                        try {
+                            loadGenres()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to force refresh genres: ${e.message}")
+                        }
+                    }
 
-                    // Load in parallel
-                    val moviesDeferred = async { loadMovies() }
-                    val seriesDeferred = async { loadSeries() }
-                    val episodesDeferred = async { loadEpisodes() }
+                    // Load featured content (non-blocking failures)
+                    async {
+                        try {
+                            loadFeaturedContent()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to force refresh featured content: ${e.message}")
+                        }
+                    }
+
+                    // Load in parallel with independent error handling
+                    val moviesDeferred = async {
+                        try {
+                            loadMovies()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to force refresh movies: ${e.message}")
+                            _error.postValue(ErrorHandler.getErrorMessage(e))
+                        }
+                    }
+
+                    val seriesDeferred = async {
+                        try {
+                            loadSeries()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to force refresh series: ${e.message}")
+                        }
+                    }
+
+                    val episodesDeferred = async {
+                        try {
+                            loadEpisodes()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to force refresh episodes: ${e.message}")
+                        }
+                    }
 
                     moviesDeferred.await()
                     seriesDeferred.await()

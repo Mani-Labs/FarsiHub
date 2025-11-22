@@ -141,21 +141,24 @@ class VideoPlayerActivity : AppCompatActivity() {
             // Validate required data - fail-fast to prevent invalid state
             if (contentUrl.isEmpty()) {
                 Log.e(TAG, "Error: No content URL provided")
-                Toast.makeText(this, "Error: No content URL provided", Toast.LENGTH_LONG).show()
+                // AUDIT FIX #30: Use localized string resource
+                Toast.makeText(this, getString(R.string.error_no_content_url), Toast.LENGTH_LONG).show()
                 finish()
                 return
             }
 
             if (contentId == 0) {
                 Log.e(TAG, "Error: Invalid content ID (0)")
-                Toast.makeText(this, "Error: Invalid content ID", Toast.LENGTH_LONG).show()
+                // AUDIT FIX #30: Use localized string resource
+                Toast.makeText(this, getString(R.string.error_invalid_content_id), Toast.LENGTH_LONG).show()
                 finish()
                 return
             }
 
             if (contentType != "movie" && contentType != "episode") {
                 Log.e(TAG, "Error: Invalid content type: $contentType")
-                Toast.makeText(this, "Error: Invalid content type", Toast.LENGTH_LONG).show()
+                // AUDIT FIX #30: Use localized string resource
+                Toast.makeText(this, getString(R.string.error_invalid_content_type), Toast.LENGTH_LONG).show()
                 finish()
                 return
             }
@@ -167,7 +170,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 // Only validate season/episode numbers which are essential for playback tracking
                 if (seasonNumber == 0 || episodeNumber == 0) {
                     Log.e(TAG, "Error: Invalid season ($seasonNumber) or episode ($episodeNumber) number")
-                    Toast.makeText(this, "Error: Invalid episode metadata", Toast.LENGTH_LONG).show()
+                    // AUDIT FIX #30: Use localized string resource
+                    Toast.makeText(this, getString(R.string.error_invalid_episode_metadata), Toast.LENGTH_LONG).show()
                     finish()
                     return
                 }

@@ -71,7 +71,8 @@ class SeriesDetailsActivity : FragmentActivity() {
         }
 
         if (series == null) {
-            Toast.makeText(this, "Error: No series data provided", Toast.LENGTH_LONG).show()
+            // AUDIT FIX #30: Use localized string resource
+            Toast.makeText(this, getString(R.string.error_no_series_data), Toast.LENGTH_LONG).show()
             Log.e(TAG, "No series data provided, finishing activity")
             finish()
             return

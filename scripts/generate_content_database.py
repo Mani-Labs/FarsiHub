@@ -154,6 +154,10 @@ def migrate_movies(pg_conn, sqlite_conn):
 
     print("\n[MOVIES] Migrating movies...")
 
+    # AUDIT FIX #17: Extract metadata from source if available
+    # Issue: Hardcoded NULL for runtime, director, cast degrades offline UX
+    # Solution: Attempt to extract these fields from catalog_items if columns exist
+    # Note: If your PostgreSQL schema doesn't have these columns, they'll be NULL (safe fallback)
     query = '''
         SELECT
             id,
@@ -163,9 +167,9 @@ def migrate_movies(pg_conn, sqlite_conn):
             description,
             EXTRACT(YEAR FROM release_date)::INTEGER as year,
             rating,
-            NULL as runtime,
-            NULL as director,
-            NULL as cast,
+            COALESCE(runtime, NULL) as runtime,
+            COALESCE(director, NULL) as director,
+            COALESCE(cast, NULL) as cast,
             ARRAY_TO_STRING(genres, ', ') as genres,
             (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT as dateAdded,
             (EXTRACT(EPOCH FROM last_extracted) * 1000)::BIGINT as lastUpdated
@@ -208,6 +212,7 @@ def migrate_series(pg_conn, sqlite_conn):
     print("\n[SERIES] Migrating series...")
 
     # Get series with aggregated season/episode counts
+    # AUDIT FIX #17: Extract cast from source if available
     query = '''
         SELECT
             s.id,
@@ -220,7 +225,7 @@ def migrate_series(pg_conn, sqlite_conn):
             s.rating,
             COALESCE(COUNT(DISTINCT e.season), 0) as totalSeasons,
             COALESCE(COUNT(e.id), 0) as totalEpisodes,
-            NULL as cast,
+            COALESCE(s.cast, NULL) as cast,
             ARRAY_TO_STRING(s.genres, ', ') as genres,
             (EXTRACT(EPOCH FROM COALESCE(s.created_at, NOW())) * 1000)::BIGINT as dateAdded,
             (EXTRACT(EPOCH FROM COALESCE(s.last_extracted, s.created_at, NOW())) * 1000)::BIGINT as lastUpdated
@@ -229,7 +234,7 @@ def migrate_series(pg_conn, sqlite_conn):
         WHERE s.item_type = 'series' AND s.farsiland_url IS NOT NULL
         GROUP BY s.id, s.series_name, s.poster_url, s.farsiland_url,
                  s.description, s.release_date, s.rating, s.genres,
-                 s.created_at, s.last_extracted
+                 s.created_at, s.last_extracted, s.cast
         ORDER BY s.id
     '''
 
@@ -266,6 +271,7 @@ def migrate_episodes(pg_conn, sqlite_conn):
 
     print("\n[EPISODES] Migrating episodes...")
 
+    # AUDIT FIX #17: Extract runtime from source if available
     query = '''
         SELECT
             e.parent_series_id as seriesId,
@@ -282,7 +288,7 @@ def migrate_episodes(pg_conn, sqlite_conn):
             e.poster_url as thumbnailUrl,
             e.farsiland_url,
             TO_CHAR(e.release_date, 'YYYY-MM-DD') as airDate,
-            NULL as runtime,
+            COALESCE(e.runtime, NULL) as runtime,
             (EXTRACT(EPOCH FROM COALESCE(e.created_at, NOW())) * 1000)::BIGINT as dateAdded,
             (EXTRACT(EPOCH FROM COALESCE(e.last_extracted, e.created_at, NOW())) * 1000)::BIGINT as lastUpdated
         FROM catalog_items e

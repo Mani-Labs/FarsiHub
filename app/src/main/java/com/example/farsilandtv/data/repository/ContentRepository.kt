@@ -104,6 +104,16 @@ class ContentRepository private constructor(context: Context) {
         // Performance impact: 2000ms → 200ms in loops processing 100 dates (90% improvement)
         // Verification: parseDateToTimestamp() uses pre-compiled DATE_NORMALIZER_REGEX
         private val DATE_NORMALIZER_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}")
+
+        // AUDIT FIX #29: Extract hardcoded source domain logic to constants
+        private const val SOURCE_FARSILAND = "farsiland"
+        private const val SOURCE_FARSIPLEX = "farsiplex"
+        private const val SOURCE_NAMAKADE = "namakade"
+        private const val SOURCE_UNKNOWN = "unknown"
+
+        private const val DOMAIN_FARSILAND = "farsiland.com"
+        private const val DOMAIN_FARSIPLEX = "farsiplex.com"
+        private const val DOMAIN_NAMAKADE = "namakade.com"
     }
 
     // Get database instance dynamically to support database switching
@@ -489,18 +499,15 @@ class ContentRepository private constructor(context: Context) {
             try {
                 ensureActive()
                 val urlPattern = currentSource.urlPattern
-                val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFiltered(urlPattern, perPage * page).firstOrNull()
+
+                // AUDIT FIX #12: Use efficient OFFSET-based pagination (not in-memory subList)
+                // Previous: Fetched N items, used subList(start, end), discarded N-20 (O(N) memory leak)
+                // Fixed: Use LIMIT/OFFSET query for constant O(20) memory usage
+                val offset = (page - 1) * perPage
+                val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFilteredWithOffset(urlPattern, perPage, offset).firstOrNull()
                 ensureActive()
                 if (!cachedEpisodes.isNullOrEmpty()) {
-                    // Implement pagination manually
-                    val startIndex = (page - 1) * perPage
-                    val endIndex = minOf(startIndex + perPage, cachedEpisodes.size)
-                    val paginatedEpisodes = if (startIndex < cachedEpisodes.size) {
-                        cachedEpisodes.subList(startIndex, endIndex)
-                    } else {
-                        emptyList()
-                    }
-                    val episodes = paginatedEpisodes.map { it.toEpisode() }
+                    val episodes = cachedEpisodes.map { it.toEpisode() }
 
                     // Store in cache
                     episodesCache.put(cacheKey, CacheEntry(episodes, System.currentTimeMillis(), currentSource))
@@ -835,13 +842,14 @@ class ContentRepository private constructor(context: Context) {
                         is Movie -> item.farsilandUrl
                         is Series -> item.farsilandUrl
                         else -> null
-                    } ?: return "unknown"
+                    } ?: return SOURCE_UNKNOWN
 
+                    // AUDIT FIX #29: Use constants instead of hardcoded strings
                     return when {
-                        url.contains("farsiland.com", ignoreCase = true) -> "farsiland"
-                        url.contains("farsiplex.com", ignoreCase = true) -> "farsiplex"
-                        url.contains("namakade.com", ignoreCase = true) -> "namakade"
-                        else -> "unknown"
+                        url.contains(DOMAIN_FARSILAND, ignoreCase = true) -> SOURCE_FARSILAND
+                        url.contains(DOMAIN_FARSIPLEX, ignoreCase = true) -> SOURCE_FARSIPLEX
+                        url.contains(DOMAIN_NAMAKADE, ignoreCase = true) -> SOURCE_NAMAKADE
+                        else -> SOURCE_UNKNOWN
                     }
                 }
 
@@ -868,9 +876,10 @@ class ContentRepository private constructor(context: Context) {
                 }
 
                 // Log per-source statistics
+                // AUDIT FIX #29: Use constants instead of hardcoded strings
                 val sourceCounts = deduplicated.groupBy { getSource(it) }.mapValues { it.value.size }
                 Log.i(TAG, "Universal search: ${allResults.size} total, ${deduplicated.size} after per-source dedup")
-                Log.i(TAG, "  Per source: Farsiland=${sourceCounts["farsiland"] ?: 0}, FarsiPlex=${sourceCounts["farsiplex"] ?: 0}, Namakade=${sourceCounts["namakade"] ?: 0}")
+                Log.i(TAG, "  Per source: Farsiland=${sourceCounts[SOURCE_FARSILAND] ?: 0}, FarsiPlex=${sourceCounts[SOURCE_FARSIPLEX] ?: 0}, Namakade=${sourceCounts[SOURCE_NAMAKADE] ?: 0}")
                 Result.success(deduplicated)
             } catch (e: Exception) {
                 Log.e(TAG, "Universal search error: ${e.message}", e)
@@ -1594,22 +1603,38 @@ class ContentRepository private constructor(context: Context) {
      */
     private fun parseDateToTimestamp(dateStr: String): Long {
         return try {
-            // CRITICAL FIX: WordPress returns local time without 'Z' suffix
-            // Example: "2023-12-25T10:30:00" (missing Z)
-            // Instant.parse() requires: "2023-12-25T10:30:00Z"
-            // Append 'Z' if not present to treat as UTC
-            // EXTERNAL AUDIT FIX H2.3: Use pre-compiled regex (90% faster)
-            val normalized = if (DATE_NORMALIZER_REGEX.matches(dateStr)) {
-                "${dateStr}Z"
-            } else {
-                dateStr
+            // AUDIT FIX #15: Try multiple date formats with fallback
+            // Issue: Instant.parse() fails on non-ISO-8601 dates from WordPress
+            // Solution: Try multiple formats in order of likelihood
+
+            // Format 1: WordPress format without timezone (most common)
+            // Example: "2023-12-25T10:30:00"
+            if (DATE_NORMALIZER_REGEX.matches(dateStr)) {
+                return java.time.Instant.parse("${dateStr}Z").toEpochMilli()
             }
 
-            // AUDIT FIX #17: java.time.Instant is thread-safe - no locking required
-            // Previous: synchronized(DATE_FORMATTER) caused global bottleneck
-            // Now: Lock-free parsing (available since API 26, minSdk = 28)
-            java.time.Instant.parse(normalized).toEpochMilli()
+            // Format 2: Already ISO-8601 with timezone
+            // Example: "2023-12-25T10:30:00Z" or "2023-12-25T10:30:00+00:00"
+            try {
+                return java.time.Instant.parse(dateStr).toEpochMilli()
+            } catch (e: Exception) {
+                // Continue to next format
+            }
+
+            // Format 3: WordPress RFC 2822 format
+            // Example: "Mon, 25 Dec 2023 10:30:00 +0000"
+            try {
+                val formatter = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+                return java.time.ZonedDateTime.parse(dateStr, formatter).toInstant().toEpochMilli()
+            } catch (e: Exception) {
+                // Continue to fallback
+            }
+
+            // Fallback: Return 0 if all formats fail
+            Log.w("ContentRepository", "Unable to parse date: $dateStr")
+            0L
         } catch (e: Exception) {
+            Log.w("ContentRepository", "Date parsing failed: $dateStr", e)
             0L
         }
     }
@@ -1669,12 +1694,19 @@ class ContentRepository private constructor(context: Context) {
             return html
         }
 
+        // AUDIT FIX #20: Remove script/style tags before stripping HTML
+        // Issue: Regex <[^>]+> leaves script/style content visible
+        // Solution: Remove <script> and <style> blocks entirely first
+        val withoutScripts = html
+            .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), " ")
+            .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), " ")
+
         // AUDIT FIX #18: Tier 2 - Fast Regex stripper (10x faster than Jsoup)
         // Handles 95% of cases: simple HTML from API responses
         // Performance: 2000ms → 150ms in toMovie/toSeries loops (93% improvement)
         return try {
             val simpleHtmlPattern = Regex("<[^>]+>")
-            html.replace(simpleHtmlPattern, " ")
+            withoutScripts.replace(simpleHtmlPattern, " ")
                 .replace("&nbsp;", " ")
                 .replace("&amp;", "&")
                 .replace("&lt;", "<")

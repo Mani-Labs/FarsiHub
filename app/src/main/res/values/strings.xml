@@ -52,4 +52,30 @@
     <string name="network_error_scraper">Network error: %s</string>
     <string name="parse_error_scraper">Parse error: %s</string>
     <string name="no_video_urls_repository">No video URLs found: %s</string>
+
+    <!-- AUDIT FIX #30: Additional user-facing error messages -->
+    <string name="error_creating_playlist">Error creating playlist: %s</string>
+    <string name="error_invalid_content_data">Error: Invalid content data</string>
+    <string name="error_opening_favorites">Error opening favorites: %s</string>
+    <string name="error_opening_playlists">Error opening playlists: %s</string>
+    <string name="error_switching_database">Error switching database: %s</string>
+    <string name="error_opening_details">Error opening details: %s</string>
+    <string name="error_episode_url_not_available">Error: Episode URL not available</string>
+    <string name="error_opening_video_player">Error opening video player: %s</string>
+    <string name="error_series_url_not_available">Error: Series URL not available</string>
+    <string name="error_opening_series">Error opening series: %s</string>
+    <string name="error_opening_player">Error opening player: %s</string>
+    <string name="error_movie_url_not_available">Error: Movie URL not available</string>
+    <string name="error_deleting_playlist">Error deleting playlist: %s</string>
+    <string name="error_adding_to_watchlist">Error adding to watchlist</string>
+    <string name="error_no_series_data">Error: No series data provided</string>
+    <string name="error_no_content_url">Error: No content URL provided</string>
+    <string name="error_invalid_content_id">Error: Invalid content ID</string>
+    <string name="error_invalid_content_type">Error: Invalid content type</string>
+    <string name="error_invalid_episode_metadata">Error: Invalid episode metadata</string>
+    <string name="error_invalid_video_request">Error: Invalid video request</string>
+    <string name="error_restoring_playback">Error restoring playback: %s</string>
+    <string name="security_https_only">Security: Only HTTPS URLs from trusted domains are allowed</string>
+    <string name="security_http_not_permitted">Security: Cleartext HTTP traffic not permitted: %s</string>
+    <string name="security_untrusted_domain">Security: URL from untrusted domain: %s</string>
 </resources>
