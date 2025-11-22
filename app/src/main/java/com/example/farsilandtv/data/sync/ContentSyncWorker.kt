@@ -52,10 +52,9 @@ class ContentSyncWorker(
     // Cache for genre ID to name mapping
     private var genreCache: Map<Int, String>? = null
 
-    // Cache for series title to ID mapping (for episode linking)
-    // @Volatile ensures visibility across coroutines, prevents TOCTOU race conditions
-    @Volatile
-    private var seriesTitleCache: Map<String, Int>? = null
+    // EXTERNAL AUDIT FIX H2.2: Removed in-memory series title cache
+    // Issue: Loading all series caused GC pauses (5000+ items = ~500KB+ heap allocation)
+    // Solution: Use direct SQL queries via getSeriesByTitle() DAO method
 
     /**
      * EXTERNAL AUDIT FIX CRITICAL 1.2: Implement getForegroundInfo() for expedited work
@@ -141,18 +140,13 @@ class ContentSyncWorker(
             val seriesCount = syncSeries(lastSyncTimestamp)
 
             // AUDIT FIX C2: Enhanced check to prevent orphaned episodes
-            // Skip episode sync if:
-            // 1. Series sync failed (seriesCount < 0)
-            // 2. Series title cache not built (seriesTitleCache == null)
+            // Skip episode sync if series sync failed (seriesCount < 0)
             // This prevents episodes from being inserted with seriesId = 0
-            val episodeCount = if (seriesCount >= 0 && seriesTitleCache != null) {
+            // EXTERNAL AUDIT FIX H2.2: Removed cache check, now uses direct SQL queries
+            val episodeCount = if (seriesCount >= 0) {
                 syncEpisodes(lastSyncTimestamp)
             } else {
-                if (seriesCount < 0) {
-                    Log.e(TAG, "CRITICAL: Aborting episode sync - series sync FAILED")
-                } else {
-                    Log.w(TAG, "CRITICAL: Aborting episode sync - series cache unavailable")
-                }
+                Log.e(TAG, "CRITICAL: Aborting episode sync - series sync FAILED")
                 0
             }
 
@@ -171,6 +165,14 @@ class ContentSyncWorker(
             }
             val updatedFavoritesCount = syncFavorites()
             Log.d(TAG, "Phase 3 complete: $updatedFavoritesCount favorites updated")
+
+            // Phase 4: Cleanup ghost records (EXTERNAL AUDIT FIX C1.2)
+            if (isStopped) {
+                Log.w(TAG, "Sync cancelled before ghost record cleanup")
+                return@withContext Result.retry()
+            }
+            val cleanedCount = cleanupGhostRecords()
+            Log.d(TAG, "Phase 4 complete: $cleanedCount ghost records cleaned")
 
             // Check final cancellation before committing
             if (isStopped) {
@@ -295,6 +297,58 @@ class ContentSyncWorker(
     }
 
     /**
+     * Cleanup ghost records in watchlist after content sync
+     * EXTERNAL AUDIT FIX C1.2: Prevent crashes from orphaned watchlist entries
+     *
+     * Issue: When content removed from ContentDatabase (series/movie deleted from source),
+     *        watchlist retains the ID → UI crashes when trying to display missing content
+     * Solution: After sync, verify all watchlist IDs exist in ContentDatabase, delete orphans
+     *
+     * @return Number of ghost records removed
+     */
+    private suspend fun cleanupGhostRecords(): Int {
+        var totalCleaned = 0
+
+        try {
+            // Cleanup watchlist movies
+            val appDb = com.example.farsilandtv.data.database.AppDatabase.getDatabase(applicationContext)
+            val watchlistMoviesList = appDb.watchlistMovieDao().getAllMovies().first()
+
+            for (movie in watchlistMoviesList) {
+                val exists = contentDb.movieDao().getMovieById(movie.id) != null
+                if (!exists) {
+                    Log.w(TAG, "Ghost record detected: Movie ID ${movie.id} missing from ContentDatabase")
+                    appDb.watchlistMovieDao().deleteMovieById(movie.id)
+                    totalCleaned++
+                }
+            }
+
+            // Cleanup monitored series
+            val monitoredSeriesList = appDb.monitoredSeriesDao().getAllSeries().first()
+
+            for (series in monitoredSeriesList) {
+                val exists = contentDb.seriesDao().getSeriesById(series.id) != null
+                if (!exists) {
+                    Log.w(TAG, "Ghost record detected: Series ID ${series.id} missing from ContentDatabase")
+                    appDb.monitoredSeriesDao().deleteSeriesById(series.id)
+                    totalCleaned++
+                }
+            }
+
+            if (totalCleaned > 0) {
+                Log.w(TAG, "Cleaned $totalCleaned ghost records from watchlist")
+            } else {
+                Log.d(TAG, "No ghost records found in watchlist")
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cleaning ghost records: ${e.message}", e)
+        }
+
+        return totalCleaned
+    }
+
+    /**
      * Check if user is actively watching content
      * Don't sync during playback to avoid interruptions
      * @return true if video is playing
@@ -399,8 +453,7 @@ class ContentSyncWorker(
                 Log.d(TAG, "No new series to sync")
             }
 
-            // Build series title cache for episode linking
-            buildSeriesTitleCache()
+            // EXTERNAL AUDIT FIX H2.2: Removed buildSeriesTitleCache() - use direct SQL queries instead
 
             return newSeries.size
         } catch (e: Exception) {
@@ -414,31 +467,8 @@ class ContentSyncWorker(
      * Build series title to ID cache for efficient episode linking
      * THREAD-SAFE: Uses immutable Map with atomic swap to prevent race conditions
      */
-    private suspend fun buildSeriesTitleCache() {
-        try {
-            // Build immutable map locally first (no concurrent access issues)
-            val tempCache = mutableMapOf<String, Int>()
-
-            // FIX (2025-11-21): Use first() instead of collect() to avoid infinite hang
-            // collect() blocks forever on continuous Flow, first() gets one emission and completes
-            val seriesList = contentDb.seriesDao().getAllSeries().first()
-            seriesList.forEach { series ->
-                // Store both original and normalized titles
-                tempCache[series.title.lowercase()] = series.id
-                val normalizedTitle = normalizeSeriesTitle(series.title).lowercase()
-                if (normalizedTitle.isNotBlank()) {
-                    tempCache[normalizedTitle] = series.id
-                }
-            }
-
-            // Atomic swap: replace entire cache at once (immutable, thread-safe)
-            seriesTitleCache = tempCache.toMap()
-            Log.d(TAG, "Built series title cache with ${tempCache.size} entries")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error building series title cache: ${e.message}", e)
-            seriesTitleCache = emptyMap()
-        }
-    }
+    // EXTERNAL AUDIT FIX H2.2: Removed buildSeriesTitleCache() function
+    // Replaced with direct SQL queries in findSeriesIdByTitle() using getSeriesByTitle() DAO method
 
     /**
      * Sync episodes added/updated since last sync
@@ -683,25 +713,20 @@ class ContentSyncWorker(
 
     /**
      * Find series ID by matching title
-     * Uses cache for efficient lookups with fuzzy matching
-     * THREAD-SAFE: Single read eliminates TOCTOU race condition
+     * EXTERNAL AUDIT FIX H2.2: Direct SQL query instead of in-memory cache
+     * Issue: Loading all series into HashMap caused GC pauses during background sync
+     * Solution: Use indexed SQL query (O(log N) with SQLite b-tree index on title)
      */
-    private fun findSeriesIdByTitle(seriesTitle: String): Int {
-        // Single read of @Volatile field (thread-safe, prevents TOCTOU)
-        val cache = seriesTitleCache
-
-        if (cache == null) {
-            Log.w(TAG, "Series title cache not initialized, cannot link episode to series")
-            return 0
-        }
-
+    private suspend fun findSeriesIdByTitle(seriesTitle: String): Int {
         return try {
-            // Try exact match first (case-insensitive)
-            cache[seriesTitle.lowercase()]?.let { return it }
+            // Try exact match first (case-insensitive via SQL LOWER())
+            contentDb.seriesDao().getSeriesByTitle(seriesTitle)?.id?.let { return it }
 
             // Try normalized title match
-            val normalizedTitle = normalizeSeriesTitle(seriesTitle).lowercase()
-            cache[normalizedTitle]?.let { return it }
+            val normalizedTitle = normalizeSeriesTitle(seriesTitle)
+            if (normalizedTitle.isNotBlank() && normalizedTitle != seriesTitle) {
+                contentDb.seriesDao().getSeriesByTitle(normalizedTitle)?.id?.let { return it }
+            }
 
             // No match found
             Log.d(TAG, "No series match found for '$seriesTitle'")

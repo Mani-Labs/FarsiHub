@@ -56,6 +56,19 @@ object RetrofitClient {
     private var httpCache: Cache? = null
 
     /**
+     * EXTERNAL AUDIT FIX H2.1: In-memory timestamp to prevent IO thrashing
+     * Issue: Writing to SharedPreferences on every network request causes disk I/O bottleneck
+     * Solution: Keep timestamp in memory, flush to disk only on app lifecycle events
+     */
+    @Volatile
+    private var lastFetchTimestampMemory: Long = 0L
+
+    @Volatile
+    private var lastDiskFlushTime: Long = 0L
+
+    private const val DISK_FLUSH_INTERVAL_MS = 60_000L // Flush to disk max once per minute
+
+    /**
      * EXTERNAL AUDIT FIX M1: Return nullable Cache instead of throwing exception
      * Allows RetrofitClient to work even if accessed before Application.onCreate()
      */
@@ -336,21 +349,46 @@ object RetrofitClient {
      * Update the timestamp of last network fetch
      * Called when we get fresh data from the server (CACHE MISS)
      *
-     * AUDIT FIX #3: Safe access with null check
+     * EXTERNAL AUDIT FIX H2.1: In-memory timestamp with throttled disk writes
+     * Issue: SharedPreferences.apply() on every request caused IO thrashing (hundreds of writes/min)
+     * Impact: ANR (App Not Responding) risk during heavy network usage
+     * Solution: Update in-memory timestamp immediately, flush to disk max once per minute
      */
     private fun updateLastFetchTimestamp() {
         try {
-            val appInstance = FarsilandApp.instance
-            if (appInstance == null) {
-                android.util.Log.w("RetrofitClient", "Cannot update fetch timestamp - Application instance not available")
-                return
-            }
+            val now = System.currentTimeMillis()
+            lastFetchTimestampMemory = now
 
-            val prefs = appInstance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
-            prefs.edit().putLong("last_fetch_time", System.currentTimeMillis()).apply()
-            android.util.Log.d("HTTP_CACHE", "Updated last fetch timestamp")
+            // Throttled disk flush: max once per minute
+            if (now - lastDiskFlushTime > DISK_FLUSH_INTERVAL_MS) {
+                val appInstance = FarsilandApp.instance
+                if (appInstance != null) {
+                    val prefs = appInstance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
+                    prefs.edit().putLong("last_fetch_time", now).apply()
+                    lastDiskFlushTime = now
+                    android.util.Log.d("HTTP_CACHE", "Flushed timestamp to disk: $now")
+                }
+            }
         } catch (e: Exception) {
             android.util.Log.e("RetrofitClient", "Error updating fetch timestamp: ${e.message}")
+        }
+    }
+
+    /**
+     * EXTERNAL AUDIT FIX H2.1: Force flush timestamp to disk
+     * Call this on app lifecycle events (onStop, onDestroy) to ensure data is persisted
+     */
+    fun flushTimestampToDisk() {
+        try {
+            val appInstance = FarsilandApp.instance ?: return
+            if (lastFetchTimestampMemory > 0) {
+                val prefs = appInstance.getSharedPreferences("app_cache", android.content.Context.MODE_PRIVATE)
+                prefs.edit().putLong("last_fetch_time", lastFetchTimestampMemory).apply()
+                lastDiskFlushTime = lastFetchTimestampMemory
+                android.util.Log.d("HTTP_CACHE", "Force flushed timestamp to disk")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("RetrofitClient", "Error flushing timestamp: ${e.message}")
         }
     }
 

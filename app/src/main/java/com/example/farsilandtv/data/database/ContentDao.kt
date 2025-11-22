@@ -120,6 +120,12 @@ interface CachedSeriesDao {
     @Query("SELECT * FROM cached_series WHERE farsilandUrl = :url")
     suspend fun getSeriesByUrl(url: String): CachedSeries?
 
+    // EXTERNAL AUDIT FIX H2.2: Query by title directly instead of loading all series into memory
+    // Issue: buildSeriesTitleCache() loaded entire series table into HashMap (GC pauses)
+    // Solution: Use SQL LIKE query for case-insensitive title matching
+    @Query("SELECT * FROM cached_series WHERE LOWER(title) = LOWER(:title) LIMIT 1")
+    suspend fun getSeriesByTitle(title: String): CachedSeries?
+
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing genre
     @Query("SELECT * FROM cached_series WHERE genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY dateAdded DESC")
