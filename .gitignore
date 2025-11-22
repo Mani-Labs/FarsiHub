@@ -4,6 +4,7 @@ build/
 
 # Local configuration
 local.properties
+.claude/settings.local.json
 
 # IDE files
 .idea/workspace.xml
