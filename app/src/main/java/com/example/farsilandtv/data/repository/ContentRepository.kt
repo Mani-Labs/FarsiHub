@@ -356,18 +356,16 @@ class ContentRepository private constructor(context: Context) {
             try {
                 ensureActive()
                 val urlPattern = currentSource.urlPattern
-                val cachedMovies = getContentDb().movieDao().getRecentMoviesFiltered(urlPattern, perPage * page).firstOrNull()
+
+                // AUDIT FIX (Second Audit #6): Use efficient OFFSET-based pagination
+                // Previous: Fetch N items, use 20, discard N-20 (quadratic memory usage)
+                // Fixed: Use LIMIT/OFFSET query for constant memory usage
+                val offset = (page - 1) * perPage
+                val cachedMovies = getContentDb().movieDao().getRecentMoviesFilteredWithOffset(urlPattern, perPage, offset).firstOrNull()
                 ensureActive()
+
                 if (!cachedMovies.isNullOrEmpty()) {
-                    // Implement pagination manually
-                    val startIndex = (page - 1) * perPage
-                    val endIndex = minOf(startIndex + perPage, cachedMovies.size)
-                    val paginatedMovies = if (startIndex < cachedMovies.size) {
-                        cachedMovies.subList(startIndex, endIndex)
-                    } else {
-                        emptyList()
-                    }
-                    val movies = paginatedMovies.map { it.toMovie() }
+                    val movies = cachedMovies.map { it.toMovie() }
 
                     // Store in cache
                     moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
@@ -439,18 +437,16 @@ class ContentRepository private constructor(context: Context) {
             try {
                 ensureActive()
                 val urlPattern = currentSource.urlPattern
-                val cachedSeries = getContentDb().seriesDao().getRecentSeriesFiltered(urlPattern, perPage * page).firstOrNull()
+
+                // AUDIT FIX (Second Audit #6): Use efficient OFFSET-based pagination
+                // Previous: Fetch N items, use 20, discard N-20 (quadratic memory usage)
+                // Fixed: Use LIMIT/OFFSET query for constant memory usage
+                val offset = (page - 1) * perPage
+                val cachedSeries = getContentDb().seriesDao().getRecentSeriesFilteredWithOffset(urlPattern, perPage, offset).firstOrNull()
                 ensureActive()
+
                 if (!cachedSeries.isNullOrEmpty()) {
-                    // Implement pagination manually
-                    val startIndex = (page - 1) * perPage
-                    val endIndex = minOf(startIndex + perPage, cachedSeries.size)
-                    val paginatedSeries = if (startIndex < cachedSeries.size) {
-                        cachedSeries.subList(startIndex, endIndex)
-                    } else {
-                        emptyList()
-                    }
-                    val series = paginatedSeries.map { it.toSeries() }
+                    val series = cachedSeries.map { it.toSeries() }
 
                     // Store in cache
                     seriesCache.put(cacheKey, CacheEntry(series, System.currentTimeMillis(), currentSource))
@@ -812,9 +808,12 @@ class ContentRepository private constructor(context: Context) {
             val db = ContentDatabase.getDatabase(appContext) // Use singleton
             val results = mutableListOf<Any>()
 
+            // AUDIT FIX (Second Audit #4): Sanitize FTS query to prevent syntax errors
+            val sanitizedQuery = com.example.farsilandtv.utils.SqlSanitizer.sanitizeFtsQuery(query)
+
             // Search movies and series in current database
-            val movies = db.movieDao().searchMovies(query).firstOrNull()
-            val series = db.seriesDao().searchSeries(query).firstOrNull()
+            val movies = db.movieDao().searchMovies(sanitizedQuery).firstOrNull()
+            val series = db.seriesDao().searchSeries(sanitizedQuery).firstOrNull()
 
             movies?.let { results.addAll(it.map { movie -> movie.toMovie() }) }
             series?.let { results.addAll(it.map { s -> s.toSeries() }) }
@@ -863,9 +862,12 @@ class ContentRepository private constructor(context: Context) {
 
             val results = mutableListOf<Any>()
 
+            // AUDIT FIX (Second Audit #4): Sanitize FTS query to prevent syntax errors
+            val sanitizedQuery = com.example.farsilandtv.utils.SqlSanitizer.sanitizeFtsQuery(query)
+
             // Search movies and series
-            val movies = db.movieDao().searchMovies(query).firstOrNull()
-            val series = db.seriesDao().searchSeries(query).firstOrNull()
+            val movies = db.movieDao().searchMovies(sanitizedQuery).firstOrNull()
+            val series = db.seriesDao().searchSeries(sanitizedQuery).firstOrNull()
 
             movies?.let { results.addAll(it.map { movie -> movie.toMovie() }) }
             series?.let { results.addAll(it.map { s -> s.toSeries() }) }

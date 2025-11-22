@@ -538,16 +538,18 @@ object VideoUrlScraper {
                     // Step 1: Fast fail for known large sizes (via Content-Length header)
                     // EXTERNAL AUDIT FIX H2.1: Increased from 1MB to 5MB
                     // EXTERNAL AUDIT FIX C1.2 (2025-11-21): Increased from 5MB to 15MB for large series
-                    // Issue: TV shows with 100+ episodes legitimately exceed 5MB JSON response
-                    // Solution: Increased limit to 15MB to support popular series
-                    val maxBytes = 15L * 1024 * 1024 // 15MB hard limit (was 5MB, originally 1MB)
+                    // AUDIT FIX (Second Audit #2): Reduced from 15MB to 10MB for OOM safety
+                    // Balances: Large series support (>5MB) vs low-end device safety (<15MB)
+                    // 10MB supports 100+ episode series while reducing memory pressure
+                    val maxBytes = 10L * 1024 * 1024 // 10MB hard limit (was 15MB, originally 5MB)
                     val contentLength = body.contentLength()
                     if (contentLength > maxBytes) {
-                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 15MB)")
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 10MB)")
                         return@use emptyList()
                     }
 
-                    // Step 2: BOUNDED READ - Read max 15MB, stops even if stream is larger/infinite
+                    // Step 2: BOUNDED READ - Read max 10MB, stops even if stream is larger/infinite
+                    // AUDIT FIX (Second Audit #2): Reduced from 15MB to 10MB for OOM safety
                     val source = body.source()
                     val buffer = okio.Buffer()
                     var totalRead = 0L
@@ -1340,13 +1342,15 @@ object VideoUrlScraper {
                     // Step 1: Fast fail for known large sizes (via Content-Length header)
                     // EXTERNAL AUDIT FIX C1.2 (2025-11-21): Increased from 5MB to 15MB for large series
                     val contentLength = body.contentLength()
-                    if (contentLength > 15_000_000) {
-                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 15MB)")
+                    // AUDIT FIX (Second Audit #2): Reduced from 15MB to 10MB for OOM safety
+                    if (contentLength > 10_000_000) {
+                        android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 10MB)")
                         return@use emptyList()
                     }
 
-                    // Step 2: BOUNDED READ - Read max 15MB, stops even if stream is larger/infinite
-                    val maxBytes = 15L * 1024 * 1024 // 15MB hard limit (was 5MB)
+                    // Step 2: BOUNDED READ - Read max 10MB, stops even if stream is larger/infinite
+                    // AUDIT FIX (Second Audit #2): Reduced from 15MB to 10MB for OOM safety
+                    val maxBytes = 10L * 1024 * 1024 // 10MB hard limit (was 15MB, originally 5MB)
                     val source = body.source()
                     val buffer = okio.Buffer()
                     var totalRead = 0L
@@ -1436,14 +1440,16 @@ object VideoUrlScraper {
                     val responseBody = response.body?.let { body ->
                         // Step 1: Fast fail for known large sizes
                         val contentLength = body.contentLength()
-                        if (contentLength > 5_000_000) {
-                            android.util.Log.w(TAG, "Response too large via header: $contentLength bytes")
+                        // AUDIT FIX (Second Audit #2): Reduced from 15MB to 10MB for OOM safety
+                        if (contentLength > 10_000_000) {
+                            android.util.Log.w(TAG, "Response too large via header: $contentLength bytes (max 10MB)")
                             return@let null
                         }
 
-                        // Step 2: BOUNDED READ - Read max 15MB
+                        // Step 2: BOUNDED READ - Read max 10MB
                         // EXTERNAL AUDIT FIX C1.2 (2025-11-21): Increased from 5MB to 15MB
-                        val maxBytes = 15L * 1024 * 1024 // 15MB hard limit (was 5MB)
+                        // AUDIT FIX (Second Audit #2): Reduced from 15MB to 10MB for OOM safety
+                        val maxBytes = 10L * 1024 * 1024 // 10MB hard limit (was 15MB, originally 5MB)
                         val source = body.source()
                         val buffer = okio.Buffer()
                         var totalRead = 0L

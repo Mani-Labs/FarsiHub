@@ -60,9 +60,9 @@ class FarsiPlexDooPlayScraper:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Movies table
+        # Movies table - AUDIT FIX: Renamed to match Android app expectations
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS movies (
+            CREATE TABLE IF NOT EXISTS cached_movies (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
                 title_en TEXT,
@@ -88,7 +88,7 @@ class FarsiPlexDooPlayScraper:
             CREATE TABLE IF NOT EXISTS movie_genres (
                 movie_id INTEGER,
                 genre TEXT,
-                FOREIGN KEY (movie_id) REFERENCES movies(id),
+                FOREIGN KEY (movie_id) REFERENCES cached_movies(id),
                 PRIMARY KEY (movie_id, genre)
             )
         """)
@@ -101,13 +101,13 @@ class FarsiPlexDooPlayScraper:
                 url TEXT NOT NULL,
                 cdn_source TEXT,
                 player_type TEXT,
-                FOREIGN KEY (movie_id) REFERENCES movies(id)
+                FOREIGN KEY (movie_id) REFERENCES cached_movies(id)
             )
         """)
 
-        # TV Shows, Seasons, Episodes tables (same as before)
+        # TV Shows, Seasons, Episodes tables - AUDIT FIX: Renamed to match Android app expectations
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tvshows (
+            CREATE TABLE IF NOT EXISTS cached_series (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
                 title_en TEXT,
@@ -132,7 +132,7 @@ class FarsiPlexDooPlayScraper:
             CREATE TABLE IF NOT EXISTS tvshow_genres (
                 tvshow_id INTEGER,
                 genre TEXT,
-                FOREIGN KEY (tvshow_id) REFERENCES tvshows(id),
+                FOREIGN KEY (tvshow_id) REFERENCES cached_series(id),
                 PRIMARY KEY (tvshow_id, genre)
             )
         """)
@@ -143,13 +143,13 @@ class FarsiPlexDooPlayScraper:
                 tvshow_id INTEGER,
                 season_number INTEGER,
                 release_date TEXT,
-                FOREIGN KEY (tvshow_id) REFERENCES tvshows(id),
+                FOREIGN KEY (tvshow_id) REFERENCES cached_series(id),
                 UNIQUE (tvshow_id, season_number)
             )
         """)
 
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS episodes (
+            CREATE TABLE IF NOT EXISTS cached_episodes (
                 id INTEGER PRIMARY KEY,
                 tvshow_id INTEGER,
                 season_id INTEGER,
@@ -161,7 +161,7 @@ class FarsiPlexDooPlayScraper:
                 release_date TEXT,
                 synopsis TEXT,
                 last_modified TEXT,
-                FOREIGN KEY (tvshow_id) REFERENCES tvshows(id),
+                FOREIGN KEY (tvshow_id) REFERENCES cached_series(id),
                 FOREIGN KEY (season_id) REFERENCES seasons(id),
                 UNIQUE (season_id, episode_number)
             )
@@ -175,7 +175,7 @@ class FarsiPlexDooPlayScraper:
                 url TEXT NOT NULL,
                 cdn_source TEXT,
                 player_type TEXT,
-                FOREIGN KEY (episode_id) REFERENCES episodes(id)
+                FOREIGN KEY (episode_id) REFERENCES cached_episodes(id)
             )
         """)
 
@@ -189,33 +189,33 @@ class FarsiPlexDooPlayScraper:
 
         conn.commit()
 
-        # Migrate existing tables
+        # Migrate existing tables - AUDIT FIX: Updated table names
         try:
-            cursor.execute("PRAGMA table_info(movies)")
+            cursor.execute("PRAGMA table_info(cached_movies)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'last_modified' not in columns:
-                print("Migrating movies table...")
-                cursor.execute("ALTER TABLE movies ADD COLUMN last_modified TEXT")
+                print("Migrating cached_movies table...")
+                cursor.execute("ALTER TABLE cached_movies ADD COLUMN last_modified TEXT")
                 conn.commit()
         except:
             pass
 
         try:
-            cursor.execute("PRAGMA table_info(tvshows)")
+            cursor.execute("PRAGMA table_info(cached_series)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'last_modified' not in columns:
-                print("Migrating tvshows table...")
-                cursor.execute("ALTER TABLE tvshows ADD COLUMN last_modified TEXT")
+                print("Migrating cached_series table...")
+                cursor.execute("ALTER TABLE cached_series ADD COLUMN last_modified TEXT")
                 conn.commit()
         except:
             pass
 
         try:
-            cursor.execute("PRAGMA table_info(episodes)")
+            cursor.execute("PRAGMA table_info(cached_episodes)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'last_modified' not in columns:
-                print("Migrating episodes table...")
-                cursor.execute("ALTER TABLE episodes ADD COLUMN last_modified TEXT")
+                print("Migrating cached_episodes table...")
+                cursor.execute("ALTER TABLE cached_episodes ADD COLUMN last_modified TEXT")
                 conn.commit()
         except:
             pass
@@ -470,7 +470,7 @@ class FarsiPlexDooPlayScraper:
                 movie_id = self.generate_stable_id(movie_data['slug'])
 
                 cursor.execute("""
-                    INSERT OR REPLACE INTO movies (
+                    INSERT OR REPLACE INTO cached_movies (
                         id, title, title_en, title_fa, slug, url, poster_url,
                         release_date, country, rating, votes, synopsis_en, synopsis_fa,
                         last_modified, updated_at
@@ -693,7 +693,7 @@ class FarsiPlexDooPlayScraper:
 
                 # Save TV show (parent)
                 cursor.execute("""
-                    INSERT OR REPLACE INTO tvshows (
+                    INSERT OR REPLACE INTO cached_series (
                         id, title, title_en, title_fa, slug, url, poster_url,
                         release_date, country, rating, votes, last_modified, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -738,7 +738,7 @@ class FarsiPlexDooPlayScraper:
                         episode_id = self.generate_stable_id(episode_data['slug'])
 
                         cursor.execute("""
-                            INSERT OR REPLACE INTO episodes (
+                            INSERT OR REPLACE INTO cached_episodes (
                                 id, tvshow_id, season_id, episode_number, title,
                                 slug, url, thumbnail_url, release_date
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

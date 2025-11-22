@@ -27,6 +27,12 @@ interface CachedMovieDao {
     @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit")
     fun getRecentMoviesFiltered(urlPattern: String, limit: Int = 20): Flow<List<CachedMovie>>
 
+    // AUDIT FIX (Second Audit #6): Efficient filtered pagination with LIMIT and OFFSET
+    // Combines URL filtering with OFFSET-based pagination for constant memory usage
+    // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    fun getRecentMoviesFilteredWithOffset(urlPattern: String, limit: Int, offset: Int): Flow<List<CachedMovie>>
+
     // Feature #18: Paging 3 for unlimited scrolling (replaces 300-item caps)
     @Query("SELECT * FROM cached_movies ORDER BY dateAdded DESC")
     fun getMoviesPaged(): PagingSource<Int, CachedMovie>
@@ -50,7 +56,10 @@ interface CachedMovieDao {
 
     // AUDIT FIX C1.2 (ENABLED): Use FTS4 for fast full-text search
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
-    // Query is automatically sanitized by FTS4 tokenizer
+    //
+    // AUDIT FIX (Second Audit #4): Sanitize query for FTS MATCH operator
+    // Special FTS characters (*, ", -, AND, OR, NOT) cause syntax errors if not escaped
+    // Callers MUST sanitize input with SqlSanitizer.sanitizeFtsQuery() before passing query
     //
     // @SkipQueryVerification: Required because FTS tables are virtual tables created via migration
     // Room's kapt processor runs at compile time and cannot validate runtime FTS tables
@@ -133,7 +142,10 @@ interface CachedSeriesDao {
 
     // AUDIT FIX C1.2 (ENABLED): Use FTS4 for fast full-text search
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
-    // Query is automatically sanitized by FTS4 tokenizer
+    //
+    // AUDIT FIX (Second Audit #4): Sanitize query for FTS MATCH operator
+    // Special FTS characters (*, ", -, AND, OR, NOT) cause syntax errors if not escaped
+    // Callers MUST sanitize input with SqlSanitizer.sanitizeFtsQuery() before passing query
     //
     // @SkipQueryVerification: Required because FTS tables are virtual tables created via migration
     // Room's kapt processor runs at compile time and cannot validate runtime FTS tables
@@ -212,7 +224,10 @@ interface CachedEpisodeDao {
 
     // AUDIT FIX C1.2 (ENABLED): Use FTS4 for fast full-text search
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
-    // Query is automatically sanitized by FTS4 tokenizer
+    //
+    // AUDIT FIX (Second Audit #4): Sanitize query for FTS MATCH operator
+    // Special FTS characters (*, ", -, AND, OR, NOT) cause syntax errors if not escaped
+    // Callers MUST sanitize input with SqlSanitizer.sanitizeFtsQuery() before passing query
     //
     // @SkipQueryVerification: Required because FTS tables are virtual tables created via migration
     // Room's kapt processor runs at compile time and cannot validate runtime FTS tables
