@@ -304,12 +304,27 @@ class ContentSyncWorker(
      *        watchlist retains the ID → UI crashes when trying to display missing content
      * Solution: After sync, verify all watchlist IDs exist in ContentDatabase, delete orphans
      *
+     * AUDIT FIX C5: Watchlist Wipe Protection (CRITICAL - DATA LOSS)
+     * Issue: If ContentDatabase is empty (sync failure, bad asset copy, first launch),
+     *        cleanupGhostRecords() would delete the ENTIRE user watchlist permanently
+     * Solution: Check ContentDatabase size before cleanup - abort if appears empty/corrupted
+     * Safety threshold: Skip cleanup if fewer than 50 movies or 10 series
+     *
      * @return Number of ghost records removed
      */
     private suspend fun cleanupGhostRecords(): Int {
         var totalCleaned = 0
 
         try {
+            // AUDIT FIX C5: Safety check - don't cleanup if ContentDatabase appears empty/corrupted
+            val movieCount = contentDb.movieDao().getMovieCount()
+            val seriesCount = contentDb.seriesDao().getSeriesCount()
+
+            if (movieCount < 50 || seriesCount < 10) {
+                Log.w(TAG, "Skipping ghost cleanup: ContentDatabase appears empty or incomplete (movies=$movieCount, series=$seriesCount)")
+                return 0
+            }
+
             // Cleanup watchlist movies
             val appDb = com.example.farsilandtv.data.database.AppDatabase.getDatabase(applicationContext)
             val watchlistMoviesList = appDb.watchlistMovieDao().getAllMovies().first()
@@ -376,6 +391,12 @@ class ContentSyncWorker(
     /**
      * Sync movies added/updated since last sync
      * REFACTOR (2025-11-21): Always pass null on first sync to fetch recent items
+     *
+     * AUDIT FIX C4: Page 1 Sync Trap (CRITICAL - FUNCTIONAL)
+     * Issue: Only fetched page 1 (20 items). If 21+ items updated between syncs,
+     *        items beyond #20 were permanently skipped on next sync
+     * Solution: Implement pagination loop to sync ALL modified items, not just first 20
+     * Safety: Max 10 pages (200 items) to prevent infinite loops
      */
     private suspend fun syncMovies(lastSyncTimestamp: Long): Int {
         try {
@@ -384,33 +405,41 @@ class ContentSyncWorker(
             val modifiedAfter = if (lastSyncTimestamp > 0) {
                 timestampToApiDate(lastSyncTimestamp)
             } else {
-                null // First sync - fetch recent 20 items
+                null // First sync - fetch recent items
             }
 
             Log.d(TAG, "Fetching movies modified after: $modifiedAfter")
 
-            // Fetch only modified items, limit to 20 to avoid timeout
-            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
-            val wpMovies = wordPressApi.getMovies(
-                perPage = 20,
-                page = 1,
-                modifiedAfter = modifiedAfter,
-                orderBy = "modified",
-                order = "desc"
-            )
+            // AUDIT FIX C4: Implement pagination loop to sync ALL modified items
+            var page = 1
+            var totalSynced = 0
+            do {
+                Log.d(TAG, "Fetching movies page $page...")
 
-            Log.d(TAG, "API returned ${wpMovies.size} movies")
+                val wpMovies = wordPressApi.getMovies(
+                    perPage = 20,
+                    page = page,
+                    modifiedAfter = modifiedAfter,
+                    orderBy = "modified",
+                    order = "desc"
+                )
 
-            val newMovies = wpMovies.map { it.toCachedMovie() }
+                Log.d(TAG, "API returned ${wpMovies.size} movies on page $page")
 
-            if (newMovies.isNotEmpty()) {
-                contentDb.movieDao().insertMovies(newMovies)
-                Log.i(TAG, "✓ Synced ${newMovies.size} movies")
-            } else {
-                Log.d(TAG, "No new movies to sync")
-            }
+                val newMovies = wpMovies.map { it.toCachedMovie() }
+                if (newMovies.isNotEmpty()) {
+                    contentDb.movieDao().insertMovies(newMovies)
+                    totalSynced += newMovies.size
+                    Log.i(TAG, "✓ Synced ${newMovies.size} movies from page $page (total: $totalSynced)")
+                }
 
-            return newMovies.size
+                page++
+
+                // Continue if we got a full page (indicates more pages may exist)
+            } while (wpMovies.size >= 20 && page <= 10) // Safety: max 10 pages (200 items)
+
+            Log.i(TAG, "✓ Movie sync complete: $totalSynced items across ${page - 1} pages")
+            return totalSynced
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing movies: ${e.message}", e)
             return 0
@@ -420,6 +449,12 @@ class ContentSyncWorker(
     /**
      * Sync series added/updated since last sync
      * AUDIT FIX C2: Returns -1 on failure to prevent orphaned episodes
+     *
+     * AUDIT FIX C4: Page 1 Sync Trap (CRITICAL - FUNCTIONAL)
+     * Issue: Only fetched page 1 (20 items). If 21+ items updated between syncs,
+     *        items beyond #20 were permanently skipped on next sync
+     * Solution: Implement pagination loop to sync ALL modified items, not just first 20
+     * Safety: Max 10 pages (200 items) to prevent infinite loops
      */
     private suspend fun syncSeries(lastSyncTimestamp: Long): Int {
         try {
@@ -432,30 +467,39 @@ class ContentSyncWorker(
 
             Log.d(TAG, "Fetching series modified after: $modifiedAfter")
 
-            // Fetch only modified items, limit to 20 to avoid timeout
-            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
-            val wpShows = wordPressApi.getTvShows(
-                perPage = 20,
-                page = 1,
-                modifiedAfter = modifiedAfter,
-                orderBy = "modified",
-                order = "desc"
-            )
+            // AUDIT FIX C4: Implement pagination loop to sync ALL modified items
+            var page = 1
+            var totalSynced = 0
+            do {
+                Log.d(TAG, "Fetching series page $page...")
 
-            Log.d(TAG, "API returned ${wpShows.size} series")
+                val wpShows = wordPressApi.getTvShows(
+                    perPage = 20,
+                    page = page,
+                    modifiedAfter = modifiedAfter,
+                    orderBy = "modified",
+                    order = "desc"
+                )
 
-            val newSeries = wpShows.map { it.toCachedSeries() }
+                Log.d(TAG, "API returned ${wpShows.size} series on page $page")
 
-            if (newSeries.isNotEmpty()) {
-                contentDb.seriesDao().insertMultipleSeries(newSeries)
-                Log.i(TAG, "✓ Synced ${newSeries.size} series")
-            } else {
-                Log.d(TAG, "No new series to sync")
-            }
+                val newSeries = wpShows.map { it.toCachedSeries() }
+                if (newSeries.isNotEmpty()) {
+                    contentDb.seriesDao().insertMultipleSeries(newSeries)
+                    totalSynced += newSeries.size
+                    Log.i(TAG, "✓ Synced ${newSeries.size} series from page $page (total: $totalSynced)")
+                }
+
+                page++
+
+                // Continue if we got a full page (indicates more pages may exist)
+            } while (wpShows.size >= 20 && page <= 10) // Safety: max 10 pages (200 items)
+
+            Log.i(TAG, "✓ Series sync complete: $totalSynced items across ${page - 1} pages")
 
             // EXTERNAL AUDIT FIX H2.2: Removed buildSeriesTitleCache() - use direct SQL queries instead
 
-            return newSeries.size
+            return totalSynced
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing series: ${e.message}", e)
             // AUDIT FIX C2: Return -1 to signal failure (not 0 which means "0 new items")

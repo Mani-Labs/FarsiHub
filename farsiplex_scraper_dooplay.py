@@ -226,7 +226,7 @@ class FarsiPlexDooPlayScraper:
     def fetch_sitemap(self, sitemap_url: str) -> List[Dict[str, str]]:
         """Fetch and parse sitemap"""
         try:
-            response = self.session.get(sitemap_url)
+            response = self.session.get(sitemap_url, timeout=30)
             response.raise_for_status()
             root = ET.fromstring(response.content)
             namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
@@ -280,7 +280,7 @@ class FarsiPlexDooPlayScraper:
 
         try:
             # Get content page
-            response = self.session.get(content_url)
+            response = self.session.get(content_url, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -395,7 +395,7 @@ class FarsiPlexDooPlayScraper:
         print(f"Scraping: {slug}...", end=' ')
 
         try:
-            response = self.session.get(url)
+            response = self.session.get(url, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -528,7 +528,7 @@ class FarsiPlexDooPlayScraper:
         print(f"Scraping: {slug}...", end=' ')
 
         try:
-            response = self.session.get(url)
+            response = self.session.get(url, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 

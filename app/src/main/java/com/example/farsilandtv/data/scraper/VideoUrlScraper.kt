@@ -17,6 +17,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.delay
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Request
@@ -1221,67 +1224,75 @@ object VideoUrlScraper {
             android.util.Log.d(TAG, "Found ${downloadRows.size} download elements")
             val videoUrls = mutableListOf<VideoUrl>()
 
-            // AUDIT FIX 2.1: Parallelize POST requests for faster video URL resolution
+            // AUDIT FIX C3: Limit concurrent POST requests to avoid IP ban (max 2 concurrent)
+            // Issue: Original code fired 5-10 simultaneous POST requests
+            // Result: Security plugins (Cloudflare, Wordfence) interpret as DoS attack → IP ban
+            // Solution: Use Semaphore to serialize requests with 200ms delay between them
+            val semaphore = Semaphore(2) // Max 2 concurrent requests
             coroutineScope {
                 val deferredUrls = downloadRows.mapIndexedNotNull { index, row ->
                     async {
-                        try {
-                            // Get the fileid from hidden input
-                            val fileidInput = row.select("input[name=fileid]").firstOrNull()
-                                ?: return@async null
-            
-                            val fileid = fileidInput.attr("value")
-                            if (fileid.isEmpty()) return@async null
-            
-                            // Extract quality
-                            var quality = "unknown"
-            
-                            // Method 1: strong.quality
-                            row.select("strong.quality").firstOrNull()?.let {
-                                val qualityText = it.text().trim()
-                                if (qualityText.isNotEmpty()) quality = "${qualityText}p"
-                            }
-            
-                            // Method 2: Quality patterns in text
-                            if (quality == "unknown") {
-                                val qualityPattern = Regex("""(\\d{3,4})p?""")
-                                qualityPattern.find(row.text())?.let {
-                                    quality = "${it.groupValues[1]}p"
+                        semaphore.withPermit {
+                            try {
+                                // Get the fileid from hidden input
+                                val fileidInput = row.select("input[name=fileid]").firstOrNull()
+                                    ?: return@async null
+
+                                val fileid = fileidInput.attr("value")
+                                if (fileid.isEmpty()) return@async null
+
+                                // Extract quality
+                                var quality = "unknown"
+
+                                // Method 1: strong.quality
+                                row.select("strong.quality").firstOrNull()?.let {
+                                    val qualityText = it.text().trim()
+                                    if (qualityText.isNotEmpty()) quality = "${qualityText}p"
                                 }
-                            }
-            
-                            // Method 3: Class names
-                            if (quality == "unknown") {
-                                val classNames = row.classNames().joinToString(" ")
-                                quality = when {
-                                    classNames.contains("1080") -> "1080p"
-                                    classNames.contains("720") -> "720p"
-                                    classNames.contains("480") -> "480p"
-                                    else -> "unknown"
+
+                                // Method 2: Quality patterns in text
+                                if (quality == "unknown") {
+                                    val qualityPattern = Regex("""(\\d{3,4})p?""")
+                                    qualityPattern.find(row.text())?.let {
+                                        quality = "${it.groupValues[1]}p"
+                                    }
                                 }
-                            }
-            
-                            // POST to /get/ endpoint (parallel execution)
-                            val mirrorUrls = postToGetEndpoint(fileid)
-                            if (mirrorUrls.isEmpty()) return@async null
-            
-                            // Create VideoUrl objects
-                            mirrorUrls.map { videoUrl ->
-                                val finalQuality = if (quality == "unknown") {
-                                    VideoUrl.extractQuality(videoUrl)
-                                } else {
-                                    quality
+
+                                // Method 3: Class names
+                                if (quality == "unknown") {
+                                    val classNames = row.classNames().joinToString(" ")
+                                    quality = when {
+                                        classNames.contains("1080") -> "1080p"
+                                        classNames.contains("720") -> "720p"
+                                        classNames.contains("480") -> "480p"
+                                        else -> "unknown"
+                                    }
                                 }
-                                val mirror = VideoUrl.extractMirror(videoUrl)
-                                VideoUrl(url = videoUrl, quality = finalQuality, mirror = mirror)
+
+                                // POST to /get/ endpoint (serialized via semaphore)
+                                val mirrorUrls = postToGetEndpoint(fileid)
+                                if (mirrorUrls.isEmpty()) return@async null
+
+                                // Create VideoUrl objects
+                                mirrorUrls.map { videoUrl ->
+                                    val finalQuality = if (quality == "unknown") {
+                                        VideoUrl.extractQuality(videoUrl)
+                                    } else {
+                                        quality
+                                    }
+                                    val mirror = VideoUrl.extractMirror(videoUrl)
+                                    VideoUrl(url = videoUrl, quality = finalQuality, mirror = mirror)
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e(TAG, "Error processing download row $index", e)
+                                null
+                            } finally {
+                                delay(200) // 200ms delay between requests
                             }
-                        } catch (e: Exception) {
-                            android.util.Log.e(TAG, "Error processing download row $index", e)
-                            null
                         }
                     }
                 }
-            
+
                 // Await all parallel requests and flatten results
                 val results = deferredUrls.awaitAll().filterNotNull().flatten()
                 videoUrls.addAll(results)
