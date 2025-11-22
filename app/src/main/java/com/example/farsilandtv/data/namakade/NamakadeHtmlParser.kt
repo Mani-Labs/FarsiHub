@@ -98,7 +98,10 @@ object NamakadeHtmlParser {
         try {
             // Extract link and slug
             val link = element.selectFirst("a")?.attr("href") ?: return null
-            val slug = link.substringAfterLast("/").takeIf { it.isNotBlank() } ?: return null
+            // EXTERNAL AUDIT FIX P3.1 (2025-11-21): Handle trailing slashes in URLs
+            // Previous: "https://namakade.com/series/breaking-bad/" → "" → null (card discarded)
+            // Fixed: Trim trailing slash before extracting slug
+            val slug = link.trimEnd('/').substringAfterLast("/").takeIf { it.isNotBlank() } ?: return null
 
             // Extract title
             val title = element.selectFirst("div.title, h3, h2, a")?.text()?.trim() ?: return null
