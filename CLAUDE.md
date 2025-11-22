@@ -66,22 +66,22 @@
 
 ```bash
 # Compile Kotlin only (fast check)
-.\gradlew.bat compileDebugKotlin
+./gradlew compileDebugKotlin
 
 # Full debug build
-.\gradlew.bat assembleDebug
+./gradlew assembleDebug
 
 # Run unit tests
-.\gradlew.bat test
+./gradlew test
 
 # Clean and rebuild
-.\gradlew.bat clean assembleDebug
+./gradlew clean assembleDebug
 
 # Build with tests
-.\gradlew.bat build
+./gradlew build
 
 # Install on connected device
-.\gradlew.bat installDebug
+./gradlew installDebug
 ```
 
 ---
@@ -222,8 +222,8 @@ G:\FarsiPlex\
 ## Section 7: Development Workflow
 
 **Before Committing:**
-1. Run `.\gradlew.bat compileDebugKotlin` to check syntax
-2. Run `.\gradlew.bat test` to verify tests pass
+1. Run `./gradlew compileDebugKotlin` to check syntax
+2. Run `./gradlew test` to verify tests pass
 3. Verify no console warnings/errors
 4. Reference modernization phase if applicable
 
@@ -243,13 +243,13 @@ G:\FarsiPlex\
 **Test Execution:**
 ```bash
 # Run all unit tests (no device required)
-.\gradlew.bat testDebugUnitTest
+./gradlew testDebugUnitTest
 
 # Run integration tests (requires emulator/device)
-.\gradlew.bat connectedDebugAndroidTest
+./gradlew connectedDebugAndroidTest
 
 # Run specific test class
-.\gradlew.bat test --tests "*PlaybackRepositoryTest"
+./gradlew test --tests "*PlaybackRepositoryTest"
 ```
 
 **Code Quality Standards:**
@@ -308,7 +308,7 @@ G:\FarsiPlex\
 
 **Project:** FarsiPlex → FarsiHub (rebranding)
 **Repository:** G:\FarsiPlex
-**Build:** Gradle (Windows: gradlew.bat)
+**Build:** Gradle (use `./gradlew` in Git Bash)
 **Target Devices:**
 - Current: Nvidia Shield TV (API 28-36)
 - Future: Android phones (API 28+)
@@ -328,3 +328,144 @@ G:\FarsiPlex\
 - Farsiland WordPress API
 - FarsiPlex scraper
 - Namakade scraper
+
+---
+
+## Section 11: Development Environment - Command Reference
+
+### Machine Setup (Windows 11 + Git Bash)
+
+**Working Directory:** `G:\FarsiPlex`
+
+**Shell:** Git Bash (Unix commands work)
+
+**Android SDK:** `C:\Users\me\AppData\Local\Android\Sdk`
+
+**Installed Tools:**
+- Java 17.0.12 LTS
+- Gradle 8.13
+- Python 3.13.7
+- Node.js v22.19.0
+- ADB 36.0.0
+- Git 2.51.0
+
+**Android Platforms:** API 34, 35, 36
+
+**Build Tools:** 33.0.1, 34.0.0, 35.0.0, 36.1.0
+
+**Active Emulator:** AOSP TV on x86 (API 36) - `emulator-5554`
+
+---
+
+### ✅ ALWAYS Use These Commands:
+
+```bash
+# Build commands (from G:\FarsiPlex)
+./gradlew compileDebugKotlin      # Fast compile check (~30 sec)
+./gradlew assembleDebug            # Build debug APK (~2-3 min)
+./gradlew assembleRelease          # Build optimized release APK
+./gradlew test                     # Run unit tests
+./gradlew clean assembleDebug      # Clean and rebuild
+
+# ADB (emulator/device interaction)
+adb devices                        # Check connected devices
+adb install -r app/build/outputs/apk/debug/app-debug.apk  # Install APK
+adb uninstall com.example.farsilandtv                     # Uninstall app
+adb logcat | grep -i farsi         # View app logs (filtered)
+adb shell getprop ro.build.version.sdk  # Check device API level
+adb shell screencap -p /sdcard/screen.png && adb pull /sdcard/screen.png  # Screenshot
+
+# Emulator (start if needed)
+/c/Users/me/AppData/Local/Android/Sdk/emulator/emulator -avd "Namakadeh.com" &
+```
+
+---
+
+### ❌ NEVER Use These (Wrong for Git Bash):
+
+```bash
+# WRONG - These are for CMD/PowerShell, not Bash
+.\gradlew.bat compileDebugKotlin   # ❌ Don't use .bat in Bash
+gradlew.bat assembleDebug           # ❌ Don't use .bat in Bash
+cmd /c "gradlew.bat ..."           # ❌ Unnecessary wrapper
+```
+
+---
+
+### Quick Reference Table
+
+| Task | Command |
+|------|---------|
+| **Compile check** | `./gradlew compileDebugKotlin` |
+| **Build debug APK** | `./gradlew assembleDebug` |
+| **Build release APK** | `./gradlew assembleRelease` |
+| **Install to device** | `adb install -r app/build/outputs/apk/debug/app-debug.apk` |
+| **Run unit tests** | `./gradlew test` |
+| **Run instrumented tests** | `./gradlew connectedDebugAndroidTest` |
+| **Check devices** | `adb devices` |
+| **View logs** | `adb logcat \| grep -i farsi` |
+| **Uninstall app** | `adb uninstall com.example.farsilandtv` |
+| **Clean build** | `./gradlew clean` |
+
+---
+
+### Standard Development Workflow
+
+```bash
+# 1. Make code changes in your editor
+
+# 2. Quick compile check (30 sec)
+./gradlew compileDebugKotlin
+
+# 3. If compile passes, build APK (2-3 min)
+./gradlew assembleDebug
+
+# 4. Install to connected device/emulator
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# 5. Monitor logs during testing
+adb logcat | grep -i farsi
+
+# 6. Run tests before committing
+./gradlew test
+```
+
+---
+
+### APK Output Locations
+
+- **Debug APK:** `app/build/outputs/apk/debug/app-debug.apk` (~48 MB)
+- **Release APK:** `app/build/outputs/apk/release/app-release.apk` (~24 MB, optimized)
+
+---
+
+### Important Environment Notes
+
+1. **Shell Type:** Git Bash on Windows 11
+   - Use Unix-style commands (`./gradlew`, not `.bat`)
+   - Windows paths work with forward slashes: `/c/Users/...`
+
+2. **Environment Variables:**
+   - `ANDROID_HOME` not set (but ADB works via PATH)
+   - `JAVA_HOME` not set (but Java 17 works)
+
+3. **Emulator Path:**
+   - Command not in PATH
+   - Full path: `/c/Users/me/AppData/Local/Android/Sdk/emulator/emulator`
+
+4. **Project SDK Configuration:**
+   - minSdk: 28 (Android 9)
+   - targetSdk: 34
+   - compileSdk: 35
+
+---
+
+### Memory Aid for Claude
+
+**When working on this project:**
+- ✅ Use `./gradlew` (Unix-style)
+- ❌ Never use `.\gradlew.bat` or `cmd` wrappers
+- ✅ Use `adb` commands directly (already in PATH)
+- ✅ APK location: `app/build/outputs/apk/debug/app-debug.apk`
+- ✅ Package name: `com.example.farsilandtv`
+- ✅ Working dir: `G:\FarsiPlex`

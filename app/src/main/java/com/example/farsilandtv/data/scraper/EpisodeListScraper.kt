@@ -345,13 +345,9 @@ object EpisodeListScraper {
     }
 
     /**
-     * Fetch HTML content with rate limiting
-     * 500ms delay to avoid overwhelming the server (per FarsiFlow best practice)
+     * Fetch HTML content from the server
      */
     private suspend fun fetchHtml(url: String): String = withContext(Dispatchers.IO) {
-        // Rate limiting: 500ms delay
-        delay(500)
-
         val request = Request.Builder()
             .url(url)
             .get()
