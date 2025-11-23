@@ -1,18 +1,23 @@
 package com.example.farsilandtv
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.fragment.app.FragmentActivity
+import androidx.activity.compose.setContent
 import com.example.farsilandtv.data.models.Movie
+import com.example.farsilandtv.ui.screens.MovieDetailsScreen
+import com.example.farsilandtv.ui.theme.FarsilandTVTheme
 
 /**
- * Movie Details Activity - displays details and allows playing a movie
+ * Movie Details Activity - displays details using Compose TV
  *
  * Back navigation: Returns to previous screen (not home/exit)
+ * Phase 2.1: Migrated to Compose TV from MovieDetailsFragment
  */
-class DetailsActivity : FragmentActivity() {
+class DetailsActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "DetailsActivity"
@@ -23,7 +28,6 @@ class DetailsActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_details)
 
         // Setup back press handler
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -33,29 +37,42 @@ class DetailsActivity : FragmentActivity() {
             }
         })
 
-        if (savedInstanceState == null) {
-            val movie = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getSerializableExtra(EXTRA_MOVIE, Movie::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getSerializableExtra(EXTRA_MOVIE) as? Movie
-            }
-
-            if (movie != null) {
-                Log.d(TAG, "Opening details for movie: ${movie.title}")
-                val fragment = MovieDetailsFragment()
-                val args = Bundle().apply {
-                    putSerializable(MovieDetailsFragment.ARG_MOVIE, movie)
-                }
-                fragment.arguments = args
-
-                supportFragmentManager.beginTransaction()
-                    .replace(R.id.details_fragment, fragment)
-                    .commitNow()
-            } else {
-                Log.e(TAG, "No movie data provided, finishing activity")
-                finish()
-            }
+        // Get movie from intent
+        val movie = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getSerializableExtra(EXTRA_MOVIE, Movie::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getSerializableExtra(EXTRA_MOVIE) as? Movie
         }
+
+        if (movie != null) {
+            Log.d(TAG, "Opening details for movie: ${movie.title}")
+
+            setContent {
+                FarsilandTVTheme {
+                    MovieDetailsScreen(
+                        movie = movie,
+                        onBackClick = { finish() },
+                        onPlayClick = { playMovie(it) },
+                        onMovieClick = { /* Navigate to movie details */ }
+                    )
+                }
+            }
+        } else {
+            Log.e(TAG, "No movie data provided, finishing activity")
+            finish()
+        }
+    }
+
+    private fun playMovie(movie: Movie) {
+        Log.d(TAG, "Starting playback for: ${movie.title}")
+        val intent = Intent(this, VideoPlayerActivity::class.java).apply {
+            putExtra("CONTENT_TYPE", "movie")
+            putExtra("CONTENT_ID", movie.id)
+            putExtra("CONTENT_TITLE", movie.title)
+            putExtra("CONTENT_URL", movie.farsilandUrl)
+            putExtra("CONTENT_POSTER_URL", movie.posterUrl)
+        }
+        startActivity(intent)
     }
 }

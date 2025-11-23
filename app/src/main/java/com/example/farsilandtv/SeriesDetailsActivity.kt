@@ -1,40 +1,45 @@
 package com.example.farsilandtv
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.fragment.app.FragmentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.example.farsilandtv.data.models.Episode
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.repository.ContentRepository
-import com.example.farsilandtv.data.scraper.EpisodeListScraper
+import com.example.farsilandtv.ui.screens.SeriesDetailsScreen
+import com.example.farsilandtv.ui.theme.FarsilandTVTheme
 import kotlinx.coroutines.launch
 
 /**
- * Series Details Activity - displays episodes for a TV series
+ * Series Details Activity - displays episodes using Compose TV
  * Scrapes episode list from series page and groups by season
  *
  * Back navigation: Returns to previous screen (not home/exit)
+ * Phase 2.1: Migrated to Compose TV from SeriesDetailsFragment
  */
-class SeriesDetailsActivity : FragmentActivity() {
+class SeriesDetailsActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "SeriesDetailsActivity"
         const val EXTRA_SERIES = "series"
-        private const val STATE_SERIES = "state_series"
-        private const val STATE_EPISODES_DATA = "state_episodes_data"
     }
 
-    private var series: Series? = null
-    private var episodesData: Map<Int, List<Episode>>? = null
     private lateinit var contentRepository: ContentRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_series_details)
 
         // Initialize repository
         contentRepository = ContentRepository.getInstance(applicationContext)
@@ -47,137 +52,103 @@ class SeriesDetailsActivity : FragmentActivity() {
             }
         })
 
-        // Restore from savedInstanceState if available (configuration change)
-        if (savedInstanceState != null) {
-            series = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                savedInstanceState.getSerializable(STATE_SERIES, Series::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                savedInstanceState.getSerializable(STATE_SERIES) as? Series
-            }
-
-            Log.d(TAG, "Restored series from savedInstanceState: ${series?.title}")
-            // Episodes not saved (not Serializable), will reload from database/scrape
-        }
-
-        // Get series data from intent if not restored (first launch)
-        if (series == null) {
-            series = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getSerializableExtra(EXTRA_SERIES, Series::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getSerializableExtra(EXTRA_SERIES) as? Series
-            }
+        // Get series data from intent
+        val series = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getSerializableExtra(EXTRA_SERIES, Series::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getSerializableExtra(EXTRA_SERIES) as? Series
         }
 
         if (series == null) {
-            // AUDIT FIX #30: Use localized string resource
-            Toast.makeText(this, getString(R.string.error_no_series_data), Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "No series data provided", Toast.LENGTH_LONG).show()
             Log.e(TAG, "No series data provided, finishing activity")
             finish()
             return
         }
 
-        Log.d(TAG, "Loading series: ${series?.title}")
-        Log.d(TAG, "URL: ${series?.farsilandUrl}")
+        Log.d(TAG, "Loading series: ${series.title}")
 
-        loadEpisodes()
-    }
+        setContent {
+            FarsilandTVTheme {
+                var episodesBySeason by remember { mutableStateOf<Map<Int, List<Episode>>?>(null) }
+                var isLoading by remember { mutableStateOf(true) }
+                var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        // Save only series data (Episode objects are not Serializable)
-        // Episodes will be reloaded from database/scraped on restore (2-5 seconds)
-        series?.let { outState.putSerializable(STATE_SERIES, it) }
-        Log.d(TAG, "Saved state: ${series?.title}")
-    }
+                // Load episodes on launch
+                LaunchedEffect(series.id) {
+                    try {
+                        val result = contentRepository.getEpisodes(
+                            series.id,
+                            series.farsilandUrl ?: ""
+                        )
 
-    /**
-     * Get series data for the fragment
-     */
-    fun getSeriesData(): Series? = series
-
-    /**
-     * Get episodes data for the fragment
-     */
-    fun getEpisodesData(): Map<Int, List<Episode>>? = episodesData
-
-    private fun loadEpisodes() {
-        Toast.makeText(this, "Loading episodes...", Toast.LENGTH_SHORT).show()
-
-        lifecycleScope.launch {
-            try {
-                // Use ContentRepository (checks database first for Namakade, then scrapes if needed)
-                val result = contentRepository.getEpisodes(
-                    series?.id ?: 0,
-                    series?.farsilandUrl ?: ""
-                )
-
-                val episodesBySeason = result.getOrNull()
-
-                if (episodesBySeason.isNullOrEmpty()) {
-                    Toast.makeText(
-                        this@SeriesDetailsActivity,
-                        "No episodes found for this series",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    finish()
-                    return@launch
+                        val episodes = result.getOrNull()
+                        if (episodes.isNullOrEmpty()) {
+                            errorMessage = "No episodes found for this series"
+                        } else {
+                            episodesBySeason = episodes
+                            Log.d(TAG, "Loaded ${episodes.values.flatten().size} episodes")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error loading episodes", e)
+                        errorMessage = "Error loading episodes: ${e.message}"
+                    } finally {
+                        isLoading = false
+                    }
                 }
 
-                Log.d(TAG, "Found ${episodesBySeason.values.flatten().size} episodes in ${episodesBySeason.size} seasons")
-                displayEpisodes(episodesBySeason)
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading episodes", e)
-                Toast.makeText(
-                    this@SeriesDetailsActivity,
-                    getString(R.string.error_loading_episodes, e.message ?: "Unknown error"),
-                    Toast.LENGTH_LONG
-                ).show()
-                finish()
-            }
-        }
-    }
-
-    private fun displayEpisodes(episodesBySeason: Map<Int, List<Episode>>) {
-        // Store episodes data for fragment
-        episodesData = episodesBySeason
-
-        val totalEpisodes = episodesBySeason.values.flatten().size
-        val seasons = episodesBySeason.keys.sorted()
-
-        Log.d(TAG, "Displaying $totalEpisodes episodes in ${seasons.size} seasons")
-
-        // Update series metadata with actual scraped season count
-        series?.let { currentSeries ->
-            if (currentSeries.totalSeasons != seasons.size) {
-                Log.d(TAG, "Updating season count from ${currentSeries.totalSeasons} to ${seasons.size}")
-
-                // Update in-memory series object
-                series = currentSeries.copy(
-                    totalSeasons = seasons.size,
-                    totalEpisodes = totalEpisodes
-                )
-
-                // Update database for persistence
-                lifecycleScope.launch {
-                    try {
-                        val repository = com.example.farsilandtv.data.repository.ContentRepository.getInstance(this@SeriesDetailsActivity)
-                        repository.updateSeriesMetadata(currentSeries.id, seasons.size, totalEpisodes)
-                        Log.d(TAG, "Successfully updated series metadata in database")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to update series metadata", e)
+                when {
+                    isLoading -> {
+                        // Show loading state
+                        androidx.compose.foundation.layout.Box(
+                            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                            contentAlignment = androidx.compose.ui.Alignment.Center
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator()
+                        }
+                    }
+                    errorMessage != null -> {
+                        // Show error state
+                        LaunchedEffect(errorMessage) {
+                            Toast.makeText(this@SeriesDetailsActivity, errorMessage, Toast.LENGTH_LONG).show()
+                            finish()
+                        }
+                    }
+                    episodesBySeason != null -> {
+                        // Show series details
+                        SeriesDetailsScreen(
+                            series = series,
+                            episodesBySeason = episodesBySeason!!,
+                            onBackClick = { finish() },
+                            onPlayEpisode = { episode -> playEpisode(episode) },
+                            onSeriesClick = { /* Navigate to series details */ }
+                        )
                     }
                 }
             }
         }
-
-        // Create and add the series details fragment
-        val fragment = SeriesDetailsFragment()
-
-        supportFragmentManager.beginTransaction()
-            .replace(R.id.series_details_fragment, fragment)
-            .commit()
     }
+
+    private fun playEpisode(episode: Episode) {
+        Log.d(TAG, "Starting playback for: ${episode.title}")
+        val intent = Intent(this, VideoPlayerActivity::class.java).apply {
+            putExtra("CONTENT_TYPE", "episode")
+            putExtra("CONTENT_ID", episode.id)
+            putExtra("CONTENT_TITLE", episode.title)
+            putExtra("CONTENT_URL", episode.farsilandUrl)
+            putExtra("CONTENT_POSTER_URL", episode.thumbnailUrl)
+            episode.seriesId?.let { putExtra("SERIES_ID", it) }
+            putExtra("EPISODE_SEASON", episode.season)
+            putExtra("EPISODE_NUMBER", episode.episode)
+        }
+        startActivity(intent)
+    }
+
+    // Legacy stubs for SeriesDetailsFragment compatibility (not used with Compose)
+    @Deprecated("Legacy fragment support - not used with Compose UI")
+    fun getSeriesData(): Series? = null
+
+    @Deprecated("Legacy fragment support - not used with Compose UI")
+    fun getEpisodesData(): Map<Int, List<Episode>>? = null
 }
