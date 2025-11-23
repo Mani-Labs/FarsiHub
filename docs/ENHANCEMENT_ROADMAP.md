@@ -1,8 +1,8 @@
 # FarsiHub Enhancement Roadmap
 
 **Created**: 2025-11-22
-**Updated**: 2025-11-23
-**Status**: Phase 2 Partially Complete
+**Updated**: 2025-11-23 (Revision 2)
+**Status**: Phase 2.2 AFR Complete, Phase 2.4 Reverted
 **Strategy**: Quick Wins First → UI Modernization → Phone Support
 
 ---
@@ -177,24 +177,27 @@ player.addListener(object : Player.Listener {
 
 ---
 
-### 2.4 Add Compose Carousel ✅ COMPLETED
-**Effort**: 4-6 hours (Actual: 45 min)
-**File**: `app/src/main/java/com/example/farsilandtv/ComposeHomeFragment.kt`
-**Status**: Implemented 2025-11-23
+### 2.4 Add Compose Carousel ⏸️ DEFERRED
+**Effort**: 4-6 hours
+**Status**: Attempted 2025-11-23, reverted due to navigation conflicts
 
-**Strategy**: Replace `FeaturedCarouselPresenter` with existing `FeaturedCarousel.kt`
+**Attempted Implementation**:
+- Created `ComposeHomeFragment` as full HomeFragment replacement
+- Wrapped `FeaturedCarousel` in ComposeView
+- Replaced HomeFragment in MainActivity
 
-**Implementation**:
-- Wrap `FeaturedCarousel` in `ComposeView`
-- Integrate into existing `HomeFragment`
+**Issues Encountered**:
+- ❌ Crashes on D-pad navigation (LayoutCoordinate detachment)
+- ❌ Lost sidebar navigation menu (Movies, Shows, Search, Settings)
+- ❌ Incorrect phase order: HomeFragment migration is Phase 3.3 (LAST)
+
+**Correct Strategy** (NOT YET IMPLEMENTED):
+- FeaturedCarousel already exists with auto-rotation
+- Should integrate INTO HomeFragment, not replace it
+- Use ComposeView within existing BrowseSupportFragment
 - Keep Leanback navigation (no conflicts)
 
-**Benefits**:
-- Netflix-style cinematic backgrounds
-- Auto-rotating hero banner
-- Modern visual appeal
-
-**Testing**: Verify auto-rotation, D-pad navigation
+**Deferred**: Implement Phase 2.1 (DetailsActivity) FIRST
 
 ---
 
@@ -439,4 +442,60 @@ class ContentRemoteMediator(
 
 ---
 
-**Next Action**: Start Phase 1.1 - Enable Video Tunneling
+## Implementation Log - 2025-11-23
+
+### ✅ Successfully Completed
+
+**1. Auto Frame Rate (AFR) Implementation** (Phase 2.2)
+- Created `AutoFrameRateHelper.kt` utility class
+- Integrated Media3 Tracks API for frame rate detection
+- Display mode switching for API 30+ devices
+- Supports 23.976/24/25/29.97/30/50/59.94/60 fps
+- Toast notification for detected frame rates
+- Cleanup on activity destroy
+- **File**: `app/src/main/java/com/example/farsilandtv/utils/AutoFrameRateHelper.kt:151`
+- **File**: `app/src/main/java/com/example/farsilandtv/VideoPlayerActivity.kt:481,1222`
+
+**2. Type Mapper Extension Functions** (Helper for Phase 2)
+- Added `FeaturedContent.toFeaturedItem()` extension
+- Added `List<FeaturedContent>.toFeaturedItems()` extension
+- Cleaner type conversion for Compose integration
+- **File**: `app/src/main/java/com/example/farsilandtv/ui/components/FeaturedCarousel.kt:67-86`
+- **File**: `app/src/main/java/com/example/farsilandtv/ui/screens/HomeScreen.kt:68`
+
+### ❌ Reverted Due to Issues
+
+**ComposeHomeFragment Integration** (Wrong Phase)
+- Created full HomeFragment replacement with Compose
+- Caused D-pad navigation crashes (LayoutCoordinate detachment)
+- Lost sidebar navigation menu (BrowseSupportFragment feature)
+- Violated phase order: HomeFragment migration is Phase 3.3 (LAST)
+- **Reverted**: MainActivity changes, kept extension functions and AFR
+- **Lesson**: Must implement Phase 2.1 (DetailsActivity) first
+
+### Current Branch Status
+
+**Branch**: `enhancement-1`
+**Commits**:
+1. `a02f800` - Initial implementation (AFR + ComposeHomeFragment)
+2. `89fe2aa` - Revert ComposeHomeFragment (fix crashes)
+
+**Working Features**:
+- ✅ Auto Frame Rate switching
+- ✅ Extension functions for future Compose migration
+- ✅ Original HomeFragment with sidebar navigation
+- ✅ No crashes on D-pad navigation
+
+**Files Created**:
+- `AutoFrameRateHelper.kt` (151 lines, production-ready)
+- `ComposeHomeFragment.kt` (97 lines, **not used** - for reference only)
+
+**Modified Files**:
+- `VideoPlayerActivity.kt` - AFR integration
+- `FeaturedCarousel.kt` - Extension functions
+- `HomeScreen.kt` - Use extension functions
+- `MainActivity.kt` - Reverted (back to HomeFragment)
+
+---
+
+**Next Action**: Implement Phase 2.1 - Migrate DetailsActivity to Compose TV
