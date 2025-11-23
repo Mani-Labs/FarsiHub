@@ -106,10 +106,11 @@ class HomeFragment : BrowseSupportFragment() {
     }
 
     private fun setupUIElements() {
-        title = null // Title moved to sidebar in activity_main.xml
+        title = null // No title
+        badgeDrawable = null // No badge
         headersState = HEADERS_HIDDEN // Auto-hide sidebar when browsing rows
         isHeadersTransitionOnBackEnabled = true
-        brandColor = resources.getColor(android.R.color.holo_red_dark, null)
+        brandColor = ContextCompat.getColor(requireContext(), R.color.fastlane_background) // Dark maroon
 
         // Feature #20: No more ProgressBarManager - using skeleton screens instead
 

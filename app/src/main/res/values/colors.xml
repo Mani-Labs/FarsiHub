@@ -1,14 +1,15 @@
 <resources>
-    <color name="background_gradient_start">#000000</color>
-    <color name="background_gradient_end">#DDDDDD</color>
-    <color name="fastlane_background">#0096a6</color>
-    <color name="search_opaque">#ffaa3f</color>
-    <color name="selected_background">#ffaa3f</color>
-    <color name="default_background">#3d3d3d</color>
-    <color name="splash_background">#1A237E</color>
+    <!-- Dark Red/Maroon Theme (FarsiHub Rebrand) -->
+    <color name="background_gradient_start">#1A1A1A</color>
+    <color name="background_gradient_end">#3D3D3D</color>
+    <color name="fastlane_background">#8B1538</color>          <!-- Deep maroon -->
+    <color name="search_opaque">#B71C4C</color>                <!-- Lighter maroon for search -->
+    <color name="selected_background">#B71C4C</color>          <!-- Lighter maroon for selection -->
+    <color name="default_background">#2B2B2B</color>           <!-- Dark charcoal -->
+    <color name="splash_background">#8B1538</color>            <!-- Deep maroon splash -->
 
     <!-- Notification colors (Feature #9) -->
-    <color name="notification_color">#0096a6</color>
+    <color name="notification_color">#8B1538</color>           <!-- Maroon notification -->
 
     <!-- Source badge colors -->
     <color name="source_farsiland">#FF5252</color>      <!-- Red for Farsiland -->
