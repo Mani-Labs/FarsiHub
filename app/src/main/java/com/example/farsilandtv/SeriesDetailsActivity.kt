@@ -10,10 +10,11 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
 import com.example.farsilandtv.data.models.Episode
 import com.example.farsilandtv.data.models.Series
@@ -101,11 +102,15 @@ class SeriesDetailsActivity : ComponentActivity() {
                 when {
                     isLoading -> {
                         // Show loading state
-                        androidx.compose.foundation.layout.Box(
-                            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
-                            contentAlignment = androidx.compose.ui.Alignment.Center
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
                         ) {
-                            androidx.compose.material3.CircularProgressIndicator()
+                            Text(
+                                text = "Loading episodes...",
+                                color = Color.White,
+                                style = androidx.compose.material3.MaterialTheme.typography.titleLarge
+                            )
                         }
                     }
                     errorMessage != null -> {
