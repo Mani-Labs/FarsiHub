@@ -46,6 +46,7 @@ fun SearchScreen(
     onMovieClick: (Movie) -> Unit,
     onSeriesClick: (Series) -> Unit,
     modifier: Modifier = Modifier,
+    initialQuery: String = "",
     viewModel: MainViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -55,9 +56,9 @@ fun SearchScreen(
     val favorites by favoritesRepo.getAllFavorites()
         .collectAsState(initial = emptyList())
 
-    // Search state
-    var searchQuery by remember { mutableStateOf("") }
-    var debouncedQuery by remember { mutableStateOf("") }
+    // Search state (initialize with initialQuery for voice search support)
+    var searchQuery by remember { mutableStateOf(initialQuery) }
+    var debouncedQuery by remember { mutableStateOf(initialQuery) }
     val searchResults by viewModel.search(debouncedQuery).observeAsState(emptyList())
 
     val focusRequester = remember { FocusRequester() }
