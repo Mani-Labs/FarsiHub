@@ -43,6 +43,10 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+import androidx.media3.common.Format
+import androidx.media3.common.Tracks
+import androidx.media3.common.C
+import com.example.farsilandtv.utils.AutoFrameRateHelper
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -473,6 +477,39 @@ class VideoPlayerActivity : AppCompatActivity() {
                         tryMirrorCDN()
                     } else {
                         showError("Playback error: ${error.message}")
+                    }
+                }
+
+                // AFR: Detect video frame rate and switch display mode
+                override fun onTracksChanged(tracks: Tracks) {
+                    super.onTracksChanged(tracks)
+
+                    // Extract video frame rate from selected video track
+                    val videoFormat = tracks.groups
+                        .filter { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
+                        .firstOrNull()
+                        ?.getTrackFormat(0)
+
+                    val frameRate = videoFormat?.frameRate ?: Format.NO_VALUE.toFloat()
+
+                    if (frameRate != Format.NO_VALUE.toFloat() && frameRate > 0) {
+                        Log.d(TAG, "Video frame rate detected: ${frameRate}fps")
+
+                        val afrEnabled = AutoFrameRateHelper.enableAFR(
+                            this@VideoPlayerActivity,
+                            frameRate
+                        )
+
+                        if (afrEnabled) {
+                            // Show brief toast indicating display mode change
+                            Toast.makeText(
+                                this@VideoPlayerActivity,
+                                "Display: ${String.format("%.0f", frameRate)}fps",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    } else {
+                        Log.w(TAG, "Frame rate not available in video metadata")
                     }
                 }
             })
@@ -1181,6 +1218,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         player = null
         cache?.release()
         cache = null
+
+        // AFR: Restore default display mode before destroying activity
+        AutoFrameRateHelper.disableAFR(this)
 
         // Clear saved state
         savedPlaybackState = null

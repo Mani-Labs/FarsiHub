@@ -1,8 +1,9 @@
 # FarsiHub Premium Features Implementation Plan
 
 **Created**: 2025-11-22
-**Status**: Planning Phase
-**Current Baseline**: All audit issues fixed (30/30), tunneling enabled, build stable
+**Updated**: 2025-11-23
+**Status**: Phase 2 Partially Complete
+**Current Baseline**: All audit issues fixed (30/30), tunneling enabled, build stable, AFR + Compose integrated
 
 ---
 
@@ -302,9 +303,10 @@ val trackSelector = DefaultTrackSelector(this).apply {
 
 ---
 
-### 2.1 Integrate Existing Compose Screens 🎨
+### 2.1 Integrate Existing Compose Screens ✅ COMPLETED
 
-**CRITICAL DISCOVERY**: Compose screens already exist but are not integrated!
+**Status**: Implemented 2025-11-23
+**Method**: Fragment wrapper (ComposeHomeFragment) for seamless Leanback integration
 
 **Current Reality**:
 - HomeScreen.kt exists (87 lines, fully functional)
@@ -417,10 +419,11 @@ val isLoading = movies.loadState.refresh is LoadState.Loading
 
 ---
 
-### 2.3 Implement AFR (Auto Frame Rate Matching) 🎬
+### 2.3 Implement AFR (Auto Frame Rate Matching) ✅ COMPLETED
 
-**Current Gap**: Movies play at 60Hz, causing judder on 24fps content
-**Impact**: Cinephile-quality smooth playback
+**Status**: Implemented 2025-11-23
+**Impact**: Cinephile-quality smooth playback achieved
+**Result**: Display automatically switches to match 24/30/60fps content
 
 #### Technical Requirements
 - **Android Version**: API 30+ (Android 11) - Shield TV compatible

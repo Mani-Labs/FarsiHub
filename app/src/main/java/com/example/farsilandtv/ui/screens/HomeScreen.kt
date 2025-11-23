@@ -65,12 +65,7 @@ fun HomeScreen(
                 FeaturedCarouselSkeleton()
             } else if (featuredContent.isNotEmpty()) {
                 FeaturedCarousel(
-                    content = featuredContent.map { featured ->
-                        when (featured) {
-                            is FeaturedContent.FeaturedMovie -> FeaturedItem.MovieItem(featured.movie)
-                            is FeaturedContent.FeaturedSeries -> FeaturedItem.SeriesItem(featured.series)
-                        }
-                    },
+                    content = featuredContent.toFeaturedItems(),
                     onContentClick = { item ->
                         when (item) {
                             is FeaturedItem.MovieItem -> onMovieClick(item.movie)

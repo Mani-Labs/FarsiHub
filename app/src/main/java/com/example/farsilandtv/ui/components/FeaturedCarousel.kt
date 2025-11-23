@@ -19,6 +19,7 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
+import com.example.farsilandtv.data.models.FeaturedContent
 import kotlinx.coroutines.delay
 
 /**
@@ -65,6 +66,18 @@ sealed class FeaturedItem {
         override val description = series.description
     }
 }
+
+/**
+ * Extension functions to convert FeaturedContent (data model) to FeaturedItem (UI model)
+ * Required for HomeScreen integration
+ */
+fun FeaturedContent.toFeaturedItem(): FeaturedItem = when (this) {
+    is FeaturedContent.FeaturedMovie -> FeaturedItem.MovieItem(movie)
+    is FeaturedContent.FeaturedSeries -> FeaturedItem.SeriesItem(series)
+}
+
+fun List<FeaturedContent>.toFeaturedItems(): List<FeaturedItem> =
+    map { it.toFeaturedItem() }
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable

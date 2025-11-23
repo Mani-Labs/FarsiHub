@@ -1,7 +1,8 @@
 # FarsiHub Enhancement Roadmap
 
 **Created**: 2025-11-22
-**Status**: Phase 1 In Progress
+**Updated**: 2025-11-23
+**Status**: Phase 2 Partially Complete
 **Strategy**: Quick Wins First → UI Modernization → Phone Support
 
 ---
@@ -125,9 +126,10 @@ items(movies.itemCount) { index ->
 
 ---
 
-### 2.2 Implement AFR (Auto Frame Rate Matching) 🎬
-**Effort**: 4-6 hours
+### 2.2 Implement AFR (Auto Frame Rate Matching) ✅ COMPLETED
+**Effort**: 4-6 hours (Actual: 2 hours)
 **File**: `app/src/main/java/com/example/farsilandtv/VideoPlayerActivity.kt`
+**Status**: Implemented 2025-11-23
 
 **Requirements**:
 - Android 11+ (API 30+) - Shield TV compatible
@@ -175,9 +177,10 @@ player.addListener(object : Player.Listener {
 
 ---
 
-### 2.4 Add Compose Carousel 🎠
-**Effort**: 4-6 hours
-**File**: `app/src/main/java/com/example/farsilandtv/HomeFragment.kt`
+### 2.4 Add Compose Carousel ✅ COMPLETED
+**Effort**: 4-6 hours (Actual: 45 min)
+**File**: `app/src/main/java/com/example/farsilandtv/ComposeHomeFragment.kt`
+**Status**: Implemented 2025-11-23
 
 **Strategy**: Replace `FeaturedCarouselPresenter` with existing `FeaturedCarousel.kt`
 
