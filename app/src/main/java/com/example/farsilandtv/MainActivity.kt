@@ -64,9 +64,9 @@ class MainActivity : FragmentActivity() {
             // Show loading screen while DB initializes
             showDatabaseLoadingScreen()
         } else if (savedInstanceState == null) {
-            // DB ready, start with Home fragment
+            // DB ready, start with Home fragment (Compose)
             getSupportFragmentManager().beginTransaction()
-                .replace(R.id.main_browse_fragment, HomeFragment())
+                .replace(R.id.main_browse_fragment, HomeComposeFragment())
                 .commitNow()
         }
     }
@@ -101,11 +101,11 @@ class MainActivity : FragmentActivity() {
 
             // Check final status
             if (prefs.getBoolean("content_db_initialized", false)) {
-                // Success - load HomeFragment
+                // Success - load HomeComposeFragment (Compose)
                 timestampView?.visibility = View.GONE
                 if (!supportFragmentManager.isStateSaved) {
                     supportFragmentManager.beginTransaction()
-                        .replace(R.id.main_browse_fragment, HomeFragment())
+                        .replace(R.id.main_browse_fragment, HomeComposeFragment())
                         .commitNow()
                 }
             } else if (prefs.getBoolean("content_db_error", false)) {
@@ -148,7 +148,7 @@ class MainActivity : FragmentActivity() {
             "stats" -> StatsFragment()
             "sync-settings" -> SyncSettingsFragment()
             "options" -> OptionsFragment()
-            else -> HomeFragment()
+            else -> HomeComposeFragment() // Compose version
         }
 
         // H2 FIX: Check lifecycle state before committing transaction
