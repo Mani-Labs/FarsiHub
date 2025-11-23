@@ -306,8 +306,35 @@ class HomeFragment : BrowseSupportFragment() {
         watchlistRepo.getContinueWatching().asLiveData().observe(viewLifecycleOwner) { items ->
             if (items.isNotEmpty()) {
                 Log.d(TAG, "Loaded ${items.size} continue watching items")
-                removeContinueWatchingRow()
-                addContinueWatchingRow(items)
+
+                // DEEP AUDIT FIX: Update in-place if row exists, don't remove and re-insert
+                // This prevents order swapping when rows are preserved during skeleton display
+                var existingRowIndex = -1
+                for (i in 0 until rowsAdapter.size()) {
+                    val item = rowsAdapter.get(i)
+                    if (item is ListRow && item.headerItem?.name == "Continue Watching") {
+                        existingRowIndex = i
+                        break
+                    }
+                }
+
+                if (existingRowIndex >= 0) {
+                    // Row exists - update items in place (no index change)
+                    Log.d(TAG, "Updating Continue Watching row in place at index $existingRowIndex")
+                    val existingRow = rowsAdapter.get(existingRowIndex) as ListRow
+                    val adapter = existingRow.adapter as? ArrayObjectAdapter
+                    adapter?.clear()
+                    items.forEach { adapter?.add(it) }
+                    rowsAdapter.notifyArrayItemRangeChanged(existingRowIndex, 1)
+                } else {
+                    // Row doesn't exist - insert after navigation (index 1)
+                    Log.d(TAG, "Inserting new Continue Watching row at index 1")
+                    val presenter = ContinueWatchingPresenter()
+                    val listRowAdapter = ArrayObjectAdapter(presenter)
+                    items.forEach { listRowAdapter.add(it) }
+                    val header = HeaderItem(1, "Continue Watching")
+                    rowsAdapter.add(1, ListRow(header, listRowAdapter))
+                }
             }
         }
     }
@@ -366,26 +393,38 @@ class HomeFragment : BrowseSupportFragment() {
                 }
             }
 
-            // Atomic bounds check and remove to prevent TOCTOU race
-            if (watchlistRowIndex >= 0 && watchlistRowIndex < rowsAdapter.size()) {
-                rowsAdapter.removeItems(watchlistRowIndex, 1)
-            }
-
             // Add new watchlist row if there are items
             val allItems = movieSnapshot + seriesSnapshot
             if (allItems.isNotEmpty()) {
-                val cardPresenter = WatchlistPresenter()
-                val listRowAdapter = ArrayObjectAdapter(cardPresenter)
-                allItems.forEach { listRowAdapter.add(it) }
-                val header = HeaderItem(2, "My Watchlist")
+                if (watchlistRowIndex >= 0 && watchlistRowIndex < rowsAdapter.size()) {
+                    // DEEP AUDIT FIX: Row exists - update items in place (no index change)
+                    // This prevents order swapping when rows are preserved during skeleton display
+                    Log.d(TAG, "Updating My Watchlist row in place at index $watchlistRowIndex")
+                    val existingRow = rowsAdapter.get(watchlistRowIndex) as ListRow
+                    val adapter = existingRow.adapter as? ArrayObjectAdapter
+                    adapter?.clear()
+                    allItems.forEach { adapter?.add(it) }
+                    rowsAdapter.notifyArrayItemRangeChanged(watchlistRowIndex, 1)
+                } else {
+                    // Row doesn't exist - insert at correct position
+                    val cardPresenter = WatchlistPresenter()
+                    val listRowAdapter = ArrayObjectAdapter(cardPresenter)
+                    allItems.forEach { listRowAdapter.add(it) }
+                    val header = HeaderItem(2, "My Watchlist")
 
-                // Insert after Continue Watching row (index 2) or after Navigation (index 1)
-                val insertIndex = if (hasContinueWatchingRow()) 2 else 1
+                    // Insert after Continue Watching row (index 2) or after Navigation (index 1)
+                    val insertIndex = if (hasContinueWatchingRow()) 2 else 1
+                    Log.d(TAG, "Inserting new My Watchlist row at index $insertIndex")
 
-                // Atomic bounds check and insert to prevent TOCTOU race
-                if (insertIndex <= rowsAdapter.size()) {
-                    rowsAdapter.add(insertIndex, ListRow(header, listRowAdapter))
+                    // Atomic bounds check and insert to prevent TOCTOU race
+                    if (insertIndex <= rowsAdapter.size()) {
+                        rowsAdapter.add(insertIndex, ListRow(header, listRowAdapter))
+                    }
                 }
+            } else if (watchlistRowIndex >= 0 && watchlistRowIndex < rowsAdapter.size()) {
+                // No items - remove existing row
+                Log.d(TAG, "Removing My Watchlist row (no items)")
+                rowsAdapter.removeItems(watchlistRowIndex, 1)
             }
         }
     }
@@ -761,20 +800,27 @@ class HomeFragment : BrowseSupportFragment() {
         // Update timestamp
         updateTimestamp()
 
-        // SYNC FIX: Find and preserve navigation row properly (not always at index 0)
+        // DEEP AUDIT FIX: Preserve all user-specific rows (Navigation, Continue Watching, Watchlist)
+        // Only remove content rows (movies, series, episodes) to prevent flicker
         var navigationRow: ListRow? = null
+        var continueWatchingRow: ListRow? = null
+        var watchlistRow: ListRow? = null
+
         for (i in 0 until rowsAdapter.size()) {
             val item = rowsAdapter.get(i)
-            if (item is ListRow && item.headerItem?.name == "Navigate") {
-                navigationRow = item
-                break
+            if (item is ListRow) {
+                when (item.headerItem?.name) {
+                    "Navigate" -> navigationRow = item
+                    "Continue Watching" -> continueWatchingRow = item
+                    "My Watchlist" -> watchlistRow = item
+                }
             }
         }
 
         // Clear all existing rows
         rowsAdapter.clear()
 
-        // Re-add navigation row (or create if missing)
+        // Re-add preserved rows in correct order
         if (navigationRow != null) {
             rowsAdapter.add(navigationRow)
             Log.d(TAG, "Preserved navigation row")
@@ -783,7 +829,17 @@ class HomeFragment : BrowseSupportFragment() {
             addNavigationRows()
         }
 
-        // Trigger force refresh in ViewModel
+        if (continueWatchingRow != null) {
+            rowsAdapter.add(continueWatchingRow)
+            Log.d(TAG, "Preserved continue watching row")
+        }
+
+        if (watchlistRow != null) {
+            rowsAdapter.add(watchlistRow)
+            Log.d(TAG, "Preserved watchlist row")
+        }
+
+        // Trigger force refresh in ViewModel (will add fresh content rows)
         viewModel.forceRefresh()
     }
 
@@ -1405,10 +1461,39 @@ class HomeFragment : BrowseSupportFragment() {
         Log.d(TAG, "Showing skeleton loading screens...")
         isShowingSkeleton = true
 
-        // Clear existing rows except navigation
-        val navigationRow = if (rowsAdapter.size() > 0) rowsAdapter.get(0) else null
+        // DEEP AUDIT FIX: Preserve all user-specific rows (Navigation, Continue Watching, Watchlist)
+        // Only clear content rows (movies, series, episodes)
+        var navigationRow: ListRow? = null
+        var continueWatchingRow: ListRow? = null
+        var watchlistRow: ListRow? = null
+
+        for (i in 0 until rowsAdapter.size()) {
+            val item = rowsAdapter.get(i)
+            if (item is ListRow) {
+                when (item.headerItem?.name) {
+                    "Navigate" -> navigationRow = item
+                    "Continue Watching" -> continueWatchingRow = item
+                    "My Watchlist" -> watchlistRow = item
+                }
+            }
+        }
+
+        // Clear all rows
         rowsAdapter.clear()
-        navigationRow?.let { rowsAdapter.add(it) }
+
+        // Re-add preserved rows in correct order
+        navigationRow?.let {
+            rowsAdapter.add(it)
+            Log.d(TAG, "Preserved navigation row during skeleton display")
+        }
+        continueWatchingRow?.let {
+            rowsAdapter.add(it)
+            Log.d(TAG, "Preserved continue watching row during skeleton display")
+        }
+        watchlistRow?.let {
+            rowsAdapter.add(it)
+            Log.d(TAG, "Preserved watchlist row during skeleton display")
+        }
 
         // Add Featured skeleton row (empty header name)
         val featuredRow = ListRow(

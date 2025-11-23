@@ -404,11 +404,13 @@ class VideoPlayerActivity : AppCompatActivity() {
             .build()
 
         // Adaptive track selector: start with SD, upgrade to HD based on bandwidth
+        // ENHANCEMENT: Enable tunneling for hardware DSP offload on Shield TV
         val trackSelector = DefaultTrackSelector(this).apply {
             parameters = parameters
                 .buildUpon()
                 .setMaxVideoSizeSd() // Start with SD, upgrade to HD
                 .setPreferredVideoMimeTypes("video/mp4", "video/avc")
+                .setTunnelingEnabled(true) // Hardware DSP offload for better AV sync
                 .build()
         }
 

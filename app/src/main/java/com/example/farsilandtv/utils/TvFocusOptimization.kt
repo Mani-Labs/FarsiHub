@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.dp
 import android.util.Log
 
@@ -43,23 +44,40 @@ fun Modifier.tvFocusBorder(): Modifier = composed {
 }
 
 /**
- * Request initial focus after a delay
+ * DEEP AUDIT FIX: Replace delay with layout-ready detection
+ *
+ * Previous Issue: delay(100) assumed UI ready in 100ms
+ * Result: Focus failed on slow devices (took >110ms to render)
+ *
+ * New Approach: Wait for onGloballyPositioned event (UI actually ready)
+ *
+ * Request initial focus when UI is positioned and ready
  * Useful for ensuring focus on important elements (Play button, first card)
  */
 fun Modifier.requestInitialFocus(
-    focusRequester: FocusRequester,
-    delayMillis: Long = 100
+    focusRequester: FocusRequester
 ): Modifier = composed {
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(delayMillis)
-        try {
-            focusRequester.requestFocus()
-        } catch (e: Exception) {
-            Log.w("TvFocus", "Failed to request initial focus", e)
+    var hasPositioned by remember { mutableStateOf(false) }
+
+    LaunchedEffect(hasPositioned) {
+        if (hasPositioned) {
+            // UI is positioned and ready for focus
+            try {
+                focusRequester.requestFocus()
+            } catch (e: Exception) {
+                Log.w("TvFocus", "Failed to request initial focus", e)
+            }
         }
     }
 
-    this.focusRequester(focusRequester)
+    this
+        .focusRequester(focusRequester)
+        .onGloballyPositioned {
+            // UI is now positioned and ready
+            if (!hasPositioned) {
+                hasPositioned = true
+            }
+        }
 }
 
 /**

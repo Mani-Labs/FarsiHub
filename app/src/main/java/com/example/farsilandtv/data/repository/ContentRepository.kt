@@ -23,6 +23,7 @@ import com.example.farsilandtv.data.scraper.VideoUrlScraper
 import com.example.farsilandtv.data.scraper.ScraperResult
 import com.example.farsilandtv.data.scraper.WebSearchScraper
 import com.example.farsilandtv.utils.ErrorHandler
+import com.example.farsilandtv.utils.SqlSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -916,67 +917,6 @@ class ContentRepository private constructor(context: Context) {
         }
     }
 
-    /**
-     * [DEPRECATED - Use searchCurrentDatabase() instead]
-     * Search a specific database
-     * WARNING: Creates new Room instance - very expensive (50-200ms I/O + memory allocation)
-     */
-    private suspend fun searchDatabase(source: DatabaseSource, query: String): List<Any> {
-        // P1 FIX: Issue #7 - Database connection leak prevention
-        // Previous code: db.close() in try block → skipped on exception → connection leak
-        // Fixed: db.close() in finally block → always executes, prevents file handle leak
-
-        // Fix database file permissions before opening (same fix as ContentDatabase)
-        val dbFile = appContext.getDatabasePath(source.fileName)
-        if (dbFile.exists() && !dbFile.canWrite()) {
-            Log.w(TAG, "Database file is read-only, fixing permissions: ${dbFile.absolutePath}")
-            dbFile.setWritable(true, false)
-        }
-
-        // Create a temporary database connection to this specific source
-        val db = androidx.room.Room.databaseBuilder(
-            appContext,
-            ContentDatabase::class.java,
-            source.fileName
-        )
-            .createFromAsset("databases/${source.fileName}")
-            .fallbackToDestructiveMigration()
-            .build()
-
-        return try {
-            // Double-check permissions after Room creates database
-            if (dbFile.exists() && !dbFile.canWrite()) {
-                dbFile.setWritable(true, false)
-            }
-
-            val results = mutableListOf<Any>()
-
-            // AUDIT FIX (Second Audit #4): Sanitize FTS query to prevent syntax errors
-            val sanitizedQuery = com.example.farsilandtv.utils.SqlSanitizer.sanitizeFtsQuery(query)
-
-            // Search movies and series
-            val movies = db.movieDao().searchMovies(sanitizedQuery).firstOrNull()
-            val series = db.seriesDao().searchSeries(sanitizedQuery).firstOrNull()
-
-            movies?.let { results.addAll(it.map { movie -> movie.toMovie() }) }
-            series?.let { results.addAll(it.map { s -> s.toSeries() }) }
-
-            Log.d(TAG, "Found ${results.size} results in ${source.displayName} database")
-            results
-        } catch (e: Exception) {
-            Log.e(TAG, "Error searching ${source.displayName} database: ${e.message}", e)
-            emptyList()
-        } finally {
-            // P1 FIX: Issue #7 - Always close connection, even if query fails
-            // Prevents EMFILE ("Too many open files") crashes after ~50-100 failed searches
-            try {
-                db.close()
-                Log.d(TAG, "Closed temporary database connection for ${source.displayName}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing database connection: ${e.message}", e)
-            }
-        }
-    }
 
     /**
      * Search Farsiland WordPress API
@@ -1053,130 +993,105 @@ class ContentRepository private constructor(context: Context) {
         }
 
     /**
-     * Get movies by multiple genres (OR logic - matches ANY selected genre)
+     * DEEP AUDIT FIX: Database-only filtering with proper pagination
+     *
+     * Previous Issue: Fetched 100 items from API, filtered client-side
+     * Result: Page 2 might have 0 matches → infinite scroll breaks
+     *
+     * New Approach: Use database-only filtering with LIMIT/OFFSET
+     * Why: Database is synced every 30min, has all content, supports proper pagination
+     *
      * @param genres List of Genre enums to filter by
      * @param page Page number (starts from 1)
-     * @return Flow of movies matching any of the selected genres
+     * @param perPage Items per page (default 20)
+     * @return List of movies matching any of the selected genres
      */
-    suspend fun getMoviesByGenres(genres: List<com.example.farsilandtv.data.model.Genre>, page: Int = 1): Result<List<Movie>> =
-        withContext(Dispatchers.IO) {
-            try {
-                if (genres.isEmpty()) {
-                    // No genres selected - return all movies
-                    return@withContext getMovies(page, perPage = 20)
-                }
-
-                // Try API first - fetch movies and filter by genre
-                ensureActive()
-                val allMovies = getMovies(page, perPage = 100).getOrNull() ?: emptyList()
-                ensureActive()
-
-                // Filter movies that contain ANY of the selected genres (OR logic)
-                val genreNames = genres.map { it.englishName.lowercase() }
-                val filteredMovies = allMovies.filter { movie ->
-                    movie.genres.any { movieGenre ->
-                        genreNames.contains(movieGenre.lowercase())
-                    }
-                }
-
-                Result.success(filteredMovies)
-            } catch (e: Exception) {
-                e.printStackTrace()
-
-                // Fallback to database if API fails
-                try {
-                    ensureActive()
-                    val genreNames = genres.map { it.englishName }
-                    val cachedMovies = mutableListOf<CachedMovie>()
-
-                    // Query database for each genre and combine results
-                    for (genreName in genreNames) {
-                        val movies = getContentDb().movieDao().getMoviesByGenre(genreName).firstOrNull()
-                        movies?.let { cachedMovies.addAll(it) }
-                    }
-
-                    ensureActive()
-                    if (cachedMovies.isNotEmpty()) {
-                        // Remove duplicates and convert to Movie objects
-                        val uniqueMovies = cachedMovies.distinctBy { it.id }.map { it.toMovie() }
-                        return@withContext Result.success(uniqueMovies)
-                    }
-                } catch (dbError: Exception) {
-                    dbError.printStackTrace()
-                }
-
-                Result.failure(e)
-            }
-        }
-
-    /**
-     * Get series by multiple genres (OR logic - matches ANY selected genre)
-     * @param genres List of Genre enums to filter by
-     * @param page Page number (starts from 1)
-     * @return Flow of series matching any of the selected genres
-     */
-    suspend fun getSeriesByGenres(genres: List<com.example.farsilandtv.data.model.Genre>, page: Int = 1): Result<List<Series>> =
-        withContext(Dispatchers.IO) {
-            try {
-                if (genres.isEmpty()) {
-                    // No genres selected - return all series
-                    return@withContext getTvShows(page, perPage = 20)
-                }
-
-                // Try API first - fetch series and filter by genre
-                ensureActive()
-                val allSeries = getTvShows(page, perPage = 100).getOrNull() ?: emptyList()
-                ensureActive()
-
-                // Filter series that contain ANY of the selected genres (OR logic)
-                val genreNames = genres.map { it.englishName.lowercase() }
-                val filteredSeries = allSeries.filter { series ->
-                    series.genres.any { seriesGenre ->
-                        genreNames.contains(seriesGenre.lowercase())
-                    }
-                }
-
-                Result.success(filteredSeries)
-            } catch (e: Exception) {
-                e.printStackTrace()
-
-                // Fallback to database if API fails
-                try {
-                    ensureActive()
-                    val genreNames = genres.map { it.englishName }
-                    val cachedSeries = mutableListOf<CachedSeries>()
-
-                    // Query database for each genre and combine results
-                    for (genreName in genreNames) {
-                        val series = getContentDb().seriesDao().getSeriesByGenre(genreName).firstOrNull()
-                        series?.let { cachedSeries.addAll(it) }
-                    }
-
-                    ensureActive()
-                    if (cachedSeries.isNotEmpty()) {
-                        // Remove duplicates and convert to Series objects
-                        val uniqueSeries = cachedSeries.distinctBy { it.id }.map { it.toSeries() }
-                        return@withContext Result.success(uniqueSeries)
-                    }
-                } catch (dbError: Exception) {
-                    dbError.printStackTrace()
-                }
-
-                Result.failure(e)
-            }
-        }
-
-    /**
-     * Get poster image URL for media ID
-     */
-    suspend fun getPosterUrl(mediaId: Int): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun getMoviesByGenres(
+        genres: List<com.example.farsilandtv.data.model.Genre>,
+        page: Int = 1,
+        perPage: Int = 20
+    ): Result<List<Movie>> = withContext(Dispatchers.IO) {
         try {
-            if (mediaId <= 0) return@withContext Result.failure(Exception("Invalid media ID"))
+            if (genres.isEmpty()) {
+                // No filter - use existing method
+                return@withContext getMovies(page, perPage)
+            }
 
-            val media = wordPressApi.getMedia(mediaId)
-            Result.success(media.sourceUrl)
+            // DEEP AUDIT FIX: Use database-only filtering (no API calls)
+            val genreNames = genres.map { it.englishName }
+            val sanitizedGenres = genreNames.map { SqlSanitizer.sanitizeLikePattern(it) }
+
+            // Pad genres list to 5 elements (DAO expects up to 5)
+            val genre1 = sanitizedGenres.getOrNull(0) ?: return@withContext Result.success(emptyList())
+            val genre2 = sanitizedGenres.getOrNull(1)
+            val genre3 = sanitizedGenres.getOrNull(2)
+            val genre4 = sanitizedGenres.getOrNull(3)
+            val genre5 = sanitizedGenres.getOrNull(4)
+
+            val offset = (page - 1) * perPage
+
+            // Single database query with proper pagination
+            val cachedMovies = getContentDb().movieDao().getMoviesByGenresPaginated(
+                genre1 = genre1,
+                genre2 = genre2,
+                genre3 = genre3,
+                genre4 = genre4,
+                genre5 = genre5,
+                limit = perPage,
+                offset = offset
+            )
+
+            // Convert to Movie objects
+            val movies = cachedMovies.map { it.toMovie() }
+            Result.success(movies)
         } catch (e: Exception) {
-            handleApiError("getPosterUrl(mediaId=$mediaId)", e)
+            handleApiError("getMoviesByGenres(genres=${genres.size}, page=$page)", e)
+        }
+    }
+
+    /**
+     * Get series filtered by genres (BUGFIX: Missing method used by ShowsFragment)
+     * Database-only filtering using sanitized genre patterns
+     */
+    suspend fun getTvShowsByGenres(
+        genres: List<com.example.farsilandtv.data.model.Genre>,
+        page: Int = 1,
+        perPage: Int = 20
+    ): Result<List<Series>> = withContext(Dispatchers.IO) {
+        try {
+            if (genres.isEmpty()) {
+                // No filter - use existing method
+                return@withContext getTvShows(page, perPage)
+            }
+
+            // Database-only filtering (no API calls)
+            val genreNames = genres.map { it.englishName }
+            val sanitizedGenres = genreNames.map { SqlSanitizer.sanitizeLikePattern(it) }
+
+            // Pad genres list to 5 elements (DAO expects up to 5)
+            val genre1 = sanitizedGenres.getOrNull(0) ?: ""
+            val genre2 = sanitizedGenres.getOrNull(1)
+            val genre3 = sanitizedGenres.getOrNull(2)
+            val genre4 = sanitizedGenres.getOrNull(3)
+            val genre5 = sanitizedGenres.getOrNull(4)
+
+            val offset = (page - 1) * perPage
+
+            val cachedSeries = getContentDb().seriesDao().getSeriesByGenresPaginated(
+                genre1 = genre1,
+                genre2 = genre2,
+                genre3 = genre3,
+                genre4 = genre4,
+                genre5 = genre5,
+                limit = perPage,
+                offset = offset
+            )
+
+            // Convert to Series objects
+            val series = cachedSeries.map { it.toSeries() }
+            Result.success(series)
+        } catch (e: Exception) {
+            handleApiError("getTvShowsByGenres(genres=${genres.size}, page=$page)", e)
         }
     }
 

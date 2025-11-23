@@ -301,13 +301,14 @@ class MoviesFragment : VerticalGridSupportFragment() {
     override fun onResume() {
         super.onResume()
 
-        // Feature #21: Restore focus to last position
+        // Feature #21: Restore focus to last position (only if saved)
         view?.post {
             val focusPos = FocusMemoryManager.restoreFocus(SCREEN_KEY)
             if (focusPos != null && focusPos.itemPosition < gridAdapter.size()) {
                 setSelectedPosition(focusPos.itemPosition)
                 Log.d(TAG, "Restored focus to position ${focusPos.itemPosition}")
             }
+            // Note: Initial focus (position 0) is set in displayMovies() after content loads
         }
     }
 
@@ -427,8 +428,14 @@ class MoviesFragment : VerticalGridSupportFragment() {
         Log.d(TAG, "Displayed ${movies.size} movies")
 
         // Set focus to first grid item after content loads
+        // Post twice to ensure grid is fully laid out
         view?.post {
-            setSelectedPosition(0)
+            view?.post {
+                if (gridAdapter.size() > 0) {
+                    setSelectedPosition(0)
+                    Log.d(TAG, "Set initial focus to position 0 after content load")
+                }
+            }
         }
     }
 

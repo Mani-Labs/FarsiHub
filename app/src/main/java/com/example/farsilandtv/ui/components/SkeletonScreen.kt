@@ -16,6 +16,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 
 /**
  * Week 4 - Feature #20: Skeleton Loading Screens
@@ -60,18 +61,25 @@ fun shimmerBrush(offset: Float): Brush {
 }
 
 /**
+ * DEEP AUDIT FIX: Made dimensions configurable to match actual content
+ *
+ * Previous Issue: Hardcoded 150x225dp caused layout shift when data loaded
+ * Solution: Accept width/height parameters to match real card sizes
+ *
  * Skeleton card for movie/series posters
  */
 @Composable
 fun SkeletonCard(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    width: Dp = 150.dp,  // Default matches movie card
+    height: Dp = 225.dp  // Default matches movie card
 ) {
     val shimmerOffset by rememberShimmerAnimation()
 
     Card(
         modifier = modifier
-            .width(150.dp)
-            .height(225.dp),
+            .width(width)
+            .height(height),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color.Transparent

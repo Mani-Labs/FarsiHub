@@ -54,6 +54,31 @@ interface CachedMovieDao {
     @Query("SELECT * FROM cached_movies WHERE genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY dateAdded DESC")
     fun getMoviesByGenre(genre: String): Flow<List<CachedMovie>>
 
+    // DEEP AUDIT FIX: Multi-genre query with pagination to fix broken infinite scrolling
+    // Issue: Filtering paged API data client-side breaks when full page has no matches
+    // Solution: Database-only filtering with proper LIMIT/OFFSET pagination
+    // Supports up to 5 genres with OR logic (matches ANY selected genre)
+    // Callers MUST sanitize each genre with SqlSanitizer.sanitizeLikePattern()
+    @Query("""
+        SELECT DISTINCT * FROM cached_movies
+        WHERE genres LIKE '%' || :genre1 || '%' ESCAPE '\\'
+           OR (:genre2 IS NOT NULL AND genres LIKE '%' || :genre2 || '%' ESCAPE '\\')
+           OR (:genre3 IS NOT NULL AND genres LIKE '%' || :genre3 || '%' ESCAPE '\\')
+           OR (:genre4 IS NOT NULL AND genres LIKE '%' || :genre4 || '%' ESCAPE '\\')
+           OR (:genre5 IS NOT NULL AND genres LIKE '%' || :genre5 || '%' ESCAPE '\\')
+        ORDER BY dateAdded DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    suspend fun getMoviesByGenresPaginated(
+        genre1: String,
+        genre2: String? = null,
+        genre3: String? = null,
+        genre4: String? = null,
+        genre5: String? = null,
+        limit: Int,
+        offset: Int
+    ): List<CachedMovie>
+
     // AUDIT FIX C1.2 (ENABLED): Use FTS4 for fast full-text search
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'
     //
@@ -139,6 +164,27 @@ interface CachedSeriesDao {
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing genre
     @Query("SELECT * FROM cached_series WHERE genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY dateAdded DESC")
     fun getSeriesByGenre(genre: String): Flow<List<CachedSeries>>
+
+    // DEEP AUDIT FIX: Multi-genre query with pagination (same fix for series)
+    @Query("""
+        SELECT DISTINCT * FROM cached_series
+        WHERE genres LIKE '%' || :genre1 || '%' ESCAPE '\\'
+           OR (:genre2 IS NOT NULL AND genres LIKE '%' || :genre2 || '%' ESCAPE '\\')
+           OR (:genre3 IS NOT NULL AND genres LIKE '%' || :genre3 || '%' ESCAPE '\\')
+           OR (:genre4 IS NOT NULL AND genres LIKE '%' || :genre4 || '%' ESCAPE '\\')
+           OR (:genre5 IS NOT NULL AND genres LIKE '%' || :genre5 || '%' ESCAPE '\\')
+        ORDER BY dateAdded DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    suspend fun getSeriesByGenresPaginated(
+        genre1: String,
+        genre2: String? = null,
+        genre3: String? = null,
+        genre4: String? = null,
+        genre5: String? = null,
+        limit: Int,
+        offset: Int
+    ): List<CachedSeries>
 
     // AUDIT FIX C1.2 (ENABLED): Use FTS4 for fast full-text search
     // FTS4 provides orders of magnitude faster search than LIKE '%query%'

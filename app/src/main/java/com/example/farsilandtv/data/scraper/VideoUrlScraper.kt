@@ -457,7 +457,10 @@ object VideoUrlScraper {
                 var responsesReceived = 0
                 val totalRequests = 5
                 val startTime = System.currentTimeMillis()
-                val maxWaitMs = 3000L // 3 second timeout for fast UX
+                // DEEP AUDIT FIX: Increased from 3s to 8s for slow networks/VPN users
+                // Issue: 3s timeout caused "No Links Found" errors for legitimate slow connections
+                // Solution: 8s gives adequate time without excessive waiting
+                val maxWaitMs = 8000L // 8 second timeout (balances UX vs reliability)
 
                 while (responsesReceived < totalRequests) {
                     // EXTERNAL AUDIT FIX M3.3: Smart early return based on quality

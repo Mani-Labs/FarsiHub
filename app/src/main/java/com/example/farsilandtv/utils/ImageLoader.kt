@@ -85,21 +85,27 @@ object ImageLoader {
     }
 
     /**
-     * Load image without blur-up (for static content)
+     * Load image with configurable scaling
+     *
+     * DEEP AUDIT FIX: Added scaleType parameter
+     * - Use Scale.FILL for backgrounds (fills screen, may crop)
+     * - Use Scale.FIT for cards (fits inside, preserves aspect ratio)
      *
      * Use for:
-     * - Background images
+     * - Background images (pass Scale.FILL)
      * - Detail screens
      * - Non-scrolling content
      *
      * @param context Android context
      * @param imageUrl Image URL
      * @param imageView Target ImageView
+     * @param scaleType Scaling mode (default: Scale.FIT for cards)
      */
     fun load(
         context: Context,
         imageUrl: String?,
-        imageView: ImageView
+        imageView: ImageView,
+        scaleType: Scale = Scale.FIT  // DEEP AUDIT FIX: Default to FIT for cards
     ) {
         if (imageUrl.isNullOrEmpty()) {
             imageView.setImageDrawable(ContextCompat.getDrawable(context, R.drawable.image_placeholder))
@@ -111,8 +117,9 @@ object ImageLoader {
             placeholder(R.drawable.image_placeholder)
             error(R.drawable.movie)
             size(480, 270) // Standard card size
-            // AUDIT FIX #25: Changed from Scale.FILL to Scale.FIT to prevent aspect ratio distortion
-            scale(Scale.FIT)
+            // DEEP AUDIT FIX: Use parameterized scale type
+            // Backgrounds should pass Scale.FILL, cards should use Scale.FIT (default)
+            scale(scaleType)
             memoryCachePolicy(CachePolicy.ENABLED)
             diskCachePolicy(CachePolicy.ENABLED)
         }

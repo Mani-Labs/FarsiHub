@@ -1,0 +1,77 @@
+# DEEP AUDIT FIXES - 2025-11-22
+# Fixes for validated issues from Deep-Dive Audit Report
+
+## Fix 1: Add Multi-Genre Paginated Query to ContentDao.kt
+## Location: After line 55 (getMoviesByGenre)
+## Issue: Pagination bug - filtering paged API data breaks infinite scrolling
+
+# Add after getMoviesByGenre():
+    // DEEP AUDIT FIX: Multi-genre query with pagination to fix broken infinite scrolling
+    // Issue: Filtering paged API data client-side breaks when full page has no matches
+    // Solution: Database-only filtering with proper LIMIT/OFFSET pagination
+    // Supports up to 5 genres with OR logic (matches ANY selected genre)
+    // Callers MUST sanitize each genre with SqlSanitizer.sanitizeLikePattern()
+    @Query("""
+        SELECT DISTINCT * FROM cached_movies
+        WHERE genres LIKE '%' || :genre1 || '%' ESCAPE '\\'
+           OR (:genre2 IS NOT NULL AND genres LIKE '%' || :genre2 || '%' ESCAPE '\\')
+           OR (:genre3 IS NOT NULL AND genres LIKE '%' || :genre3 || '%' ESCAPE '\\')
+           OR (:genre4 IS NOT NULL AND genres LIKE '%' || :genre4 || '%' ESCAPE '\\')
+           OR (:genre5 IS NOT NULL AND genres LIKE '%' || :genre5 || '%' ESCAPE '\\')
+        ORDER BY dateAdded DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    suspend fun getMoviesByGenresPaginated(
+        genre1: String,
+        genre2: String? = null,
+        genre3: String? = null,
+        genre4: String? = null,
+        genre5: String? = null,
+        limit: Int,
+        offset: Int
+    ): List<CachedMovie>
+
+# Add same for Series after getSeriesByGenre():
+    @Query("""
+        SELECT DISTINCT * FROM cached_series
+        WHERE genres LIKE '%' || :genre1 || '%' ESCAPE '\\'
+           OR (:genre2 IS NOT NULL AND genres LIKE '%' || :genre2 || '%' ESCAPE '\\')
+           OR (:genre3 IS NOT NULL AND genres LIKE '%' || :genre3 || '%' ESCAPE '\\')
+           OR (:genre4 IS NOT NULL AND genres LIKE '%' || :genre4 || '%' ESCAPE '\\')
+           OR (:genre5 IS NOT NULL AND genres LIKE '%' || :genre5 || '%' ESCAPE '\\')
+        ORDER BY dateAdded DESC
+        LIMIT :limit OFFSET :offset
+    """)
+    suspend fun getSeriesByGenresPaginated(
+        genre1: String,
+        genre2: String? = null,
+        genre3: String? = null,
+        genre4: String? = null,
+        genre5: String? = null,
+        limit: Int,
+        offset: Int
+    ): List<CachedSeries>
+
+## Fix 2: Update Content Repository to use database-only filtering
+## Location: ContentRepository.kt getMoviesByGenres()
+## Replace lines 1061-1110 with database-only implementation
+
+## Fix 3: Increase scraper timeout
+## Location: VideoUrlScraper.kt line 460
+## Change: val maxWaitMs = 3000L → val maxWaitMs = 8000L
+
+## Fix 4: Fix image scaling
+## Location: ImageLoader.kt line 115
+## Add scaleType parameter to load() function
+
+## Fix 5: Remove zombie code
+## Location: ContentRepository.kt line 924
+## Delete: searchDatabase() function entirely
+
+## Fix 6: Fix skeleton sizes
+## Location: SkeletonScreen.kt line 73-74
+## Make dimensions parameterized
+
+## Fix 7: Fix focus management
+## Location: TvFocusOptimization.kt line 54
+## Replace delay with state-driven approach
