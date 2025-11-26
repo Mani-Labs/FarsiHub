@@ -11,15 +11,35 @@ import kotlinx.coroutines.flow.Flow
  *
  * C1 Consolidation: Now uses single AppDatabase instance instead of FarsilandDatabase
  * to eliminate dual database pattern and prevent data consistency issues.
+ *
+ * SINGLETON PATTERN: Use getInstance() to get the shared instance.
+ * This prevents multiple database connections and ensures cache consistency.
  */
-class PlaybackRepository(context: Context) {
+class PlaybackRepository private constructor(context: Context) {
 
-    private val database = AppDatabase.getDatabase(context)
+    private val database = AppDatabase.getDatabase(context.applicationContext)
     private val dao = database.playbackPositionDao()
 
     companion object {
         // Threshold for auto-marking content as completed (95%)
         private const val COMPLETION_THRESHOLD = 0.95f
+        // Threshold for episodes (90% - typically skip credits)
+        private const val COMPLETION_THRESHOLD_EPISODE = 0.90f
+
+        @Volatile
+        private var INSTANCE: PlaybackRepository? = null
+
+        /**
+         * Get singleton instance of PlaybackRepository
+         * Thread-safe double-check locking pattern
+         */
+        fun getInstance(context: Context): PlaybackRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: PlaybackRepository(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
     }
 
     /**
@@ -45,15 +65,16 @@ class PlaybackRepository(context: Context) {
     ) {
         val currentTime = System.currentTimeMillis()
 
-        // Calculate watch percentage
+        // Calculate watch percentage with bounds checking
         val watchPercentage = if (duration > 0) {
-            position.toFloat() / duration.toFloat()
+            (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
         } else {
-            0f
+            0f // Unknown duration → always incomplete
         }
 
-        // Auto-detect completion (95% threshold)
-        val isCompleted = watchPercentage >= COMPLETION_THRESHOLD
+        // Auto-detect completion (use 90% for episodes, 95% for movies)
+        val threshold = if (contentType == "episode") COMPLETION_THRESHOLD_EPISODE else COMPLETION_THRESHOLD
+        val isCompleted = watchPercentage >= threshold
         val completedAt = if (isCompleted) currentTime else null
 
         val playbackPosition = PlaybackPosition(

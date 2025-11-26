@@ -876,7 +876,8 @@ object VideoUrlScraper {
         android.util.Log.d(TAG, "Found ${downloadUrls.size} URLs from download forms")
 
         // Combine results and remove duplicates
-        var allUrls = (microdataUrls + downloadUrls).distinctBy { "${it.quality}-${it.mirror}" }
+        // Prioritize download form URLs (d1, d2) over microdata URLs (p2) - more reliable
+        var allUrls = (downloadUrls + microdataUrls).distinctBy { "${it.quality}-${it.mirror}" }
 
         if (allUrls.isNotEmpty()) {
             // Sort by quality: 1080p → 720p → 480p
@@ -1229,19 +1230,26 @@ object VideoUrlScraper {
             // Method 1: tr[id^=link-]
             downloadRows.addAll(doc.select("tr[id^=link-]"))
 
-            // Method 2: Any form with fileid input
+            // Method 2: Any form with fileid OR id input (Farsiland uses both)
             doc.select("form").forEach { form ->
-                if (form.select("input[name=fileid]").isNotEmpty()) {
+                if (form.select("input[name=fileid], input[name=id]").isNotEmpty()) {
                     downloadRows.add(form)
                 }
             }
 
-            // Method 3: Any element containing fileid input
-            doc.select("input[name=fileid]").forEach { input ->
+            // Method 3: Any element containing fileid or id input
+            doc.select("input[name=fileid], input[name=id]").forEach { input ->
                 input.parent()?.let { parent ->
                     if (!downloadRows.contains(parent)) {
                         downloadRows.add(parent)
                     }
+                }
+            }
+
+            // Method 4: Forms with dlform pattern in id (dlform1, dlform2, etc.)
+            doc.select("form[id^=dlform]").forEach { form ->
+                if (!downloadRows.contains(form)) {
+                    downloadRows.add(form)
                 }
             }
 
@@ -1269,8 +1277,9 @@ object VideoUrlScraper {
                     async {
                         semaphore.withPermit {
                             try {
-                                // Get the fileid from hidden input
+                                // Get the fileid from hidden input (check both fileid and id)
                                 val fileidInput = row.select("input[name=fileid]").firstOrNull()
+                                    ?: row.select("input[name=id]").firstOrNull()
                                     ?: return@async null
 
                                 val fileid = fileidInput.attr("value")
@@ -1367,14 +1376,20 @@ object VideoUrlScraper {
         try {
             android.util.Log.d(TAG, "POSTing fileid to /get/: $fileid")
 
-            // Create form body
+            // Create form body - try both 'id' and 'fileid' parameter names
             val formBody = okhttp3.FormBody.Builder()
+                .add("id", fileid)
                 .add("fileid", fileid)
                 .build()
 
             val request = Request.Builder()
                 .url("https://farsiland.com/get/")
                 .post(formBody)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Referer", "https://farsiland.com/")
+                .header("Origin", "https://farsiland.com")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9,fa;q=0.8")
                 .build()
 
             // AUDIT FIX #12: Use 'use' to ensure response is always closed, even if reading fails

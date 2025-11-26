@@ -115,6 +115,42 @@ class ContentRepository private constructor(context: Context) {
         private const val DOMAIN_FARSILAND = "farsiland.com"
         private const val DOMAIN_FARSIPLEX = "farsiplex.com"
         private const val DOMAIN_NAMAKADE = "namakade.com"
+
+        /**
+         * Interleave results from different sources in round-robin fashion
+         * Ensures minority sources appear near the top of results instead of being buried
+         *
+         * Example: [F1, F2, F3, N1, P1] → [F1, N1, P1, F2, F3]
+         *
+         * @param items List of items to interleave
+         * @param getSource Function to extract source identifier from item
+         * @return Items interleaved by source
+         */
+        private fun <T> interleaveBySource(items: List<T>, getSource: (T) -> String): List<T> {
+            if (items.size <= 1) return items
+
+            // Group by source, maintaining order within each source
+            val bySource = items.groupBy(getSource).mapValues { it.value.toMutableList() }
+
+            if (bySource.size <= 1) return items // Single source, no interleaving needed
+
+            val result = mutableListOf<T>()
+            val sources = bySource.keys.toList()
+            var roundIndex = 0
+
+            // Round-robin through sources until all items are added
+            while (result.size < items.size) {
+                for (source in sources) {
+                    val sourceItems = bySource[source] ?: continue
+                    if (roundIndex < sourceItems.size) {
+                        result.add(sourceItems[roundIndex])
+                    }
+                }
+                roundIndex++
+            }
+
+            return result
+        }
     }
 
     // Get database instance dynamically to support database switching
@@ -258,6 +294,60 @@ class ContentRepository private constructor(context: Context) {
     }
 
     /**
+     * Get movies with Paging 3 + genre filter + sort option
+     * Used by Compose MoviesScreen for filtering/sorting
+     *
+     * @param genre Genre to filter by (null or "All" for no filter)
+     * @param sortBy Sort option: "Recent", "Year", "Rating", "A-Z"
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun getMoviesPagedWithFilter(
+        genre: String?,
+        sortBy: String
+    ): Flow<PagingData<Movie>> {
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source
+        }.flatMapLatest { source ->
+            val urlPattern = source.urlPattern
+            val movieDao = getContentDb().movieDao()
+
+            val pagingSourceFactory = when {
+                // No genre filter
+                genre == null || genre == "All" -> when (sortBy) {
+                    "A-Z" -> { { movieDao.getMoviesPagedByTitle(urlPattern) } }
+                    "Year" -> { { movieDao.getMoviesPagedByYear(urlPattern) } }
+                    "Rating" -> { { movieDao.getMoviesPagedByRating(urlPattern) } }
+                    else -> { { movieDao.getMoviesPagedFiltered(urlPattern) } } // Recent (default)
+                }
+                // With genre filter
+                else -> {
+                    val sanitizedGenre = SqlSanitizer.sanitizeLikePattern(genre)
+                    when (sortBy) {
+                        "A-Z" -> { { movieDao.getMoviesPagedByGenreTitle(urlPattern, sanitizedGenre) } }
+                        "Year" -> { { movieDao.getMoviesPagedByGenreYear(urlPattern, sanitizedGenre) } }
+                        "Rating" -> { { movieDao.getMoviesPagedByGenreRating(urlPattern, sanitizedGenre) } }
+                        else -> { { movieDao.getMoviesPagedByGenre(urlPattern, sanitizedGenre) } } // Recent
+                    }
+                }
+            }
+
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,
+                    prefetchDistance = 10,
+                    enablePlaceholders = false,
+                    initialLoadSize = 30
+                ),
+                pagingSourceFactory = pagingSourceFactory
+            ).flow.map { pagingData ->
+                pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+            }
+        }
+    }
+
+    /**
      * Get TV series with Paging 3 (database-first, unlimited items, REACTIVE)
      * Replaces 300-item cap with efficient pagination
      * Filters by current source URL pattern to show only items from selected database
@@ -291,6 +381,60 @@ class ContentRepository private constructor(context: Context) {
                     initialLoadSize = 30
                 ),
                 pagingSourceFactory = { getContentDb().seriesDao().getSeriesPagedFiltered(urlPattern) }
+            ).flow.map { pagingData ->
+                pagingData.map { cachedSeries -> cachedSeries.toSeries() }
+            }
+        }
+    }
+
+    /**
+     * Get series with Paging 3 + genre filter + sort option
+     * Used by Compose ShowsScreen for filtering/sorting
+     *
+     * @param genre Genre to filter by (null or "All" for no filter)
+     * @param sortBy Sort option: "Recent", "Year", "Rating", "A-Z"
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun getSeriesPagedWithFilter(
+        genre: String?,
+        sortBy: String
+    ): Flow<PagingData<Series>> {
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source
+        }.flatMapLatest { source ->
+            val urlPattern = source.urlPattern
+            val seriesDao = getContentDb().seriesDao()
+
+            val pagingSourceFactory = when {
+                // No genre filter
+                genre == null || genre == "All" -> when (sortBy) {
+                    "A-Z" -> { { seriesDao.getSeriesPagedByTitle(urlPattern) } }
+                    "Year" -> { { seriesDao.getSeriesPagedByYear(urlPattern) } }
+                    "Rating" -> { { seriesDao.getSeriesPagedByRating(urlPattern) } }
+                    else -> { { seriesDao.getSeriesPagedFiltered(urlPattern) } } // Recent (default)
+                }
+                // With genre filter
+                else -> {
+                    val sanitizedGenre = SqlSanitizer.sanitizeLikePattern(genre)
+                    when (sortBy) {
+                        "A-Z" -> { { seriesDao.getSeriesPagedByGenreTitle(urlPattern, sanitizedGenre) } }
+                        "Year" -> { { seriesDao.getSeriesPagedByGenreYear(urlPattern, sanitizedGenre) } }
+                        "Rating" -> { { seriesDao.getSeriesPagedByGenreRating(urlPattern, sanitizedGenre) } }
+                        else -> { { seriesDao.getSeriesPagedByGenre(urlPattern, sanitizedGenre) } } // Recent
+                    }
+                }
+            }
+
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,
+                    prefetchDistance = 10,
+                    enablePlaceholders = false,
+                    initialLoadSize = 30
+                ),
+                pagingSourceFactory = pagingSourceFactory
             ).flow.map { pagingData ->
                 pagingData.map { cachedSeries -> cachedSeries.toSeries() }
             }
@@ -611,8 +755,34 @@ class ContentRepository private constructor(context: Context) {
             android.util.Log.d(TAG, "Scraped ${allEpisodes.size} episodes from web")
 
             // 2. Convert to CachedEpisode and save to database
+            // FIX: Preserve dateAdded for existing episodes (prevents "Latest Episodes" pollution)
+            // - Existing episodes keep their original dateAdded (preserve discovery date)
+            // - New episodes: prefer airDate → series dateAdded → current time (in that order)
+            val currentTime = System.currentTimeMillis()
+
+            // FIX: Get parent series dateAdded as fallback for episodes without airDate
+            // This prevents new episodes from jumping to top of "Latest Episodes" when scraped
+            val seriesDateAdded = getContentDb().seriesDao().getSeriesById(seriesId)?.dateAdded
+
             val cachedEpisodes = allEpisodes.map { episode ->
+                // Check if episode already exists to preserve its dateAdded
+                val existingEpisode = getContentDb().episodeDao().getEpisodeByUrl(episode.farsilandUrl)
+
+                // For new episodes, try to use airDate if available (more accurate than scrape time)
+                // Fallback chain: airDate → series dateAdded → current time
+                val newEpisodeDateAdded = episode.airDate?.let { airDate ->
+                    try {
+                        // Parse airDate (format: "YYYY-MM-DD") to timestamp
+                        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            .parse(airDate)?.time ?: seriesDateAdded ?: currentTime
+                    } catch (e: Exception) {
+                        seriesDateAdded ?: currentTime
+                    }
+                } ?: seriesDateAdded ?: currentTime
+
                 CachedEpisode(
+                    // Use existing ID if available to ensure proper REPLACE behavior
+                    id = existingEpisode?.id ?: 0,
                     episodeId = episode.id,
                     seriesId = seriesId,
                     seriesTitle = episode.seriesTitle ?: "",
@@ -624,14 +794,17 @@ class ContentRepository private constructor(context: Context) {
                     farsilandUrl = episode.farsilandUrl,
                     airDate = episode.airDate,
                     runtime = null,  // Runtime not available from scraper
-                    dateAdded = System.currentTimeMillis(),
-                    lastUpdated = System.currentTimeMillis()
+                    // FIX: Preserve original dateAdded for existing episodes, use airDate for new
+                    dateAdded = existingEpisode?.dateAdded ?: newEpisodeDateAdded,
+                    lastUpdated = currentTime
                 )
             }
 
             // CRITICAL FIX: Save episodes to database (was missing!)
+            // New episodes have id=0 (autoGenerate), existing episodes have preserved id
+            val newCount = cachedEpisodes.count { it.id == 0L }
             getContentDb().episodeDao().insertEpisodes(cachedEpisodes)
-            android.util.Log.i(TAG, "✓ Saved ${cachedEpisodes.size} episodes to database")
+            android.util.Log.i(TAG, "✓ Saved ${cachedEpisodes.size} episodes ($newCount new, ${cachedEpisodes.size - newCount} updated)")
 
             // 3. Update series metadata (total seasons/episodes)
             val totalSeasons = episodesBySeason.keys.maxOrNull() ?: 0
@@ -854,10 +1027,33 @@ class ContentRepository private constructor(context: Context) {
                     }
                 }
 
+                // Track seen URLs with their index, so we can replace with better version
+                val seenUrlIndex = mutableMapOf<String, Int>()
+
+                // Score function: prefer results with more metadata
+                fun metadataScore(item: Any): Int {
+                    var score = 0
+                    when (item) {
+                        is Movie -> {
+                            if (item.title.contains("(")) score += 10  // Has tag like (reality)
+                            if (!item.posterUrl.isNullOrBlank()) score += 5
+                            if (!item.description.isNullOrBlank() && item.description.length > 50) score += 3
+                            if (item.genres.isNotEmpty()) score += 2
+                        }
+                        is Series -> {
+                            if (item.title.contains("(")) score += 10  // Has tag like (reality)
+                            if (!item.posterUrl.isNullOrBlank()) score += 5
+                            if (!item.description.isNullOrBlank() && item.description.length > 50) score += 3
+                            if (item.genres.isNotEmpty()) score += 2
+                        }
+                    }
+                    return score
+                }
+
                 for (result in allResults) {
-                    val title = when (result) {
-                        is Movie -> result.title
-                        is Series -> result.title
+                    val (title, url) = when (result) {
+                        is Movie -> Pair(result.title, result.farsilandUrl)
+                        is Series -> Pair(result.title, result.farsilandUrl)
                         else -> continue
                     }
                     val normalizedTitle = normalizeTitle(title)
@@ -868,10 +1064,24 @@ class ContentRepository private constructor(context: Context) {
                         seenPerSource[source] = mutableSetOf()
                     }
 
-                    // Check if we've seen this title from this source
                     val seenTitles = seenPerSource[source]!!
+
+                    // Check if we've seen this exact URL - keep version with more metadata
+                    if (url != null && url in seenUrlIndex) {
+                        val existingIndex = seenUrlIndex[url]!!
+                        val existingScore = metadataScore(deduplicated[existingIndex])
+                        val newScore = metadataScore(result)
+                        if (newScore > existingScore) {
+                            // Replace with better version
+                            deduplicated[existingIndex] = result
+                        }
+                        continue
+                    }
+
+                    // Check if we've seen this title from this source
                     if (normalizedTitle.isNotEmpty() && normalizedTitle !in seenTitles) {
                         seenTitles.add(normalizedTitle)
+                        url?.let { seenUrlIndex[it] = deduplicated.size }
                         deduplicated.add(result)
                     }
                 }
@@ -881,7 +1091,13 @@ class ContentRepository private constructor(context: Context) {
                 val sourceCounts = deduplicated.groupBy { getSource(it) }.mapValues { it.value.size }
                 Log.i(TAG, "Universal search: ${allResults.size} total, ${deduplicated.size} after per-source dedup")
                 Log.i(TAG, "  Per source: Farsiland=${sourceCounts[SOURCE_FARSILAND] ?: 0}, FarsiPlex=${sourceCounts[SOURCE_FARSIPLEX] ?: 0}, Namakade=${sourceCounts[SOURCE_NAMAKADE] ?: 0}")
-                Result.success(deduplicated)
+
+                // Interleave results from different sources so minority sources appear near top
+                // Without this, if Farsiland has 22 results and Namakade has 1, Namakade would be at position 23
+                val interleaved = interleaveBySource(deduplicated) { getSource(it) }
+                Log.d(TAG, "Interleaved ${deduplicated.size} results from ${sourceCounts.size} sources")
+
+                Result.success(interleaved)
             } catch (e: Exception) {
                 Log.e(TAG, "Universal search error: ${e.message}", e)
                 e.printStackTrace()

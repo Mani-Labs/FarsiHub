@@ -26,9 +26,9 @@
 - Target: Hilt 2.48+
 
 **UI Framework:**
-- Android Leanback (~85% of screens - primary)
-- Jetpack Compose (~15% - emerging, ContentRow, EpisodeCard, ErrorBoundary)
-- Compose TV Material 3 (added, partially used)
+- Jetpack Compose TV (~80% - Home, Movies, Shows, Search screens)
+- Android Leanback (~20% - Details screens, Options/Settings only)
+- Compose TV Material 3 (active, used in HomeScreenWithSidebar)
 
 **Database Architecture (DUAL BY DESIGN - DO NOT MERGE):**
 - AppDatabase v10 (permanent user data: watchlist, favorites, playback positions)
@@ -95,10 +95,13 @@
 - No feature modules or layer separation
 
 **Navigation Pattern:**
-- Fragment-based navigation with Leanback BrowseFragment as main entry point
+- Fragment-based navigation with HomeComposeFragment as main entry point
+- HomeComposeFragment wraps Compose HomeScreenWithSidebar
+- Sidebar navigation: Home, Movies, Shows, Search, Options (5 items)
+- Movies/Shows/Search use internal Compose state navigation (no Fragment switching)
+- Only Options navigates to external Fragment (OptionsFragment - Leanback GuidedStep)
 - Activity-based details screens (DetailsActivity, SeriesDetailsActivity)
-- Modal dialogs for user actions (AddToPlaylistDialogFragment)
-- ViewModels: Only 2 exist (GenreFilterViewModel, MainViewModel)
+- ViewModels: MainViewModel (home), GenreFilterViewModel (filters)
 
 **Data Access Pattern:**
 - Repository pattern with manual singletons
@@ -189,48 +192,40 @@
 ```
 G:\FarsiPlex\
 ├── app/ (monolithic module)
-│   ├── src/
-│   │   └── main/
-│   │       ├── java/com/example/farsilandtv/
-│   │       │   ├── FarsilandApp.kt (application class, cache init)
-│   │       │   ├── MainActivity.kt (entry point)
-│   │       │   ├── DetailsActivity.kt (movie/series details)
-│   │       │   ├── SeriesDetailsActivity.kt (series detail view)
-│   │       │   ├── SearchActivity.kt (search interface)
-│   │       │   ├── VideoPlayerActivity.kt (playback screen)
-│   │       │   ├── data/
-│   │       │   │   ├── database/
-│   │       │   │   │   ├── AppDatabase.kt (user data - DO NOT MERGE)
-│   │       │   │   │   └── ContentDatabase.kt (content - replaceable)
-│   │       │   │   ├── repository/ (manual singletons)
-│   │       │   │   │   ├── ContentRepository.kt (main, with cache)
-│   │       │   │   │   ├── PlaybackRepository.kt
-│   │       │   │   │   ├── WatchlistRepository.kt
-│   │       │   │   │   └── ... (7+ repositories)
-│   │       │   │   ├── api/
-│   │       │   │   │   ├── WordPressApiService.kt
-│   │       │   │   │   ├── FarsiPlexApiService.kt
-│   │       │   │   │   └── NamakadeApiService.kt
-│   │       │   │   └── scraper/
-│   │       │   │       ├── VideoUrlScraper.kt
-│   │       │   │       └── WebSearchScraper.kt
-│   │       │   └── ui/
-│   │       │       ├── fragment/ (Leanback-based)
-│   │       │       │   ├── HomeFragment.kt (main browse)
-│   │       │       │   ├── MoviesFragment.kt
-│   │       │       │   ├── ShowsFragment.kt
-│   │       │       │   └── PlaybackVideoFragment.kt
-│   │       │       └── compose/ (emerging - 15%)
-│   │       │           ├── ContentRow.kt
-│   │       │           ├── EpisodeCard.kt
-│   │       │           └── ErrorBoundary.kt
-│   │       └── AndroidManifest.xml
-│   ├── build.gradle.kts (all dependencies here)
-│   └── libs.versions.toml
+│   ├── src/main/java/com/example/farsilandtv/
+│   │   ├── FarsilandApp.kt (application class, cache init)
+│   │   ├── MainActivity.kt (entry point, loads HomeComposeFragment)
+│   │   ├── HomeComposeFragment.kt (Compose wrapper for home screen)
+│   │   ├── OptionsFragment.kt (Settings - Leanback GuidedStep)
+│   │   ├── DetailsActivity.kt (movie details - Leanback)
+│   │   ├── SeriesDetailsActivity.kt (series details - Leanback)
+│   │   ├── VideoPlayerActivity.kt (playback screen)
+│   │   ├── data/
+│   │   │   ├── database/
+│   │   │   │   ├── AppDatabase.kt (user data - DO NOT MERGE)
+│   │   │   │   └── ContentDatabase.kt (content - replaceable)
+│   │   │   ├── repository/ (manual singletons)
+│   │   │   └── scraper/
+│   │   └── ui/
+│   │       ├── screens/ (Compose screens - ACTIVE)
+│   │       │   ├── HomeScreenWithSidebar.kt (MAIN home with sidebar)
+│   │       │   ├── MoviesScreen.kt (movies grid)
+│   │       │   ├── ShowsScreen.kt (shows grid)
+│   │       │   └── SearchScreen.kt (search results)
+│   │       ├── components/ (reusable Compose components)
+│   │       │   ├── ContentRow.kt (MovieRow, SeriesRow)
+│   │       │   ├── MovieCard.kt, SeriesCard.kt, EpisodeCard.kt
+│   │       │   ├── FeaturedCarousel.kt
+│   │       │   └── ContentOptionsDialog.kt
+│   │       └── theme/
+│   │           └── FarsilandTVTheme.kt
+│   └── build.gradle.kts
 ├── docs/
-│   ├── Farsihub-Modernization-Plan.md (UPDATED)
-│   └── REMEDIATION_PROGRESS.md
-└── settings.gradle.kts
+│   └── Farsihub-Modernization-Plan.md
+├── farsiplex_scraper_dooplay.py (main scraper)
+├── farsiplex_auto_updater.py (auto updater)
+├── CLAUDE.md (this file)
+└── README.md
 ```
 
 **No Feature Modules Yet** - completely monolithic
@@ -279,12 +274,23 @@ G:\FarsiPlex\
 - Maintain thread-safe singletons until Hilt migration
 
 **Current Gaps:**
-- No dependency injection framework
+- No dependency injection framework (Hilt planned)
 - No modularization
-- Limited ViewModel usage (only 2)
 - Partial Media3 migration
 - No CI/CD pipeline
 - No monitoring/analytics
+
+**Compose Migration Status (2025-11-26):**
+- ✅ Home screen - HomeScreenWithSidebar (Compose TV)
+- ✅ Movies screen - MoviesScreen (Compose TV)
+- ✅ Shows screen - ShowsScreen (Compose TV)
+- ✅ Search screen - SearchScreen (Compose TV)
+- ✅ Sidebar navigation with D-pad support
+- ✅ Content rows: Continue Watching, My Shows, My Favorites, Latest Episodes, Movies, Shows
+- ✅ Featured carousel with auto-rotation
+- ✅ Long-press context menu (ContentOptionsDialog)
+- ⏳ Details screens (still Leanback - DetailsActivity, SeriesDetailsActivity)
+- ⏳ Options/Settings (still Leanback - OptionsFragment)
 
 ---
 
@@ -308,15 +314,16 @@ G:\FarsiPlex\
 
 ## Section 9: Modernization Roadmap
 
-**Phase Priority (2-3 weeks minimum viable):**
-1. Complete audit fixes (5 remaining) - IMMEDIATE
-2. Add Hilt DI framework - HIGH
-3. Complete Media3 migration - EASY WIN
-4. Modularize architecture - LONG TERM
-5. Add resilience/monitoring - OPERATIONAL
-6. Migrate to Compose TV - GRADUAL
-7. Add mobile/cast support - NEW FEATURES
-8. Setup CI/CD pipeline - FINAL
+**Phase Priority:**
+1. ✅ Complete audit fixes - DONE (30/30)
+2. ✅ Migrate Home to Compose TV - DONE (HomeScreenWithSidebar)
+3. ✅ Migrate Movies/Shows/Search to Compose - DONE (internal nav)
+4. ⏳ Migrate Details screens to Compose - NEXT
+5. Add Hilt DI framework - HIGH
+6. Complete Media3 migration - EASY WIN
+7. Modularize architecture - LONG TERM
+8. Add mobile/cast support - NEW FEATURES
+9. Setup CI/CD pipeline - FINAL
 
 **See:** docs/Farsihub-Modernization-Plan.md for detailed plan
 
@@ -336,11 +343,11 @@ G:\FarsiPlex\
 - Android API: min 28, target 35, compile 35
 - Room 2.5+ (dual databases)
 - Media3 (partial migration)
-- Jetpack Compose (15% adoption)
+- Jetpack Compose TV (~80% adoption)
 - OkHttp + Retrofit + Moshi
 - Coil for images
 - WorkManager for sync
-- Paging 3 for lists
+- Paging 3 for content lists
 
 **Data Sources:**
 - Farsiland WordPress API

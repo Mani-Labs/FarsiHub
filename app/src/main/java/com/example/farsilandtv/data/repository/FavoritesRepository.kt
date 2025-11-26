@@ -11,11 +11,31 @@ import kotlinx.coroutines.flow.Flow
 /**
  * Repository for universal favorites system
  * Handles favorites for both movies and TV series
+ *
+ * SINGLETON PATTERN: Use getInstance() to get the shared instance.
+ * This prevents multiple database connections and ensures cache consistency.
  */
-class FavoritesRepository(context: Context) {
+class FavoritesRepository private constructor(context: Context) {
 
-    private val database = AppDatabase.getDatabase(context)
+    private val database = AppDatabase.getDatabase(context.applicationContext)
     private val favoriteDao: FavoriteDao = database.favoriteDao()
+
+    companion object {
+        @Volatile
+        private var INSTANCE: FavoritesRepository? = null
+
+        /**
+         * Get singleton instance of FavoritesRepository
+         * Thread-safe double-check locking pattern
+         */
+        fun getInstance(context: Context): FavoritesRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: FavoritesRepository(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
+    }
 
     // ========== Add/Remove Favorites ==========
 

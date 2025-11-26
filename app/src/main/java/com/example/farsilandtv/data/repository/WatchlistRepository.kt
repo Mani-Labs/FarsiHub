@@ -14,10 +14,13 @@ import kotlinx.coroutines.flow.map
 /**
  * Repository for watchlist and progress tracking
  * Handles all watchlist operations and playback progress
+ *
+ * FIXED: Added singleton pattern to prevent multiple instances
+ * Each new instance was creating new DB connections, wasting memory
  */
-class WatchlistRepository(context: Context) {
+class WatchlistRepository private constructor(context: Context) {
 
-    private val database = AppDatabase.getDatabase(context)
+    private val database = AppDatabase.getDatabase(context.applicationContext)
     private val movieDao = database.watchlistMovieDao()
     private val seriesDao = database.monitoredSeriesDao()
     private val episodeDao = database.episodeProgressDao()
@@ -29,6 +32,21 @@ class WatchlistRepository(context: Context) {
         // Changed from 0.90f (90%) to 0.95f (95%) to eliminate dual source of truth
         // This prevents UI contradictions where watchlist shows "Completed" but continue watching shows "Resume"
         private const val COMPLETION_THRESHOLD = 0.95f
+
+        @Volatile
+        private var INSTANCE: WatchlistRepository? = null
+
+        /**
+         * Get singleton instance of WatchlistRepository
+         * Uses double-checked locking for thread safety
+         */
+        fun getInstance(context: Context): WatchlistRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: WatchlistRepository(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
     }
 
     // ========== Movie Watchlist (Manual Bookmarks) ==========

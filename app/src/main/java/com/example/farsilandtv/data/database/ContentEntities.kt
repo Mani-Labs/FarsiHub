@@ -78,7 +78,8 @@ data class CachedSeries(
     tableName = "cached_episodes",
     indices = [
         Index(value = ["seriesId", "season", "episode"], unique = true),
-        Index(value = ["farsilandUrl"], unique = true)
+        Index(value = ["farsilandUrl"], unique = true),
+        Index(value = ["dateAdded"]) // FIX: Performance for ORDER BY dateAdded DESC queries (Latest Episodes)
     ]
 )
 data class CachedEpisode(

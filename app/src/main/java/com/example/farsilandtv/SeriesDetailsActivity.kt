@@ -21,6 +21,7 @@ import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.ui.screens.SeriesDetailsScreen
 import com.example.farsilandtv.ui.theme.FarsilandTVTheme
+import com.example.farsilandtv.utils.IntentExtras
 import kotlinx.coroutines.launch
 
 /**
@@ -138,14 +139,14 @@ class SeriesDetailsActivity : ComponentActivity() {
     private fun playEpisode(episode: Episode) {
         Log.d(TAG, "Starting playback for: ${episode.title}")
         val intent = Intent(this, VideoPlayerActivity::class.java).apply {
-            putExtra("CONTENT_TYPE", "episode")
-            putExtra("CONTENT_ID", episode.id)
-            putExtra("CONTENT_TITLE", episode.title)
-            putExtra("CONTENT_URL", episode.farsilandUrl)
-            putExtra("CONTENT_POSTER_URL", episode.thumbnailUrl)
-            episode.seriesId?.let { putExtra("SERIES_ID", it) }
-            putExtra("EPISODE_SEASON", episode.season)
-            putExtra("EPISODE_NUMBER", episode.episode)
+            putExtra(IntentExtras.CONTENT_TYPE, IntentExtras.ContentType.EPISODE)
+            putExtra(IntentExtras.CONTENT_ID, episode.id)
+            putExtra(IntentExtras.CONTENT_TITLE, episode.title)
+            putExtra(IntentExtras.CONTENT_URL, episode.farsilandUrl)
+            putExtra(IntentExtras.CONTENT_POSTER_URL, episode.thumbnailUrl)
+            episode.seriesId?.let { putExtra(IntentExtras.SERIES_ID, it) }
+            putExtra(IntentExtras.EPISODE_SEASON, episode.season)
+            putExtra(IntentExtras.EPISODE_NUMBER, episode.episode)
         }
         startActivity(intent)
     }

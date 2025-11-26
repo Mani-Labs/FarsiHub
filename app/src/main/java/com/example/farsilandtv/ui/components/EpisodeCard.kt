@@ -52,6 +52,15 @@ fun EpisodeCard(
                     modifier = Modifier.fillMaxSize()
                 )
 
+                // Source badge at top-left
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                ) {
+                    SourceBadge(sourceUrl = episode.farsilandUrl)
+                }
+
                 // Watched checkmark overlay
                 if (episode.isWatched) {
                     Surface(

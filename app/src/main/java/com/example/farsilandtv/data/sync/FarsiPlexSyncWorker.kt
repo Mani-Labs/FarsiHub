@@ -104,8 +104,18 @@ class FarsiPlexSyncWorker(
             }
 
             // FIXED: Use same timestamp key as SyncSettingsFragment expects
-            val lastSyncTime = prefs.getLong("last_sync_timestamp", 0L)
+            var lastSyncTime = prefs.getLong("farsiplex_last_sync_timestamp", 0L)
             val currentTime = System.currentTimeMillis()
+
+            // OPTIMIZATION: On first sync with bundled DB, use DB's newest content date
+            if (lastSyncTime == 0L) {
+                val newestInDb = getNewestFarsiPlexTimestamp()
+                if (newestInDb > 0) {
+                    Log.i(TAG, "First sync detected with bundled DB - using DB timestamp")
+                    lastSyncTime = newestInDb
+                    prefs.edit().putLong("farsiplex_last_sync_timestamp", newestInDb).apply()
+                }
+            }
 
             // Sync new content (lightweight - only recent items)
             val newContentCount = syncNewContent()
@@ -221,6 +231,7 @@ class FarsiPlexSyncWorker(
 
             // Sync recent episodes (last 20)
             val recentEpisodes = farsiPlexApi.getRecentEpisodes(limit = 20)
+            val affectedSeriesIds = mutableSetOf<Int>()
             for (episodeUrl in recentEpisodes) {
                 if (isStopped) break
 
@@ -240,6 +251,9 @@ class FarsiPlexSyncWorker(
                         // Insert episode
                         contentDb.episodeDao().insertEpisodes(listOf(episode))
 
+                        // Track affected series for episode count update
+                        episode.seriesId?.let { affectedSeriesIds.add(it) }
+
                         // Insert video URLs
                         if (videoUrls.isNotEmpty()) {
                             contentDb.videoUrlDao().insertVideoUrls(videoUrls)
@@ -250,6 +264,11 @@ class FarsiPlexSyncWorker(
                         Log.i(TAG, "✓ Synced episode: ${episode.seriesTitle} S${episode.season}E${episode.episode}")
                     }
                 }
+            }
+
+            // Update episode counts for affected series
+            if (affectedSeriesIds.isNotEmpty()) {
+                updateSeriesEpisodeCounts(affectedSeriesIds.toList())
             }
 
         } catch (e: Exception) {
@@ -294,6 +313,51 @@ class FarsiPlexSyncWorker(
             }
         } catch (e: Exception) {
             System.currentTimeMillis()
+        }
+    }
+
+    /**
+     * Get newest content timestamp from FarsiPlex content in DB
+     * Used to detect bundled DB and skip full sync on first run
+     */
+    private suspend fun getNewestFarsiPlexTimestamp(): Long {
+        return try {
+            // Query for FarsiPlex URLs only
+            val newestMovie = contentDb.movieDao().getNewestMovieTimestampByUrlPattern("%farsiplex.com%") ?: 0L
+            val newestSeries = contentDb.seriesDao().getNewestSeriesTimestampByUrlPattern("%farsiplex.com%") ?: 0L
+            val newestEpisode = contentDb.episodeDao().getNewestEpisodeTimestampByUrlPattern("%farsiplex.com%") ?: 0L
+            maxOf(newestMovie, newestSeries, newestEpisode)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting newest FarsiPlex timestamp: ${e.message}")
+            0L
+        }
+    }
+
+    /**
+     * Update episode/season counts for series after syncing new episodes
+     */
+    private suspend fun updateSeriesEpisodeCounts(seriesIds: List<Int>) {
+        if (seriesIds.isEmpty()) return
+
+        try {
+            for (seriesId in seriesIds) {
+                val episodeCount = contentDb.episodeDao().getEpisodeCountForSeries(seriesId)
+                val seasonCount = contentDb.episodeDao().getSeasonCount(seriesId)
+
+                val series = contentDb.seriesDao().getSeriesById(seriesId)
+                if (series != null && (series.totalEpisodes != episodeCount || series.totalSeasons != seasonCount)) {
+                    val updated = series.copy(
+                        totalEpisodes = episodeCount,
+                        totalSeasons = seasonCount,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+                    contentDb.seriesDao().updateSeries(updated)
+                    Log.d(TAG, "Updated series $seriesId: $seasonCount seasons, $episodeCount episodes")
+                }
+            }
+            Log.i(TAG, "✓ Updated episode counts for ${seriesIds.size} series")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating series episode counts: ${e.message}")
         }
     }
 

@@ -78,4 +78,17 @@
     <string name="security_https_only">Security: Only HTTPS URLs from trusted domains are allowed</string>
     <string name="security_http_not_permitted">Security: Cleartext HTTP traffic not permitted: %s</string>
     <string name="security_untrusted_domain">Security: URL from untrusted domain: %s</string>
+
+    <!-- LOW PRIORITY FIX: Database initialization messages -->
+    <string name="error_database_init">Database error: %s. Clear app data to fix.</string>
+    <string name="error_database_timeout">Database initialization timed out</string>
+
+    <!-- LOW PRIORITY FIX: Video player quality selection -->
+    <string name="quality_select_title">Select Quality</string>
+    <string name="quality_no_options">No quality options available</string>
+    <string name="action_cancel">Cancel</string>
+
+    <!-- LOW PRIORITY FIX: Player status -->
+    <string name="now_playing">Playing: %s</string>
+    <string name="player_init_failed">Failed to initialize player: %s</string>
 </resources>

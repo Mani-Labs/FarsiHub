@@ -1,6 +1,8 @@
 package com.example.farsilandtv.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
@@ -28,28 +30,37 @@ import com.example.farsilandtv.data.models.Movie
  * - Watched indicator (Feature #2)
  * - TV focus highlight with border
  */
-@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.material3.ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MovieCard(
     movie: Movie,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isFavorite: Boolean = false,
-    isWatched: Boolean = false
+    isWatched: Boolean = false,
+    onLongClick: (() -> Unit)? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
     Card(
         onClick = onClick,
         modifier = modifier
-            .width(280.dp)
-            .height(420.dp)
+            .width(160.dp)
+            .height(240.dp)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
-            },
-        shape = RoundedCornerShape(8.dp),
+            }
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                } else Modifier
+            ),
+        shape = RoundedCornerShape(6.dp),
         border = if (isFocused) {
-            BorderStroke(4.dp, MaterialTheme.colorScheme.primary)
+            BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
         } else {
             null
         },
@@ -96,6 +107,15 @@ fun MovieCard(
                     FavoriteBadge()
                 }
             }
+
+            // Source badge at top-left
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+            ) {
+                SourceBadge(sourceUrl = movie.farsilandUrl)
+            }
         }
     }
 }
@@ -109,9 +129,9 @@ fun MovieCardSkeleton(
 ) {
     Card(
         modifier = modifier
-            .width(280.dp)
-            .height(420.dp),
-        shape = RoundedCornerShape(8.dp),
+            .width(160.dp)
+            .height(240.dp),
+        shape = RoundedCornerShape(6.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color(0xFF2C2C2C)
         )

@@ -27,8 +27,11 @@ import com.example.farsilandtv.data.repository.PlaybackRepository
 import com.example.farsilandtv.utils.PersianUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.WeakHashMap
 
 /**
  * Card Presenter with Genre Tags
@@ -38,11 +41,17 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
     private var mDefaultCardImage: Drawable? = null
 
     private val favoritesRepo: FavoritesRepository? by lazy {
-        context?.let { FavoritesRepository(it) }
+        context?.let { FavoritesRepository.getInstance(it) }
     }
     private val playbackRepo: PlaybackRepository? by lazy {
-        context?.let { PlaybackRepository(it) }
+        context?.let { PlaybackRepository.getInstance(it) }
     }
+
+    /**
+     * FIX: Managed coroutine scopes per ViewHolder to prevent memory leaks
+     * When view is recycled/unbound, scope is cancelled to stop orphan coroutines
+     */
+    private val viewHolderScopes = WeakHashMap<ViewHolder, CoroutineScope>()
 
     override fun onCreateViewHolder(parent: ViewGroup): ViewHolder {
         Log.d(TAG, "onCreateViewHolder")
@@ -61,18 +70,30 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
 
     override fun onBindViewHolder(viewHolder: ViewHolder, item: Any) {
         val view = viewHolder.view as LinearLayout
+        // FIX: Get managed scope for this ViewHolder (cancelled in onUnbindViewHolder)
+        val scope = getScopeForViewHolder(viewHolder)
 
         Log.d(TAG, "onBindViewHolder: ${item::class.simpleName}")
 
         when (item) {
-            is Movie -> bindMovie(view, item)
-            is Series -> bindSeries(view, item)
+            is Movie -> bindMovie(view, item, scope)
+            is Series -> bindSeries(view, item, scope)
             is Episode -> bindEpisode(view, item)
             else -> Log.w(TAG, "Unknown item type: ${item::class.simpleName}")
         }
     }
 
-    private fun bindMovie(view: LinearLayout, movie: Movie) {
+    /**
+     * FIX: Get or create a managed scope for this ViewHolder
+     * Scopes are cancelled in onUnbindViewHolder to prevent orphan coroutines
+     */
+    private fun getScopeForViewHolder(viewHolder: ViewHolder): CoroutineScope {
+        return viewHolderScopes.getOrPut(viewHolder) {
+            CoroutineScope(Dispatchers.Main + SupervisorJob())
+        }
+    }
+
+    private fun bindMovie(view: LinearLayout, movie: Movie, scope: CoroutineScope) {
         val imageView = view.findViewById<ImageView>(R.id.card_image)
         val badgeView = view.findViewById<ImageView>(R.id.card_badge)
         val titleView = view.findViewById<TextView>(R.id.card_title)
@@ -96,8 +117,8 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
         // Load genre tags
         bindGenreTags(primaryGenreTag, secondaryGenreTag, movie.genres)
 
-        // Load badge (favorite, watched, or new)
-        loadBadgeForMovie(badgeView, movie)
+        // Load badge (favorite, watched, or new) using managed scope
+        loadBadgeForMovie(badgeView, movie, scope)
 
         // Load poster image with progressive blur-up (Feature #17)
         // Card size: 173x260dp (2:3 ratio for portrait posters)
@@ -115,7 +136,7 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
         }
     }
 
-    private fun bindSeries(view: LinearLayout, series: Series) {
+    private fun bindSeries(view: LinearLayout, series: Series, scope: CoroutineScope) {
         val imageView = view.findViewById<ImageView>(R.id.card_image)
         val badgeView = view.findViewById<ImageView>(R.id.card_badge)
         val titleView = view.findViewById<TextView>(R.id.card_title)
@@ -143,8 +164,8 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
         // Load genre tags
         bindGenreTags(primaryGenreTag, secondaryGenreTag, series.genres)
 
-        // Load badge (favorite or new)
-        loadBadgeForSeries(badgeView, series)
+        // Load badge (favorite or new) using managed scope
+        loadBadgeForSeries(badgeView, series, scope)
 
         // Load poster image with progressive blur-up (Feature #17)
         // Card size: 173x260dp (2:3 ratio for portrait posters)
@@ -286,10 +307,11 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
 
     /**
      * Load badge for movie (priority: watched > favorited > new)
+     * FIX: Uses managed scope instead of orphan CoroutineScope
      */
-    private fun loadBadgeForMovie(badgeView: ImageView, movie: Movie) {
+    private fun loadBadgeForMovie(badgeView: ImageView, movie: Movie, scope: CoroutineScope) {
         playbackRepo?.let { repo ->
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 try {
                     val isWatched = repo.isCompleted(movie.id, "movie").first() ?: false
                     if (isWatched) {
@@ -303,18 +325,21 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
                         return@launch
                     }
 
-                    checkFavoriteMovie(badgeView, movie)
+                    checkFavoriteMovie(badgeView, movie, scope)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error checking watched status for movie ${movie.id}", e)
-                    checkFavoriteMovie(badgeView, movie)
+                    checkFavoriteMovie(badgeView, movie, scope)
                 }
             }
-        } ?: checkFavoriteMovie(badgeView, movie)
+        } ?: checkFavoriteMovie(badgeView, movie, scope)
     }
 
-    private fun checkFavoriteMovie(badgeView: ImageView, movie: Movie) {
+    /**
+     * FIX: Uses managed scope instead of orphan CoroutineScope
+     */
+    private fun checkFavoriteMovie(badgeView: ImageView, movie: Movie, scope: CoroutineScope) {
         favoritesRepo?.let { repo ->
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 try {
                     val isFavorited = repo.isMovieFavorited(movie.id).first()
                     if (isFavorited) {
@@ -371,10 +396,11 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
 
     /**
      * Load badge for series (priority: favorited > new)
+     * FIX: Uses managed scope instead of orphan CoroutineScope
      */
-    private fun loadBadgeForSeries(badgeView: ImageView, series: Series) {
+    private fun loadBadgeForSeries(badgeView: ImageView, series: Series, scope: CoroutineScope) {
         favoritesRepo?.let { repo ->
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 try {
                     val isFavorited = repo.isSeriesFavorited(series.id).first()
                     if (isFavorited) {
@@ -435,8 +461,9 @@ class GenreCardPresenter(private val context: Context? = null) : Presenter() {
         val imageView = view.findViewById<ImageView>(R.id.card_image)
         val badgeView = view.findViewById<ImageView>(R.id.card_badge)
 
-        // Coil handles cleanup automatically when views are recycled
-        // No manual cleanup needed (unlike Glide)
+        // FIX: Cancel any pending badge-loading coroutines to prevent memory leaks
+        viewHolderScopes[viewHolder]?.cancel()
+        viewHolderScopes.remove(viewHolder)
 
         imageView?.setImageDrawable(null)
         badgeView?.setImageDrawable(null)

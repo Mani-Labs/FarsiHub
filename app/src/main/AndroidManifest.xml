@@ -60,12 +60,6 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".PlaybackActivity"
-            android:exported="false" />
-        <activity
-            android:name=".BrowseErrorActivity"
-            android:exported="false" />
-        <activity
             android:name=".VideoPlayerActivity"
             android:exported="false"
             android:theme="@style/Theme.VideoPlayer"
@@ -103,12 +97,6 @@
             android:exported="false"
             android:theme="@style/Theme.FarsilandTV"
             android:screenOrientation="landscape" />
-        <activity
-            android:name=".SettingsActivity"
-            android:exported="false"
-            android:theme="@style/Theme.FarsilandTV"
-            android:screenOrientation="landscape"
-            android:label="Settings" />
 
         <!-- EXTERNAL AUDIT FIX C3: WorkManager foreground service declaration for Android 14+ -->
         <!-- Required when FOREGROUND_SERVICE_DATA_SYNC permission is used (lines 8-9) -->

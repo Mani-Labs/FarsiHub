@@ -1,6 +1,8 @@
 package com.example.farsilandtv.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
@@ -22,28 +24,37 @@ import com.example.farsilandtv.data.models.Series
  * Feature #16: Compose Component - Series Card
  * Similar to MovieCard but with season/episode count
  */
-@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.material3.ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun SeriesCard(
     series: Series,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isFavorite: Boolean = false,
-    hasUnwatchedEpisodes: Boolean = false
+    hasUnwatchedEpisodes: Boolean = false,
+    onLongClick: (() -> Unit)? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
     Card(
         onClick = onClick,
         modifier = modifier
-            .width(280.dp)
-            .height(420.dp)
+            .width(160.dp)
+            .height(240.dp)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
-            },
-        shape = RoundedCornerShape(8.dp),
+            }
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                } else Modifier
+            ),
+        shape = RoundedCornerShape(6.dp),
         border = if (isFocused) {
-            BorderStroke(4.dp, MaterialTheme.colorScheme.primary)
+            BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
         } else {
             null
         },
@@ -62,16 +73,44 @@ fun SeriesCard(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Genre badges at bottom
-            if (series.genres.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    series.genres.take(2).forEach { genre ->
-                        GenreBadge(genreName = genre)
+            // Bottom section: Season/Episode count + Genre badges
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Season/Episode count badge
+                if (series.totalSeasons > 0 || series.totalEpisodes > 0) {
+                    androidx.compose.material3.Surface(
+                        color = Color(0xCC000000),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = buildString {
+                                if (series.totalSeasons > 0) {
+                                    append("S${series.totalSeasons}")
+                                }
+                                if (series.totalEpisodes > 0) {
+                                    if (series.totalSeasons > 0) append(" • ")
+                                    append("${series.totalEpisodes} Ep")
+                                }
+                            },
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White
+                        )
+                    }
+                }
+
+                // Genre badges
+                if (series.genres.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        series.genres.take(2).forEach { genre ->
+                            GenreBadge(genreName = genre)
+                        }
                     }
                 }
             }
@@ -88,13 +127,18 @@ fun SeriesCard(
                 }
             }
 
-            // New episodes indicator
-            if (hasUnwatchedEpisodes) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp)
-                ) {
+            // Top-left badges: Source + NEW indicator
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Source badge
+                SourceBadge(sourceUrl = series.farsilandUrl)
+
+                // New episodes indicator
+                if (hasUnwatchedEpisodes) {
                     androidx.compose.material3.Surface(
                         color = Color(0xFFFF5722),
                         shape = RoundedCornerShape(4.dp)
@@ -109,5 +153,25 @@ fun SeriesCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * Skeleton placeholder for SeriesCard during loading
+ */
+@Composable
+fun SeriesCardSkeleton(
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .width(160.dp)
+            .height(240.dp),
+        shape = RoundedCornerShape(6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF2C2C2C)
+        )
+    ) {
+        Box(modifier = Modifier.fillMaxSize())
     }
 }

@@ -5,15 +5,20 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.farsilandtv.ui.theme.FavoriteRed
 import com.example.farsilandtv.ui.theme.WatchedGreen
 
@@ -78,6 +83,38 @@ fun ContinueWatchingProgress(
                 .size(width = 100.dp, height = 4.dp),
             color = Color(0xFF2196F3), // ContinueWatchingBlue
             trackColor = Color.White.copy(alpha = 0.3f)
+        )
+    }
+}
+
+/**
+ * Source badge showing content source (F for Farsiland/FarsiPlex, N for Namakade)
+ * Colors: Red=Farsiland, Blue=FarsiPlex, Green=Namakade
+ */
+@Composable
+fun SourceBadge(
+    sourceUrl: String,
+    modifier: Modifier = Modifier
+) {
+    val (letter, backgroundColor) = when {
+        sourceUrl.contains("farsiland.com", ignoreCase = true) -> "F" to Color(0xFFFF5252) // Red
+        sourceUrl.contains("farsiplex.com", ignoreCase = true) -> "F" to Color(0xFF448AFF) // Blue
+        sourceUrl.contains("namakade.com", ignoreCase = true) ||
+        sourceUrl.contains("namakadeh.com", ignoreCase = true) -> "N" to Color(0xFF69F0AE) // Green
+        else -> return // Don't show badge for unknown sources
+    }
+
+    Box(
+        modifier = modifier
+            .size(28.dp)
+            .background(backgroundColor, RoundedCornerShape(6.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = letter,
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
         )
     }
 }

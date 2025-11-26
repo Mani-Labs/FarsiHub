@@ -23,8 +23,12 @@ import com.example.farsilandtv.utils.ImageLoader
 import com.example.farsilandtv.utils.SourceBadgeHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import java.util.WeakHashMap
 import kotlin.properties.Delegates
 
 /**
@@ -37,11 +41,17 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
     private var sDefaultBackgroundColor: Int by Delegates.notNull()
 
     private val favoritesRepo: FavoritesRepository? by lazy {
-        context?.let { FavoritesRepository(it) }
+        context?.let { FavoritesRepository.getInstance(it) }
     }
     private val playbackRepo: PlaybackRepository? by lazy {
-        context?.let { PlaybackRepository(it) }
+        context?.let { PlaybackRepository.getInstance(it) }
     }
+
+    /**
+     * FIX: Managed coroutine scopes per ViewHolder to prevent memory leaks
+     * When view is recycled/unbound, scope is cancelled to stop orphan coroutines
+     */
+    private val viewHolderScopes = WeakHashMap<ViewHolder, CoroutineScope>()
 
     override fun onCreateViewHolder(parent: ViewGroup): ViewHolder {
         Log.d(TAG, "onCreateViewHolder")
@@ -85,12 +95,14 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
 
     override fun onBindViewHolder(viewHolder: ViewHolder, item: Any) {
         val cardView = viewHolder.view as ImageCardView
+        // FIX: Get managed scope for this ViewHolder (cancelled in onUnbindViewHolder)
+        val scope = getScopeForViewHolder(viewHolder)
 
         Log.d(TAG, "onBindViewHolder: ${item::class.simpleName}")
 
         when (item) {
-            is Movie -> bindMovie(cardView, item)
-            is Series -> bindSeries(cardView, item)
+            is Movie -> bindMovie(cardView, item, scope)
+            is Series -> bindSeries(cardView, item, scope)
             is Episode -> bindEpisode(cardView, item)
             else -> Log.w(TAG, "Unknown item type: ${item::class.simpleName}")
         }
@@ -99,7 +111,7 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
     /**
      * Bind Movie data to card view
      */
-    private fun bindMovie(cardView: ImageCardView, movie: Movie) {
+    private fun bindMovie(cardView: ImageCardView, movie: Movie, scope: CoroutineScope) {
         cardView.titleText = movie.title
 
         // Show year and rating if available (year in English, rating in Persian)
@@ -119,8 +131,8 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
         }
         cardView.contentText = textWithBadge
 
-        // Load badge (favorite, watched, or new)
-        loadBadgeForMovie(cardView, movie)
+        // Load badge (favorite, watched, or new) using managed scope
+        loadBadgeForMovie(cardView, movie, scope)
 
         // Load poster image with progressive blur-up (Feature #17)
         cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
@@ -142,7 +154,7 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
     /**
      * Bind Series data to card view
      */
-    private fun bindSeries(cardView: ImageCardView, series: Series) {
+    private fun bindSeries(cardView: ImageCardView, series: Series, scope: CoroutineScope) {
         cardView.titleText = series.title
 
         // Show year, seasons, and rating (year in English, others in Persian)
@@ -166,8 +178,8 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
         }
         cardView.contentText = textWithBadge
 
-        // Load badge (favorite or new)
-        loadBadgeForSeries(cardView, series)
+        // Load badge (favorite or new) using managed scope
+        loadBadgeForSeries(cardView, series, scope)
 
         // Load poster image with progressive blur-up (Feature #17)
         cardView.setMainImageDimensions(CARD_WIDTH, CARD_HEIGHT)
@@ -276,18 +288,23 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
         Log.d(TAG, "onUnbindViewHolder")
         val cardView = viewHolder.view as ImageCardView
 
-        // Cancel any ongoing Glide requests for this view (Feature #12: Lazy Loading)
-        // This prevents loading images for off-screen items, reducing memory usage
-        try {
-            // Coil handles cleanup automatically
-        } catch (e: IllegalArgumentException) {
-            // Activity may be destroyed, ignore
-            Log.d(TAG, "Cannot clear Glide request, activity destroyed")
-        }
+        // FIX: Cancel any pending badge-loading coroutines to prevent memory leaks
+        viewHolderScopes[viewHolder]?.cancel()
+        viewHolderScopes.remove(viewHolder)
 
         // Remove references to images for garbage collection
         cardView.badgeImage = null
         cardView.mainImage = null
+    }
+
+    /**
+     * FIX: Get or create a managed scope for this ViewHolder
+     * Scopes are cancelled in onUnbindViewHolder to prevent orphan coroutines
+     */
+    private fun getScopeForViewHolder(viewHolder: ViewHolder): CoroutineScope {
+        return viewHolderScopes.getOrPut(viewHolder) {
+            CoroutineScope(Dispatchers.Main + SupervisorJob())
+        }
     }
 
     private fun updateCardBackgroundColor(view: ImageCardView, selected: Boolean) {
@@ -298,11 +315,12 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
 
     /**
      * Load badge for movie (priority: watched > favorited > new)
+     * FIX: Uses managed scope instead of orphan CoroutineScope
      */
-    private fun loadBadgeForMovie(cardView: ImageCardView, movie: Movie) {
+    private fun loadBadgeForMovie(cardView: ImageCardView, movie: Movie, scope: CoroutineScope) {
         // Check watched status first (highest priority)
         playbackRepo?.let { repo ->
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 try {
                     val isWatched = repo.isCompleted(movie.id, "movie").first() ?: false
                     if (isWatched) {
@@ -314,21 +332,22 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
                     }
 
                     // Check favorite status (second priority)
-                    checkFavoriteMovie(cardView, movie)
+                    checkFavoriteMovie(cardView, movie, scope)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error checking watched status for movie ${movie.id}", e)
-                    checkFavoriteMovie(cardView, movie)
+                    checkFavoriteMovie(cardView, movie, scope)
                 }
             }
-        } ?: checkFavoriteMovie(cardView, movie)
+        } ?: checkFavoriteMovie(cardView, movie, scope)
     }
 
     /**
      * Check favorite status for movie
+     * FIX: Uses managed scope instead of orphan CoroutineScope
      */
-    private fun checkFavoriteMovie(cardView: ImageCardView, movie: Movie) {
+    private fun checkFavoriteMovie(cardView: ImageCardView, movie: Movie, scope: CoroutineScope) {
         favoritesRepo?.let { repo ->
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 try {
                     val isFavorited = repo.isMovieFavorited(movie.id).first()
                     if (isFavorited) {
@@ -376,10 +395,11 @@ class ContentCardPresenter(private val context: Context? = null) : Presenter() {
 
     /**
      * Load badge for series (priority: favorited > new)
+     * FIX: Uses managed scope instead of orphan CoroutineScope
      */
-    private fun loadBadgeForSeries(cardView: ImageCardView, series: Series) {
+    private fun loadBadgeForSeries(cardView: ImageCardView, series: Series, scope: CoroutineScope) {
         favoritesRepo?.let { repo ->
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 try {
                     val isFavorited = repo.isSeriesFavorited(series.id).first()
                     if (isFavorited) {

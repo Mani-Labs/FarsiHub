@@ -113,7 +113,20 @@ class ContentSyncWorker(
             }
 
             val startTime = System.currentTimeMillis()
-            val lastSyncTimestamp = prefs.getLong("last_sync_timestamp", 0L)
+            var lastSyncTimestamp = prefs.getLong("last_sync_timestamp", 0L)
+
+            // OPTIMIZATION: On first sync with bundled DB, use DB's newest content date
+            // instead of doing a full sync. This prevents re-fetching 200+ items that
+            // are already in the bundled database.
+            if (lastSyncTimestamp == 0L) {
+                val newestInDb = getNewestContentTimestamp()
+                if (newestInDb > 0) {
+                    Log.i(TAG, "First sync detected with bundled DB - using DB timestamp: ${Date(newestInDb)}")
+                    lastSyncTimestamp = newestInDb
+                    // Save it so future syncs are incremental
+                    prefs.edit().putLong("last_sync_timestamp", newestInDb).apply()
+                }
+            }
 
             Log.i(TAG, "=== Farsiland Sync Started ===")
             Log.i(TAG, "Last sync: ${Date(lastSyncTimestamp)}")
@@ -517,6 +530,10 @@ class ContentSyncWorker(
 
     /**
      * Sync episodes added/updated since last sync
+     *
+     * FIX: Added pagination to sync more than 20 episodes (same pattern as movies/series)
+     * Previous: Only fetched 1 page (20 items) - missed episodes if 21+ updated between syncs
+     * Now: Fetches up to 5 pages (100 items) to catch more updates
      */
     private suspend fun syncEpisodes(lastSyncTimestamp: Long): Int {
         try {
@@ -529,28 +546,53 @@ class ContentSyncWorker(
 
             Log.d(TAG, "Fetching episodes modified after: $modifiedAfter")
 
-            // Fetch only modified items, limit to 20 to avoid timeout
-            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
-            val wpEpisodes = wordPressApi.getEpisodes(
-                perPage = 20,
-                page = 1,
-                modifiedAfter = modifiedAfter,
-                orderBy = "modified",
-                order = "desc"
-            )
+            // FIX: Implement pagination loop to sync ALL modified episodes
+            // Using 20 per page to avoid API timeout, max 5 pages (100 items)
+            var page = 1
+            var totalSynced = 0
+            val allAffectedSeriesIds = mutableSetOf<Int>()
 
-            Log.d(TAG, "API returned ${wpEpisodes.size} episodes")
+            do {
+                Log.d(TAG, "Fetching episodes page $page...")
 
-            val newEpisodes = wpEpisodes.map { it.toCachedEpisode() }
+                val wpEpisodes = wordPressApi.getEpisodes(
+                    perPage = 20,
+                    page = page,
+                    modifiedAfter = modifiedAfter,
+                    orderBy = "modified",
+                    order = "desc"
+                )
 
-            if (newEpisodes.isNotEmpty()) {
-                contentDb.episodeDao().insertEpisodes(newEpisodes)
-                Log.i(TAG, "✓ Synced ${newEpisodes.size} episodes")
+                Log.d(TAG, "API returned ${wpEpisodes.size} episodes on page $page")
+
+                val newEpisodes = wpEpisodes.map { it.toCachedEpisode() }
+
+                if (newEpisodes.isNotEmpty()) {
+                    contentDb.episodeDao().insertEpisodes(newEpisodes)
+                    totalSynced += newEpisodes.size
+                    Log.i(TAG, "✓ Synced ${newEpisodes.size} episodes from page $page (total: $totalSynced)")
+
+                    // Collect affected series IDs for batch update
+                    allAffectedSeriesIds.addAll(newEpisodes.mapNotNull { it.seriesId })
+                }
+
+                page++
+
+                // Continue if we got a full page (indicates more pages may exist)
+            } while (wpEpisodes.size >= 20 && page <= 5) // Safety: max 5 pages (100 items)
+
+            // Update episode counts for all affected series (batch)
+            if (allAffectedSeriesIds.isNotEmpty()) {
+                updateSeriesEpisodeCounts(allAffectedSeriesIds.toList())
+            }
+
+            if (totalSynced > 0) {
+                Log.i(TAG, "✓ Episode sync complete: $totalSynced items across ${page - 1} pages")
             } else {
                 Log.d(TAG, "No new episodes to sync")
             }
 
-            return newEpisodes.size
+            return totalSynced
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing episodes: ${e.message}", e)
             return 0
@@ -589,6 +631,51 @@ class ContentSyncWorker(
             dateStr.substring(0, 4).toIntOrNull()
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * Get the newest content timestamp from the database
+     * Used to detect bundled DB and skip full sync on first run
+     */
+    private suspend fun getNewestContentTimestamp(): Long {
+        return try {
+            val newestMovie = contentDb.movieDao().getNewestMovieTimestamp() ?: 0L
+            val newestSeries = contentDb.seriesDao().getNewestSeriesTimestamp() ?: 0L
+            val newestEpisode = contentDb.episodeDao().getNewestEpisodeTimestamp() ?: 0L
+            maxOf(newestMovie, newestSeries, newestEpisode)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting newest content timestamp: ${e.message}")
+            0L
+        }
+    }
+
+    /**
+     * Update episode/season counts for series after syncing new episodes
+     * This ensures series metadata stays in sync with actual episode data
+     */
+    private suspend fun updateSeriesEpisodeCounts(seriesIds: List<Int>) {
+        if (seriesIds.isEmpty()) return
+
+        try {
+            for (seriesId in seriesIds) {
+                val episodeCount = contentDb.episodeDao().getEpisodeCountForSeries(seriesId)
+                val seasonCount = contentDb.episodeDao().getSeasonCount(seriesId)
+
+                val series = contentDb.seriesDao().getSeriesById(seriesId)
+                if (series != null && (series.totalEpisodes != episodeCount || series.totalSeasons != seasonCount)) {
+                    val updated = series.copy(
+                        totalEpisodes = episodeCount,
+                        totalSeasons = seasonCount,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+                    contentDb.seriesDao().updateSeries(updated)
+                    Log.d(TAG, "Updated series $seriesId: $seasonCount seasons, $episodeCount episodes")
+                }
+            }
+            Log.i(TAG, "✓ Updated episode counts for ${seriesIds.size} series")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating series episode counts: ${e.message}")
         }
     }
 

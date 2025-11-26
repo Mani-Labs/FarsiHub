@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.ui.screens.MovieDetailsScreen
 import com.example.farsilandtv.ui.theme.FarsilandTVTheme
+import com.example.farsilandtv.utils.IntentExtras
 
 /**
  * Movie Details Activity - displays details using Compose TV
@@ -67,11 +68,11 @@ class DetailsActivity : ComponentActivity() {
     private fun playMovie(movie: Movie) {
         Log.d(TAG, "Starting playback for: ${movie.title}")
         val intent = Intent(this, VideoPlayerActivity::class.java).apply {
-            putExtra("CONTENT_TYPE", "movie")
-            putExtra("CONTENT_ID", movie.id)
-            putExtra("CONTENT_TITLE", movie.title)
-            putExtra("CONTENT_URL", movie.farsilandUrl)
-            putExtra("CONTENT_POSTER_URL", movie.posterUrl)
+            putExtra(IntentExtras.CONTENT_TYPE, IntentExtras.ContentType.MOVIE)
+            putExtra(IntentExtras.CONTENT_ID, movie.id)
+            putExtra(IntentExtras.CONTENT_TITLE, movie.title)
+            putExtra(IntentExtras.CONTENT_URL, movie.farsilandUrl)
+            putExtra(IntentExtras.CONTENT_POSTER_URL, movie.posterUrl)
         }
         startActivity(intent)
     }

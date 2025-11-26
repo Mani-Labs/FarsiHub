@@ -3,22 +3,41 @@ package com.example.farsilandtv.data.repository
 import android.content.Context
 import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.SearchHistory
+import com.example.farsilandtv.utils.SqlSanitizer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /**
  * Repository for search history and auto-complete suggestions
  * Implements deduplication and limit management
+ *
+ * SINGLETON PATTERN: Use getInstance() to get the shared instance.
+ * This prevents multiple database connections and ensures cache consistency.
  */
-class SearchRepository(context: Context) {
+class SearchRepository private constructor(context: Context) {
 
-    private val database = AppDatabase.getDatabase(context)
+    private val database = AppDatabase.getDatabase(context.applicationContext)
     private val searchHistoryDao = database.searchHistoryDao()
 
     companion object {
         private const val MAX_HISTORY_SIZE = 50 // Keep only 50 most recent searches
         private const val DEFAULT_RECENT_LIMIT = 10 // Show 10 recent searches by default
         private const val DEFAULT_SUGGESTION_LIMIT = 5 // Show 5 auto-complete suggestions
+
+        @Volatile
+        private var INSTANCE: SearchRepository? = null
+
+        /**
+         * Get singleton instance of SearchRepository
+         * Thread-safe double-check locking pattern
+         */
+        fun getInstance(context: Context): SearchRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: SearchRepository(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
     }
 
     /**
@@ -59,6 +78,9 @@ class SearchRepository(context: Context) {
     /**
      * Get auto-complete suggestions based on prefix
      * Returns suggestions sorted by recency
+     *
+     * SECURITY: Sanitizes input to prevent SQL injection via LIKE wildcards
+     *
      * @param prefix The text prefix to match (case-insensitive)
      */
     fun getSuggestions(prefix: String): Flow<List<String>> {
@@ -69,8 +91,11 @@ class SearchRepository(context: Context) {
             return kotlinx.coroutines.flow.flowOf(emptyList())
         }
 
+        // SECURITY: Sanitize input to prevent SQL wildcard injection
+        val sanitizedPrefix = SqlSanitizer.sanitizeLikePattern(trimmedPrefix)
+
         // Return suggestions matching prefix
-        return searchHistoryDao.searchSuggestions(trimmedPrefix, DEFAULT_SUGGESTION_LIMIT)
+        return searchHistoryDao.searchSuggestions(sanitizedPrefix, DEFAULT_SUGGESTION_LIMIT)
     }
 
     /**

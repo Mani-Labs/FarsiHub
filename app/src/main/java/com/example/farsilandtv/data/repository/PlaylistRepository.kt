@@ -9,12 +9,32 @@ import kotlinx.coroutines.flow.Flow
 /**
  * Repository for playlist management
  * Handles playlists and their content with business logic
+ *
+ * SINGLETON PATTERN: Use getInstance() to get the shared instance.
+ * This prevents multiple database connections and ensures cache consistency.
  */
-class PlaylistRepository(context: Context) {
+class PlaylistRepository private constructor(context: Context) {
 
-    private val database = AppDatabase.getDatabase(context)
+    private val database = AppDatabase.getDatabase(context.applicationContext)
     private val playlistDao: PlaylistDao = database.playlistDao()
     private val playlistItemDao: PlaylistItemDao = database.playlistItemDao()
+
+    companion object {
+        @Volatile
+        private var INSTANCE: PlaylistRepository? = null
+
+        /**
+         * Get singleton instance of PlaylistRepository
+         * Thread-safe double-check locking pattern
+         */
+        fun getInstance(context: Context): PlaylistRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: PlaylistRepository(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
+    }
 
     // ========== Playlist Management ==========
 

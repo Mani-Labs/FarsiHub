@@ -1,9 +1,6 @@
 package com.example.farsilandtv
 
 import android.os.Bundle
-import android.view.View
-import android.widget.ProgressBar
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.FragmentActivity
@@ -25,9 +22,15 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : FragmentActivity() {
 
+    companion object {
+        // FIXED: Extract magic numbers to named constants
+        private const val DOUBLE_BACK_EXIT_TIMEOUT_MS = 2000L
+        private const val DB_INIT_MAX_ATTEMPTS = 120
+        private const val DB_INIT_CHECK_INTERVAL_MS = 1000L
+    }
+
     // Double-back-to-exit tracking
     private var backPressedTime: Long = 0
-    private val backPressInterval = 2000L // 2 seconds
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Switch from splash theme to main theme before super.onCreate
@@ -41,7 +44,7 @@ class MainActivity : FragmentActivity() {
             override fun handleOnBackPressed() {
                 if (isOnHomeScreen()) {
                     // Home screen: implement double-back-to-exit
-                    if (System.currentTimeMillis() - backPressedTime < backPressInterval) {
+                    if (System.currentTimeMillis() - backPressedTime < DOUBLE_BACK_EXIT_TIMEOUT_MS) {
                         // Double back pressed within 2 seconds, exit app
                         finish()
                     } else {
@@ -76,53 +79,39 @@ class MainActivity : FragmentActivity() {
      * Polls for content_db_initialized flag and starts HomeFragment when ready
      */
     private fun showDatabaseLoadingScreen() {
-        // Show loading message in timestamp area
-        val timestampView = findViewById<TextView>(R.id.timestamp_text)
-        timestampView?.apply {
-            text = "Loading content database..."
-            visibility = View.VISIBLE
-        }
-
         // Poll for initialization complete
         lifecycleScope.launch {
             val prefs = getSharedPreferences("app_state", MODE_PRIVATE)
             var attempts = 0
-            val maxAttempts = 120 // 2 minutes max (120 * 1000ms)
 
             while (!prefs.getBoolean("content_db_initialized", false) &&
                    !prefs.getBoolean("content_db_error", false) &&
-                   attempts < maxAttempts) {
-                delay(1000) // Check every second
+                   attempts < DB_INIT_MAX_ATTEMPTS) {
+                delay(DB_INIT_CHECK_INTERVAL_MS)
                 attempts++
-
-                // Update progress
-                timestampView?.text = "Loading content database... ${attempts}s"
             }
 
             // Check final status
             if (prefs.getBoolean("content_db_initialized", false)) {
                 // Success - load HomeComposeFragment (Compose)
-                timestampView?.visibility = View.GONE
                 if (!supportFragmentManager.isStateSaved) {
                     supportFragmentManager.beginTransaction()
                         .replace(R.id.main_browse_fragment, HomeComposeFragment())
                         .commitNow()
                 }
             } else if (prefs.getBoolean("content_db_error", false)) {
-                // Fatal error - show permanent error message
+                // Fatal error
                 val errorMsg = prefs.getString("content_db_error_message", "Unknown error")
-                timestampView?.text = "FATAL: Database corrupted. Clear app data: Settings → Apps → FarsiPlex → Storage → Clear Data"
                 Toast.makeText(
                     this@MainActivity,
-                    "Database error: $errorMsg",
+                    getString(R.string.error_database_init, errorMsg),
                     Toast.LENGTH_LONG
                 ).show()
             } else {
-                // Timeout - show error
-                timestampView?.text = "Database initialization timed out. Please restart the app."
+                // Timeout
                 Toast.makeText(
                     this@MainActivity,
-                    "Database initialization timed out",
+                    R.string.error_database_timeout,
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -130,25 +119,14 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
-     * Update the timestamp display in the corner
-     * Accepts CharSequence to support colored SpannableStrings
-     */
-    fun updateTimestamp(text: CharSequence) {
-        findViewById<TextView>(R.id.timestamp_text)?.text = text
-    }
-
-    /**
      * Navigate to a specific section
      */
     fun navigateTo(section: String) {
+        // Note: movies, shows, search are now handled by internal Compose navigation
+        // in HomeScreenWithSidebar. Only options needs fragment navigation.
         val fragment = when (section) {
-            "movies" -> MoviesFragment()
-            "shows" -> ShowsFragment()
-            "search" -> SearchFragment()
-            "stats" -> StatsFragment()
-            "sync-settings" -> SyncSettingsFragment()
             "options" -> OptionsFragment()
-            else -> HomeComposeFragment() // Compose version
+            else -> HomeComposeFragment() // Return to home for any unknown
         }
 
         // H2 FIX: Check lifecycle state before committing transaction

@@ -5,9 +5,13 @@ import android.widget.Toast
 import androidx.leanback.app.GuidedStepSupportFragment
 import androidx.leanback.widget.GuidanceStylist
 import androidx.leanback.widget.GuidedAction
+import androidx.lifecycle.lifecycleScope
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.database.DatabaseSource
 import com.example.farsilandtv.data.repository.ContentRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Guided step fragment to select database source (Farsiland or FarsiPlex)
@@ -143,31 +147,39 @@ class DatabaseSourceConfirmationFragment : GuidedStepSupportFragment() {
     override fun onGuidedActionClicked(action: GuidedAction) {
         when (action.id) {
             ACTION_CONFIRM -> {
-                // Switch database
-                val switched = ContentDatabase.switchDatabaseSource(requireContext(), newSource)
+                // Switch database on background thread to avoid ANR
+                val context = requireContext()
+                val activity = requireActivity()
 
-                if (switched) {
-                    // P2 FIX: Issue #11 - Clear stale cache entries from old source
-                    ContentRepository.getInstance(requireContext()).clearCache()
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.switched_to_database_source, newSource.displayName),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                lifecycleScope.launch {
+                    // Run switch on IO thread
+                    val switched = withContext(Dispatchers.IO) {
+                        ContentDatabase.switchDatabaseSource(context, newSource)
+                    }
 
-                    onSourceChanged?.invoke(newSource)
+                    if (switched) {
+                        // P2 FIX: Issue #11 - Clear stale cache entries from old source
+                        ContentRepository.getInstance(context).clearCache()
+                        Toast.makeText(
+                            context,
+                            getString(R.string.switched_to_database_source, newSource.displayName),
+                            Toast.LENGTH_SHORT
+                        ).show()
 
-                    // Clear back stack and restart activity
-                    val fragmentManager = requireActivity().supportFragmentManager
+                        onSourceChanged?.invoke(newSource)
 
-                    // Pop all guided step fragments (both confirmation and selection)
-                    fragmentManager.popBackStack(null, androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE)
+                        // Clear back stack and restart activity
+                        val fragmentManager = activity.supportFragmentManager
 
-                    // Restart MainActivity properly instead of recreate()
-                    requireActivity().window.decorView.post {
-                        val intent = requireActivity().intent
-                        requireActivity().finish()
-                        requireActivity().startActivity(intent)
+                        // Pop all guided step fragments (both confirmation and selection)
+                        fragmentManager.popBackStack(null, androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE)
+
+                        // Restart MainActivity properly instead of recreate()
+                        activity.window.decorView.post {
+                            val intent = activity.intent
+                            activity.finish()
+                            activity.startActivity(intent)
+                        }
                     }
                 }
             }

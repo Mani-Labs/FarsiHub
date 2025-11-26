@@ -10,14 +10,32 @@ import kotlinx.coroutines.flow.map
 /**
  * Repository for managing notification preferences
  * Feature #9 - Push Notifications
+ *
+ * SINGLETON PATTERN: Use getInstance() to get the shared instance.
+ * This prevents multiple database connections and ensures cache consistency.
  */
-class NotificationPreferencesRepository(context: Context) {
+class NotificationPreferencesRepository private constructor(context: Context) {
 
     companion object {
         private const val TAG = "NotificationPrefsRepo"
+
+        @Volatile
+        private var INSTANCE: NotificationPreferencesRepository? = null
+
+        /**
+         * Get singleton instance of NotificationPreferencesRepository
+         * Thread-safe double-check locking pattern
+         */
+        fun getInstance(context: Context): NotificationPreferencesRepository {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: NotificationPreferencesRepository(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
     }
 
-    private val database = AppDatabase.getDatabase(context)
+    private val database = AppDatabase.getDatabase(context.applicationContext)
     private val dao = database.notificationPreferencesDao()
 
     /**

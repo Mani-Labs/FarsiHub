@@ -14,23 +14,28 @@ interface CachedMovieDao {
     @Query("SELECT * FROM cached_movies ORDER BY dateAdded DESC")
     fun getAllMovies(): Flow<List<CachedMovie>>
 
-    @Query("SELECT * FROM cached_movies ORDER BY lastUpdated DESC LIMIT :limit")
+    // FIX: Use dateAdded instead of lastUpdated to show truly "recent" movies
+    // lastUpdated changes when movie metadata is updated
+    // dateAdded represents when movie was first discovered/added to database
+    @Query("SELECT * FROM cached_movies ORDER BY dateAdded DESC LIMIT :limit")
     fun getRecentMovies(limit: Int = 20): Flow<List<CachedMovie>>
 
     // CRITICAL FIX: Offline pagination support with LIMIT and OFFSET
-    @Query("SELECT * FROM cached_movies ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent movies" ordering
+    @Query("SELECT * FROM cached_movies ORDER BY dateAdded DESC LIMIT :limit OFFSET :offset")
     fun getRecentMoviesWithOffset(limit: Int, offset: Int): Flow<List<CachedMovie>>
 
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
-    // OPTIMIZATION: Uses lastUpdated (website publish date) instead of dateAdded (scrape date) for correct chronological order
-    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent movies" ordering
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC LIMIT :limit")
     fun getRecentMoviesFiltered(urlPattern: String, limit: Int = 20): Flow<List<CachedMovie>>
 
     // AUDIT FIX (Second Audit #6): Efficient filtered pagination with LIMIT and OFFSET
     // Combines URL filtering with OFFSET-based pagination for constant memory usage
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
-    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent movies" ordering
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC LIMIT :limit OFFSET :offset")
     fun getRecentMoviesFilteredWithOffset(urlPattern: String, limit: Int, offset: Int): Flow<List<CachedMovie>>
 
     // Feature #18: Paging 3 for unlimited scrolling (replaces 300-item caps)
@@ -39,9 +44,37 @@ interface CachedMovieDao {
 
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
-    // OPTIMIZATION: Uses lastUpdated (website publish date) instead of dateAdded (scrape date) for correct chronological order
-    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent movies" ordering
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC")
     fun getMoviesPagedFiltered(urlPattern: String): PagingSource<Int, CachedMovie>
+
+    // Genre filter + source filter (dateAdded DESC)
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY dateAdded DESC")
+    fun getMoviesPagedByGenre(urlPattern: String, genre: String): PagingSource<Int, CachedMovie>
+
+    // Sort by title (A-Z)
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY title ASC")
+    fun getMoviesPagedByTitle(urlPattern: String): PagingSource<Int, CachedMovie>
+
+    // Sort by year (newest first)
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY year DESC, dateAdded DESC")
+    fun getMoviesPagedByYear(urlPattern: String): PagingSource<Int, CachedMovie>
+
+    // Sort by rating (highest first)
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY rating DESC, dateAdded DESC")
+    fun getMoviesPagedByRating(urlPattern: String): PagingSource<Int, CachedMovie>
+
+    // Genre + sort by title
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY title ASC")
+    fun getMoviesPagedByGenreTitle(urlPattern: String, genre: String): PagingSource<Int, CachedMovie>
+
+    // Genre + sort by year
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY year DESC, dateAdded DESC")
+    fun getMoviesPagedByGenreYear(urlPattern: String, genre: String): PagingSource<Int, CachedMovie>
+
+    // Genre + sort by rating
+    @Query("SELECT * FROM cached_movies WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY rating DESC, dateAdded DESC")
+    fun getMoviesPagedByGenreRating(urlPattern: String, genre: String): PagingSource<Int, CachedMovie>
 
     @Query("SELECT * FROM cached_movies WHERE id = :movieId")
     suspend fun getMovieById(movieId: Int): CachedMovie?
@@ -101,6 +134,12 @@ interface CachedMovieDao {
     @Query("SELECT COUNT(*) FROM cached_movies")
     suspend fun getMovieCount(): Int
 
+    @Query("SELECT MAX(lastUpdated) FROM cached_movies")
+    suspend fun getNewestMovieTimestamp(): Long?
+
+    @Query("SELECT MAX(lastUpdated) FROM cached_movies WHERE farsilandUrl LIKE :urlPattern")
+    suspend fun getNewestMovieTimestampByUrlPattern(urlPattern: String): Long?
+
     @Query("SELECT * FROM cached_movies WHERE lastUpdated > :timestamp")
     suspend fun getMoviesUpdatedAfter(timestamp: Long): List<CachedMovie>
 
@@ -125,17 +164,21 @@ interface CachedSeriesDao {
     @Query("SELECT * FROM cached_series ORDER BY dateAdded DESC")
     fun getAllSeries(): Flow<List<CachedSeries>>
 
-    @Query("SELECT * FROM cached_series ORDER BY lastUpdated DESC LIMIT :limit")
+    // FIX: Use dateAdded instead of lastUpdated to show truly "recent" series
+    // lastUpdated changes when series metadata is updated (e.g., viewing series details)
+    // dateAdded represents when series was first discovered/added to database
+    @Query("SELECT * FROM cached_series ORDER BY dateAdded DESC LIMIT :limit")
     fun getRecentSeries(limit: Int = 20): Flow<List<CachedSeries>>
 
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
-    // OPTIMIZATION: Uses lastUpdated (website publish date) instead of dateAdded (scrape date) for correct chronological order
-    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent shows" ordering
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC LIMIT :limit")
     fun getRecentSeriesFiltered(urlPattern: String, limit: Int = 20): Flow<List<CachedSeries>>
 
     // CRITICAL FIX: Offline pagination support with LIMIT and OFFSET
-    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent shows" ordering
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC LIMIT :limit OFFSET :offset")
     fun getRecentSeriesFilteredWithOffset(urlPattern: String, limit: Int, offset: Int): Flow<List<CachedSeries>>
 
     // Feature #18: Paging 3 for unlimited scrolling (replaces 300-item caps)
@@ -144,9 +187,37 @@ interface CachedSeriesDao {
 
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
-    // OPTIMIZATION: Uses lastUpdated (website publish date) instead of dateAdded (scrape date) for correct chronological order
-    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC")
+    // FIX: Use dateAdded instead of lastUpdated for correct "recent shows" ordering
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC")
     fun getSeriesPagedFiltered(urlPattern: String): PagingSource<Int, CachedSeries>
+
+    // Genre filter + source filter (dateAdded DESC)
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY dateAdded DESC")
+    fun getSeriesPagedByGenre(urlPattern: String, genre: String): PagingSource<Int, CachedSeries>
+
+    // Sort by title (A-Z)
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY title ASC")
+    fun getSeriesPagedByTitle(urlPattern: String): PagingSource<Int, CachedSeries>
+
+    // Sort by year (newest first)
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY year DESC, dateAdded DESC")
+    fun getSeriesPagedByYear(urlPattern: String): PagingSource<Int, CachedSeries>
+
+    // Sort by rating (highest first)
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY rating DESC, dateAdded DESC")
+    fun getSeriesPagedByRating(urlPattern: String): PagingSource<Int, CachedSeries>
+
+    // Genre + sort by title
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY title ASC")
+    fun getSeriesPagedByGenreTitle(urlPattern: String, genre: String): PagingSource<Int, CachedSeries>
+
+    // Genre + sort by year
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY year DESC, dateAdded DESC")
+    fun getSeriesPagedByGenreYear(urlPattern: String, genre: String): PagingSource<Int, CachedSeries>
+
+    // Genre + sort by rating
+    @Query("SELECT * FROM cached_series WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' AND genres LIKE '%' || :genre || '%' ESCAPE '\\' ORDER BY rating DESC, dateAdded DESC")
+    fun getSeriesPagedByGenreRating(urlPattern: String, genre: String): PagingSource<Int, CachedSeries>
 
     @Query("SELECT * FROM cached_series WHERE id = :seriesId")
     suspend fun getSeriesById(seriesId: Int): CachedSeries?
@@ -208,6 +279,12 @@ interface CachedSeriesDao {
     @Query("SELECT COUNT(*) FROM cached_series")
     suspend fun getSeriesCount(): Int
 
+    @Query("SELECT MAX(lastUpdated) FROM cached_series")
+    suspend fun getNewestSeriesTimestamp(): Long?
+
+    @Query("SELECT MAX(lastUpdated) FROM cached_series WHERE farsilandUrl LIKE :urlPattern")
+    suspend fun getNewestSeriesTimestampByUrlPattern(urlPattern: String): Long?
+
     @Query("SELECT * FROM cached_series WHERE lastUpdated > :timestamp")
     suspend fun getSeriesUpdatedAfter(timestamp: Long): List<CachedSeries>
 
@@ -235,16 +312,21 @@ interface CachedEpisodeDao {
     @Query("SELECT * FROM cached_episodes WHERE seriesId = :seriesId AND season = :season ORDER BY episode")
     fun getEpisodesForSeason(seriesId: Int, season: Int): Flow<List<CachedEpisode>>
 
-    @Query("SELECT * FROM cached_episodes ORDER BY lastUpdated DESC LIMIT :limit")
+    // FIX: Use dateAdded instead of lastUpdated to show truly "latest" episodes
+    // lastUpdated changes whenever episode is re-scraped (e.g., viewing series details)
+    // dateAdded represents when episode was first discovered/added to database
+    @Query("SELECT * FROM cached_episodes ORDER BY dateAdded DESC LIMIT :limit")
     fun getRecentEpisodes(limit: Int = 20): Flow<List<CachedEpisode>>
 
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
-    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit")
+    // FIX: Use dateAdded instead of lastUpdated for correct "latest episodes" ordering
+    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC LIMIT :limit")
     fun getRecentEpisodesFiltered(urlPattern: String, limit: Int = 20): Flow<List<CachedEpisode>>
 
     // CRITICAL FIX: Offline pagination support with LIMIT and OFFSET
-    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC LIMIT :limit OFFSET :offset")
+    // FIX: Use dateAdded instead of lastUpdated for correct "latest episodes" ordering
+    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC LIMIT :limit OFFSET :offset")
     fun getRecentEpisodesFilteredWithOffset(urlPattern: String, limit: Int, offset: Int): Flow<List<CachedEpisode>>
 
     // Feature #18: Paging 3 for unlimited scrolling (replaces 300-item caps)
@@ -253,7 +335,8 @@ interface CachedEpisodeDao {
 
     // SECURITY: Use ESCAPE '\\' clause to prevent SQL injection via LIKE wildcards
     // Callers MUST sanitize input with SqlSanitizer.sanitizeLikePattern() before passing urlPattern
-    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY lastUpdated DESC")
+    // FIX: Use dateAdded instead of lastUpdated for correct "latest episodes" ordering
+    @Query("SELECT * FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern ESCAPE '\\' ORDER BY dateAdded DESC")
     fun getEpisodesPagedFiltered(urlPattern: String): PagingSource<Int, CachedEpisode>
 
     @Query("SELECT * FROM cached_episodes WHERE id = :id")
@@ -292,6 +375,15 @@ interface CachedEpisodeDao {
 
     @Query("SELECT COUNT(DISTINCT season) FROM cached_episodes WHERE seriesId = :seriesId")
     suspend fun getSeasonCount(seriesId: Int): Int
+
+    @Query("SELECT COUNT(*) FROM cached_episodes WHERE seriesId = :seriesId")
+    suspend fun getEpisodeCountForSeries(seriesId: Int): Int
+
+    @Query("SELECT MAX(lastUpdated) FROM cached_episodes")
+    suspend fun getNewestEpisodeTimestamp(): Long?
+
+    @Query("SELECT MAX(lastUpdated) FROM cached_episodes WHERE farsilandUrl LIKE :urlPattern")
+    suspend fun getNewestEpisodeTimestampByUrlPattern(urlPattern: String): Long?
 
     @Query("SELECT * FROM cached_episodes WHERE lastUpdated > :timestamp")
     suspend fun getEpisodesUpdatedAfter(timestamp: Long): List<CachedEpisode>

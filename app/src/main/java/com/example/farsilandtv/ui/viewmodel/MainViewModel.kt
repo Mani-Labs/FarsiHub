@@ -15,6 +15,11 @@ import com.example.farsilandtv.data.models.FeaturedContent
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.ErrorHandler
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -37,14 +42,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Feature #18: Paging 3 - Unlimited scrolling (replaces 300-item caps)
     // These flows are database-backed and can handle unlimited items efficiently
-    val movies: Flow<PagingData<Movie>> = repository.getMoviesPaged()
+    // Lazy initialization to match repository's lazy pattern
+    val movies: Flow<PagingData<Movie>> by lazy {
+        repository.getMoviesPaged().cachedIn(viewModelScope)
+    }
+
+    val series: Flow<PagingData<Series>> by lazy {
+        repository.getSeriesPaged().cachedIn(viewModelScope)
+    }
+
+    val episodes: Flow<PagingData<com.example.farsilandtv.data.models.Episode>> by lazy {
+        repository.getEpisodesPaged().cachedIn(viewModelScope)
+    }
+
+    // Genre/Sort filter state for MoviesScreen
+    private val _movieGenreFilter = MutableStateFlow<String?>(null)
+    val movieGenreFilter: StateFlow<String?> = _movieGenreFilter.asStateFlow()
+
+    private val _movieSortOption = MutableStateFlow("Recent")
+    val movieSortOption: StateFlow<String> = _movieSortOption.asStateFlow()
+
+    // Filtered movies flow - reacts to genre/sort changes
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val filteredMovies: Flow<PagingData<Movie>> = combine(
+        _movieGenreFilter,
+        _movieSortOption
+    ) { genre, sort -> Pair(genre, sort) }
+        .flatMapLatest { (genre, sort) ->
+            repository.getMoviesPagedWithFilter(genre, sort)
+        }
         .cachedIn(viewModelScope)
 
-    val series: Flow<PagingData<Series>> = repository.getSeriesPaged()
+    fun setMovieGenreFilter(genre: String?) {
+        _movieGenreFilter.value = genre
+    }
+
+    fun setMovieSortOption(sort: String) {
+        _movieSortOption.value = sort
+    }
+
+    // Genre/Sort filter state for ShowsScreen
+    private val _seriesGenreFilter = MutableStateFlow<String?>(null)
+    val seriesGenreFilter: StateFlow<String?> = _seriesGenreFilter.asStateFlow()
+
+    private val _seriesSortOption = MutableStateFlow("Recent")
+    val seriesSortOption: StateFlow<String> = _seriesSortOption.asStateFlow()
+
+    // Filtered series flow - reacts to genre/sort changes
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val filteredSeries: Flow<PagingData<Series>> = combine(
+        _seriesGenreFilter,
+        _seriesSortOption
+    ) { genre, sort -> Pair(genre, sort) }
+        .flatMapLatest { (genre, sort) ->
+            repository.getSeriesPagedWithFilter(genre, sort)
+        }
         .cachedIn(viewModelScope)
 
-    val episodes: Flow<PagingData<com.example.farsilandtv.data.models.Episode>> = repository.getEpisodesPaged()
-        .cachedIn(viewModelScope)
+    fun setSeriesGenreFilter(genre: String?) {
+        _seriesGenreFilter.value = genre
+    }
+
+    fun setSeriesSortOption(sort: String) {
+        _seriesSortOption.value = sort
+    }
 
     // Legacy LiveData for compatibility (used by existing code)
     private val _recentMovies = MutableLiveData<List<Movie>>()
@@ -328,7 +389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun loadMovies() {
         moviesPage = 1
-        val result = repository.getMovies(page = 1, perPage = 30)
+        val result = repository.getMovies(page = 1, perPage = 50)
         result.onSuccess { movies ->
             _recentMovies.postValue(movies)
         }.onFailure { e ->
@@ -380,7 +441,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun loadSeries() {
         seriesPage = 1
-        val result = repository.getTvShows(page = 1, perPage = 30)
+        val result = repository.getTvShows(page = 1, perPage = 50)
         result.onSuccess { series ->
             _recentSeries.postValue(series)
         }.onFailure { e ->
@@ -432,7 +493,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun loadEpisodes() {
         episodesPage = 1
-        val result = repository.getRecentEpisodes(page = 1, perPage = 30)
+        val result = repository.getRecentEpisodes(page = 1, perPage = 50)
         result.onSuccess { episodes ->
             _recentEpisodes.postValue(episodes)
         }.onFailure { e ->

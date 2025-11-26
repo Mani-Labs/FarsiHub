@@ -19,7 +19,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
 import com.example.farsilandtv.data.models.VideoUrl
@@ -47,6 +46,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.Tracks
 import androidx.media3.common.C
 import com.example.farsilandtv.utils.AutoFrameRateHelper
+import com.example.farsilandtv.utils.IntentExtras
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -75,8 +75,8 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private lateinit var repository: ContentRepository
     private val videoScraper = VideoUrlScraper
-    private val watchlistRepo by lazy { WatchlistRepository(this) }
-    private val playbackRepo by lazy { PlaybackRepository(this) }
+    private val watchlistRepo by lazy { WatchlistRepository.getInstance(this) }
+    private val playbackRepo by lazy { PlaybackRepository.getInstance(this) }
 
     // Content info from intent
     private lateinit var contentType: String // "movie" or "episode"
@@ -95,9 +95,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         getSharedPreferences("VideoPlayerPrefs", Context.MODE_PRIVATE)
     }
 
-    // CDN mirror fallback
+    // CDN mirror fallback - track which URLs have been tried
     private var currentVideoUrl: String = ""
-    private var hasTriedMirror: Boolean = false
+    private var triedUrls: MutableSet<String> = mutableSetOf()
 
     // Playback position tracking (C1: Removed FarsilandDatabase, now using AppDatabase via PlaybackRepository)
     private val positionSaveLock = Any()
@@ -129,17 +129,17 @@ class VideoPlayerActivity : AppCompatActivity() {
 
             // H4 FIX: Fail-fast validation of required intent extras
             // Extract all intent extras first
-            contentType = intent.getStringExtra("CONTENT_TYPE") ?: "movie"
-            contentId = intent.getIntExtra("CONTENT_ID", 0)
-            contentTitle = intent.getStringExtra("CONTENT_TITLE") ?: "Unknown"
-            contentUrl = intent.getStringExtra("CONTENT_URL") ?: ""
-            contentPosterUrl = intent.getStringExtra("CONTENT_POSTER_URL")
+            contentType = intent.getStringExtra(IntentExtras.CONTENT_TYPE) ?: IntentExtras.ContentType.MOVIE
+            contentId = intent.getIntExtra(IntentExtras.CONTENT_ID, 0)
+            contentTitle = intent.getStringExtra(IntentExtras.CONTENT_TITLE) ?: "Unknown"
+            contentUrl = intent.getStringExtra(IntentExtras.CONTENT_URL) ?: ""
+            contentPosterUrl = intent.getStringExtra(IntentExtras.CONTENT_POSTER_URL)
 
             // For episodes, get additional info
-            if (contentType == "episode") {
-                seriesId = intent.getIntExtra("SERIES_ID", 0)
-                seasonNumber = intent.getIntExtra("EPISODE_SEASON", 0)
-                episodeNumber = intent.getIntExtra("EPISODE_NUMBER", 0)
+            if (contentType == IntentExtras.ContentType.EPISODE) {
+                seriesId = intent.getIntExtra(IntentExtras.SERIES_ID, 0)
+                seasonNumber = intent.getIntExtra(IntentExtras.EPISODE_SEASON, 0)
+                episodeNumber = intent.getIntExtra(IntentExtras.EPISODE_NUMBER, 0)
             }
 
             // Validate required data - fail-fast to prevent invalid state
@@ -159,7 +159,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 return
             }
 
-            if (contentType != "movie" && contentType != "episode") {
+            if (contentType != IntentExtras.ContentType.MOVIE && contentType != IntentExtras.ContentType.EPISODE) {
                 Log.e(TAG, "Error: Invalid content type: $contentType")
                 // AUDIT FIX #30: Use localized string resource
                 Toast.makeText(this, getString(R.string.error_invalid_content_type), Toast.LENGTH_LONG).show()
@@ -215,8 +215,8 @@ class VideoPlayerActivity : AppCompatActivity() {
             registerNetworkCallback()
 
             // Check if quality was already selected
-            val selectedVideoUrl = intent.getStringExtra("SELECTED_VIDEO_URL")
-            val selectedQuality = intent.getStringExtra("SELECTED_VIDEO_QUALITY")
+            val selectedVideoUrl = intent.getStringExtra(IntentExtras.SELECTED_VIDEO_URL)
+            val selectedQuality = intent.getStringExtra(IntentExtras.SELECTED_VIDEO_QUALITY)
 
             if (selectedVideoUrl != null && selectedQuality != null) {
                 // Quality already selected - play directly
@@ -253,10 +253,8 @@ class VideoPlayerActivity : AppCompatActivity() {
      * Result: New video request is ignored, player continues playing old video
      * Solution: Update intent and re-initialize player with new content
      */
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-
-        if (intent == null) return
 
         Log.d(TAG, "onNewIntent() - New video request received while player is open")
 
@@ -270,16 +268,16 @@ class VideoPlayerActivity : AppCompatActivity() {
         player?.stop()
 
         // Extract new content data from intent
-        contentType = intent.getStringExtra("CONTENT_TYPE") ?: "movie"
-        contentId = intent.getIntExtra("CONTENT_ID", 0)
-        contentTitle = intent.getStringExtra("CONTENT_TITLE") ?: "Unknown"
-        contentUrl = intent.getStringExtra("CONTENT_URL") ?: ""
-        contentPosterUrl = intent.getStringExtra("CONTENT_POSTER_URL")
+        contentType = intent.getStringExtra(IntentExtras.CONTENT_TYPE) ?: IntentExtras.ContentType.MOVIE
+        contentId = intent.getIntExtra(IntentExtras.CONTENT_ID, 0)
+        contentTitle = intent.getStringExtra(IntentExtras.CONTENT_TITLE) ?: "Unknown"
+        contentUrl = intent.getStringExtra(IntentExtras.CONTENT_URL) ?: ""
+        contentPosterUrl = intent.getStringExtra(IntentExtras.CONTENT_POSTER_URL)
 
-        if (contentType == "episode") {
-            seriesId = intent.getIntExtra("SERIES_ID", 0)
-            seasonNumber = intent.getIntExtra("EPISODE_SEASON", 0)
-            episodeNumber = intent.getIntExtra("EPISODE_NUMBER", 0)
+        if (contentType == IntentExtras.ContentType.EPISODE) {
+            seriesId = intent.getIntExtra(IntentExtras.SERIES_ID, 0)
+            seasonNumber = intent.getIntExtra(IntentExtras.EPISODE_SEASON, 0)
+            episodeNumber = intent.getIntExtra(IntentExtras.EPISODE_NUMBER, 0)
         }
 
         // Validate required data
@@ -289,11 +287,14 @@ class VideoPlayerActivity : AppCompatActivity() {
             return
         }
 
+        // Reset tried URLs for new video
+        triedUrls.clear()
+
         Log.d(TAG, "onNewIntent: Switching to new video - $contentType: $contentTitle")
 
         // Check if quality was pre-selected
-        val selectedVideoUrl = intent.getStringExtra("SELECTED_VIDEO_URL")
-        val selectedQuality = intent.getStringExtra("SELECTED_VIDEO_QUALITY")
+        val selectedVideoUrl = intent.getStringExtra(IntentExtras.SELECTED_VIDEO_URL)
+        val selectedQuality = intent.getStringExtra(IntentExtras.SELECTED_VIDEO_QUALITY)
 
         if (selectedVideoUrl != null && selectedQuality != null) {
             currentVideoUrl = selectedVideoUrl
@@ -451,7 +452,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     val cause = error.cause
                     if (cause is HttpDataSource.InvalidResponseCodeException) {
                         val statusCode = cause.responseCode
-                        Log.e(TAG, "HTTP error detected: $statusCode - clearing cache to prevent caching error response")
+                        Log.e(TAG, "HTTP error detected: $statusCode for URL: $currentVideoUrl")
 
                         // Clear cache for this video to prevent repeated errors from cached bad response
                         cache?.let {
@@ -467,17 +468,22 @@ class VideoPlayerActivity : AppCompatActivity() {
                             }
                         }
 
-                        showError("HTTP error $statusCode: ${cause.message}")
+                        // Try next available mirror URL on 403/404/other HTTP errors
+                        if (tryNextMirrorUrl()) {
+                            return // Successfully started trying another mirror
+                        }
+
+                        // No more mirrors available
+                        showError("HTTP error $statusCode - No working video sources found")
                         return
                     }
 
-                    // Try CDN mirror fallback if not already tried
-                    if (!hasTriedMirror && currentVideoUrl.contains("d1.flnd.buzz")) {
-                        Log.d(TAG, "Primary CDN failed, trying mirror...")
-                        tryMirrorCDN()
-                    } else {
-                        showError("Playback error: ${error.message}")
+                    // Try next mirror for other playback errors too
+                    if (tryNextMirrorUrl()) {
+                        return
                     }
+
+                    showError("Playback error: ${error.message}")
                 }
 
                 // AFR: Detect video frame rate and switch display mode
@@ -708,56 +714,42 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * P2 FIX: Issue #10 - Try mirror CDN using availableQualities list
-     * Previous code: Hardcoded replace("d1.flnd.buzz", "d2.flnd.buzz") failed for other CDNs
-     * Fixed: Use availableQualities list which contains all mirrors from scraper
+     * Try next available mirror URL when current one fails
+     * Cycles through ALL available video URLs from the scraper
+     * Returns true if another URL is being tried, false if no more URLs available
      */
-    private fun tryMirrorCDN() {
-        if (hasTriedMirror) return
+    private fun tryNextMirrorUrl(): Boolean {
+        // Mark current URL as tried
+        triedUrls.add(currentVideoUrl)
 
-        hasTriedMirror = true
+        Log.d(TAG, "Tried URLs so far: $triedUrls")
+        Log.d(TAG, "Available URLs: ${availableQualities.map { it.url }}")
 
-        // Find mirror URL from availableQualities list
-        // Scraper provides multiple URLs with different mirrors for same quality
-        val currentQuality = availableQualities.getOrNull(currentQualityIndex)
-        val mirrorQuality = availableQualities.find {
-            // Find alternative URL with same quality but different domain
-            it.quality == currentQuality?.quality && it.url != currentVideoUrl
-        }
+        // Find next untried URL from availableQualities list
+        val nextUrl = availableQualities.find { !triedUrls.contains(it.url) }
 
-        if (mirrorQuality != null) {
-            Log.d(TAG, "Found mirror URL: ${mirrorQuality.url}")
-            Toast.makeText(this, "Retrying with backup server...", Toast.LENGTH_SHORT).show()
+        if (nextUrl != null) {
+            Log.d(TAG, "Trying next mirror URL: ${nextUrl.url} (${nextUrl.quality})")
+            Toast.makeText(this, "Trying backup server...", Toast.LENGTH_SHORT).show()
 
             // Get current position before switching
             val currentPosition = player?.currentPosition ?: 0L
-            val wasPlaying = player?.isPlaying ?: false
+            val wasPlaying = player?.isPlaying ?: true  // Default to playing
 
-            // Play from mirror CDN at same position
-            currentVideoUrl = mirrorQuality.url
-            val mediaItem = MediaItem.fromUri(mirrorQuality.url)
+            // Play from next URL at same position
+            currentVideoUrl = nextUrl.url
+            val mediaItem = MediaItem.fromUri(nextUrl.url)
             player?.apply {
                 setMediaItem(mediaItem)
                 seekTo(currentPosition)
                 prepare()
                 playWhenReady = wasPlaying
             }
-        } else {
-            // Fallback to old hardcoded behavior if no mirror in list
-            Log.w(TAG, "No mirror found in availableQualities, trying hardcoded d1→d2 replacement")
-            val mirrorUrl = currentVideoUrl.replace("d1.flnd.buzz", "d2.flnd.buzz")
-            if (mirrorUrl != currentVideoUrl) {
-                currentVideoUrl = mirrorUrl
-                val mediaItem = MediaItem.fromUri(mirrorUrl)
-                player?.apply {
-                    setMediaItem(mediaItem)
-                    seekTo(player?.currentPosition ?: 0L)
-                    prepare()
-                }
-            } else {
-                showError("No backup server available for this video")
-            }
+            return true
         }
+
+        Log.e(TAG, "No more mirror URLs to try. Tried ${triedUrls.size} URLs.")
+        return false
     }
 
     private fun showError(message: String) {
@@ -1007,8 +999,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         // Save preference
         prefs.edit().putString(PREF_QUALITY, selectedQuality.quality).apply()
 
-        // Reset mirror retry flag when switching quality
-        hasTriedMirror = false
+        // Reset tried URLs when switching quality so all mirrors can be tried fresh
+        triedUrls.clear()
 
         // Get current playback state
         val wasPlaying = player?.isPlaying ?: false
