@@ -38,12 +38,17 @@ class DetailsActivity : ComponentActivity() {
             }
         })
 
-        // Get movie from intent
-        val movie = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getSerializableExtra(EXTRA_MOVIE, Movie::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getSerializableExtra(EXTRA_MOVIE) as? Movie
+        // M1 FIX: Safe cast with ClassCastException protection
+        val movie: Movie? = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getSerializableExtra(EXTRA_MOVIE, Movie::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getSerializableExtra(EXTRA_MOVIE) as? Movie
+            }
+        } catch (e: ClassCastException) {
+            Log.e(TAG, "Invalid movie object in intent", e)
+            null
         }
 
         if (movie != null) {

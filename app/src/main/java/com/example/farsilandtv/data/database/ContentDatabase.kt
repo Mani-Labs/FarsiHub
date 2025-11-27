@@ -292,8 +292,12 @@ abstract class ContentDatabase : RoomDatabase() {
                     currentDatabaseName = null
                 }
 
-                // Return existing or create new instance
-                INSTANCE ?: run {
+                // C1 FIX: Double-checked locking pattern for thread-safe singleton
+                // Return existing instance if another thread created it while we waited
+                INSTANCE?.let { return@synchronized it }
+
+                // Create new instance (only one thread reaches here due to synchronized)
+                run {
                     // Bug #8 fix: Validate database file exists before trying to load
                     try {
                         val assetPath = "databases/$databaseName"

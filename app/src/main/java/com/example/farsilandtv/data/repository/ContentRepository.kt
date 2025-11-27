@@ -1420,10 +1420,14 @@ class ContentRepository private constructor(context: Context) {
                 val allNewMovies = mutableListOf<com.example.farsilandtv.data.models.wordpress.WPMovie>()
                 val allNewSeries = mutableListOf<com.example.farsilandtv.data.models.wordpress.WPTvShow>()
 
+                // M4 FIX: Add safeguards to prevent infinite loops and OOM
+                val MAX_PAGES = 100  // Prevent infinite loops (5000 items max at 50/page)
+                val MAX_ITEMS = 5000 // Prevent OOM on large sync
+
                 // AUDIT FIX 1.1: Paginate movies until reaching old content
                 var moviesPage = 1
                 var keepFetchingMovies = true
-                while (keepFetchingMovies) {
+                while (keepFetchingMovies && moviesPage <= MAX_PAGES && allNewMovies.size < MAX_ITEMS) {
                     ensureActive()
                     val wpMovies = try {
                         ErrorHandler.retryWithExponentialBackoff {
@@ -1449,7 +1453,8 @@ class ContentRepository private constructor(context: Context) {
                 // AUDIT FIX 1.1: Paginate series until reaching old content
                 var seriesPage = 1
                 var keepFetchingSeries = true
-                while (keepFetchingSeries) {
+                // M4 FIX: Apply same safeguards to series loop
+                while (keepFetchingSeries && seriesPage <= MAX_PAGES && allNewSeries.size < MAX_ITEMS) {
                     ensureActive()
                     val wpSeries = try {
                         ErrorHandler.retryWithExponentialBackoff {
@@ -1847,7 +1852,8 @@ class ContentRepository private constructor(context: Context) {
                 .trim()
                 .replace(Regex("\\s+"), " ") // Collapse multiple spaces
         } catch (e: Exception) {
-            // Fallback: Return original string if regex fails
+            // M3 FIX: Log exception for debugging instead of silent failure
+            Log.w(TAG, "stripHtmlTags: Regex stripper failed, returning original: ${e.message}")
             html
         }
     }

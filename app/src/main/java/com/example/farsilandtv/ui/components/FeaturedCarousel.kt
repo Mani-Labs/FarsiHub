@@ -149,7 +149,13 @@ fun FeaturedCarousel(
                 // When carousel gains focus, scroll it fully into view
                 if (focusState.hasFocus) {
                     coroutineScope.launch {
-                        bringIntoViewRequester.bringIntoView()
+                        // M2 FIX: Wrap in try-catch to handle detached layout edge case
+                        try {
+                            bringIntoViewRequester.bringIntoView()
+                        } catch (e: Exception) {
+                            // Silently ignore - carousel still renders, just may not scroll perfectly
+                            android.util.Log.d("FeaturedCarousel", "BringIntoView failed: ${e.message}")
+                        }
                     }
                 }
             }

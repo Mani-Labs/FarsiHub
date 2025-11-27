@@ -110,6 +110,9 @@ class HomeComposeFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        // H1 FIX: Clear navigation flag to prevent memory leak
+        // If flag remains true after view destroyed, it could hold reference to disposed Compose state
+        isNavigating = false
         composeView = null
         wrapper = null
         super.onDestroyView()

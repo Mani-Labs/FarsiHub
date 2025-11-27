@@ -659,8 +659,9 @@ class ContentSyncWorker(
 
         try {
             for (seriesId in seriesIds) {
-                val episodeCount = contentDb.episodeDao().getEpisodeCountForSeries(seriesId)
-                val seasonCount = contentDb.episodeDao().getSeasonCount(seriesId)
+                // M4 FIX: Safe null handling for counts - default to 0 if null
+                val episodeCount = contentDb.episodeDao().getEpisodeCountForSeries(seriesId) ?: 0
+                val seasonCount = contentDb.episodeDao().getSeasonCount(seriesId) ?: 0
 
                 val series = contentDb.seriesDao().getSeriesById(seriesId)
                 if (series != null && (series.totalEpisodes != episodeCount || series.totalSeasons != seasonCount)) {

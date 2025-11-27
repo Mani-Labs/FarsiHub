@@ -152,34 +152,49 @@ class DatabaseSourceConfirmationFragment : GuidedStepSupportFragment() {
                 val activity = requireActivity()
 
                 lifecycleScope.launch {
-                    // Run switch on IO thread
-                    val switched = withContext(Dispatchers.IO) {
-                        ContentDatabase.switchDatabaseSource(context, newSource)
-                    }
+                    try {
+                        // Run switch on IO thread
+                        val switched = withContext(Dispatchers.IO) {
+                            ContentDatabase.switchDatabaseSource(context, newSource)
+                        }
 
-                    if (switched) {
-                        // P2 FIX: Issue #11 - Clear stale cache entries from old source
-                        ContentRepository.getInstance(context).clearCache()
+                        if (switched) {
+                            // H2 FIX: Clear cache and ensure database state is consistent
+                            // before activity recreation
+                            try {
+                                ContentRepository.getInstance(context).clearCache()
+                            } catch (e: Exception) {
+                                android.util.Log.e("DatabaseSwitch", "Failed to clear cache", e)
+                            }
+
+                            Toast.makeText(
+                                context,
+                                getString(R.string.switched_to_database_source, newSource.displayName),
+                                Toast.LENGTH_SHORT
+                            ).show()
+
+                            onSourceChanged?.invoke(newSource)
+
+                            // Clear back stack and restart activity
+                            val fragmentManager = activity.supportFragmentManager
+
+                            // Pop all guided step fragments (both confirmation and selection)
+                            fragmentManager.popBackStack(null, androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE)
+
+                            // Restart MainActivity properly instead of recreate()
+                            activity.window.decorView.post {
+                                val intent = activity.intent
+                                activity.finish()
+                                activity.startActivity(intent)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("DatabaseSwitch", "Database switch failed", e)
                         Toast.makeText(
                             context,
-                            getString(R.string.switched_to_database_source, newSource.displayName),
-                            Toast.LENGTH_SHORT
+                            "Failed to switch database: ${e.message}",
+                            Toast.LENGTH_LONG
                         ).show()
-
-                        onSourceChanged?.invoke(newSource)
-
-                        // Clear back stack and restart activity
-                        val fragmentManager = activity.supportFragmentManager
-
-                        // Pop all guided step fragments (both confirmation and selection)
-                        fragmentManager.popBackStack(null, androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE)
-
-                        // Restart MainActivity properly instead of recreate()
-                        activity.window.decorView.post {
-                            val intent = activity.intent
-                            activity.finish()
-                            activity.startActivity(intent)
-                        }
                     }
                 }
             }

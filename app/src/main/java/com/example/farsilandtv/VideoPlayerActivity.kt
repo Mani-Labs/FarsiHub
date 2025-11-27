@@ -12,9 +12,11 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.media3.common.PlaybackParameters
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -60,6 +62,27 @@ class VideoPlayerActivity : AppCompatActivity() {
     private lateinit var loadingIndicator: ProgressBar
     private lateinit var errorText: TextView
     private var player: ExoPlayer? = null
+
+    // Enhanced player controls
+    private lateinit var skipIndicator: TextView
+    private lateinit var speedIndicator: TextView
+    private lateinit var infoOverlay: LinearLayout
+    private lateinit var infoTitle: TextView
+    private lateinit var infoPosition: TextView
+    private lateinit var infoQuality: TextView
+    private lateinit var infoSpeed: TextView
+    private lateinit var infoBuffer: TextView
+
+    // Playback speed control
+    private val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+    private var currentSpeedIndex = 2 // Default 1.0x
+
+    // Skip control - L2 FIX: Use constants from companion object
+    private var isLongPressing = false
+    private var longPressHandler = Handler(Looper.getMainLooper())
+
+    // Info overlay auto-hide
+    private var infoOverlayHandler = Handler(Looper.getMainLooper())
 
     // Flag to defer video URL fetching until activity is started
     private var pendingVideoFetch = false
@@ -189,6 +212,21 @@ class VideoPlayerActivity : AppCompatActivity() {
             playerView = findViewById(R.id.player_view)
             loadingIndicator = findViewById(R.id.loading_indicator)
             errorText = findViewById(R.id.error_text)
+
+            // Enhanced player control views
+            skipIndicator = findViewById(R.id.skip_indicator)
+            speedIndicator = findViewById(R.id.speed_indicator)
+            infoOverlay = findViewById(R.id.info_overlay)
+            infoTitle = findViewById(R.id.info_title)
+            infoPosition = findViewById(R.id.info_position)
+            infoQuality = findViewById(R.id.info_quality)
+            infoSpeed = findViewById(R.id.info_speed)
+            infoBuffer = findViewById(R.id.info_buffer)
+
+            // Disable automatic controller show - we'll control it manually
+            // This allows Left/Right to skip without showing controls
+            playerView.controllerAutoShow = false
+            playerView.controllerHideOnTouch = true
 
             // Setup quality button in control bar
             setupQualityButton()
@@ -321,52 +359,58 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    // H3 FIX: Lock object for network callback registration to prevent race condition
+    private val networkCallbackLock = Any()
+
     /**
      * M6 FIX: Register network callback to monitor connectivity during playback
      * Notifies user when network drops, preventing silent infinite buffering
      * EXTERNAL AUDIT FIX C4.3: Check registration flag to prevent double-registration
+     * H3 FIX: Added synchronization to prevent race condition
      */
     private fun registerNetworkCallback() {
-        // EXTERNAL AUDIT FIX C4.3: Prevent double-registration memory leak
-        if (isNetworkCallbackRegistered) {
-            Log.d(TAG, "Network callback already registered, skipping")
-            return
-        }
+        synchronized(networkCallbackLock) {
+            // EXTERNAL AUDIT FIX C4.3: Prevent double-registration memory leak
+            if (isNetworkCallbackRegistered) {
+                Log.d(TAG, "Network callback already registered, skipping")
+                return
+            }
 
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onLost(network: Network) {
-                // Network disconnected during playback
-                runOnUiThread {
-                    player?.pause()
-                    Toast.makeText(
-                        this@VideoPlayerActivity,
-                        R.string.network_connection_lost,
-                        Toast.LENGTH_LONG
-                    ).show()
-                    Log.w(TAG, "Network connection lost during playback")
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onLost(network: Network) {
+                    // Network disconnected during playback
+                    runOnUiThread {
+                        player?.pause()
+                        Toast.makeText(
+                            this@VideoPlayerActivity,
+                            R.string.network_connection_lost,
+                            Toast.LENGTH_LONG
+                        ).show()
+                        Log.w(TAG, "Network connection lost during playback")
+                    }
+                }
+
+                override fun onAvailable(network: Network) {
+                    // Network reconnected
+                    runOnUiThread {
+                        Toast.makeText(
+                            this@VideoPlayerActivity,
+                            R.string.network_connection_restored,
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        Log.d(TAG, "Network connection restored")
+                    }
                 }
             }
 
-            override fun onAvailable(network: Network) {
-                // Network reconnected
-                runOnUiThread {
-                    Toast.makeText(
-                        this@VideoPlayerActivity,
-                        R.string.network_connection_restored,
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    Log.d(TAG, "Network connection restored")
-                }
+            try {
+                connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
+                isNetworkCallbackRegistered = true  // EXTERNAL AUDIT FIX C4.3: Mark as registered
+                Log.d(TAG, "Network callback registered successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to register network callback", e)
+                isNetworkCallbackRegistered = false  // EXTERNAL AUDIT FIX C4.3: Mark as failed
             }
-        }
-
-        try {
-            connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
-            isNetworkCallbackRegistered = true  // EXTERNAL AUDIT FIX C4.3: Mark as registered
-            Log.d(TAG, "Network callback registered successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register network callback", e)
-            isNetworkCallbackRegistered = false  // EXTERNAL AUDIT FIX C4.3: Mark as failed
         }
     }
 
@@ -1019,15 +1063,226 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * Handle key events for quality menu
+     * Handle key events for enhanced player controls
+     * Q/Menu: Quality selector
+     * S: Cycle playback speed
+     * I: Toggle info overlay
+     * Left/Right: Skip 10s/30s ONLY when controls are hidden
+     * Up: Shows player controls (default behavior)
+     *
+     * When controls are visible, D-pad navigates the control bar normally
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        return when (keyCode) {
-            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_Q -> {
-                showQualitySelector()
-                true
+        // Ignore repeat events for most keys
+        if (event?.repeatCount == 0) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_Q -> {
+                    showQualitySelector()
+                    return true
+                }
+                KeyEvent.KEYCODE_S -> {
+                    cyclePlaybackSpeed()
+                    return true
+                }
+                KeyEvent.KEYCODE_I -> {
+                    toggleInfoOverlay()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    // Show controller on Up/Down/Center/Enter
+                    if (!playerView.isControllerFullyVisible) {
+                        playerView.showController()
+                        return true
+                    }
+                    // Let default handle navigation when already visible
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    // Only skip when controls are hidden
+                    // Check visibility BEFORE PlayerView processes the key
+                    val controlsVisible = playerView.isControllerFullyVisible
+                    Log.d(TAG, "DPAD_LEFT pressed, controlsVisible=$controlsVisible")
+                    if (!controlsVisible) {
+                        isLongPressing = false
+                        longPressHandler.postDelayed({
+                            isLongPressing = true
+                            skipPlayback(-SKIP_LONG_MS)
+                        }, LONG_PRESS_THRESHOLD)
+                        return true
+                    }
+                    // Let default behavior handle navigation when controls visible
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    // Only skip when controls are hidden
+                    val controlsVisible = playerView.isControllerFullyVisible
+                    Log.d(TAG, "DPAD_RIGHT pressed, controlsVisible=$controlsVisible")
+                    if (!controlsVisible) {
+                        isLongPressing = false
+                        longPressHandler.postDelayed({
+                            isLongPressing = true
+                            skipPlayback(SKIP_LONG_MS)
+                        }, LONG_PRESS_THRESHOLD)
+                        return true
+                    }
+                    // Let default behavior handle navigation when controls visible
+                }
             }
-            else -> super.onKeyDown(keyCode, event)
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    /**
+     * Handle key release for skip controls
+     * Only processes skip when controls are hidden
+     */
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                // Only handle if controls are hidden (we initiated the skip)
+                if (!playerView.isControllerFullyVisible) {
+                    longPressHandler.removeCallbacksAndMessages(null)
+                    if (!isLongPressing) {
+                        skipPlayback(-SKIP_SHORT_MS)
+                    }
+                    isLongPressing = false
+                    return true
+                }
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                // Only handle if controls are hidden (we initiated the skip)
+                if (!playerView.isControllerFullyVisible) {
+                    longPressHandler.removeCallbacksAndMessages(null)
+                    if (!isLongPressing) {
+                        skipPlayback(SKIP_SHORT_MS)
+                    }
+                    isLongPressing = false
+                    return true
+                }
+            }
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    /**
+     * Cycle through playback speed options
+     */
+    private fun cyclePlaybackSpeed() {
+        currentSpeedIndex = (currentSpeedIndex + 1) % speedOptions.size
+        val newSpeed = speedOptions[currentSpeedIndex]
+
+        player?.playbackParameters = PlaybackParameters(newSpeed)
+
+        // Show speed indicator
+        val speedText = if (newSpeed == 1.0f) "1x" else "${newSpeed}x"
+        speedIndicator.text = speedText
+        speedIndicator.visibility = View.VISIBLE
+
+        // Auto-hide after 2 seconds (unless not 1x)
+        speedIndicator.removeCallbacks(hideSpeedIndicatorRunnable)
+        if (newSpeed == 1.0f) {
+            speedIndicator.postDelayed(hideSpeedIndicatorRunnable, 2000)
+        }
+
+        Log.d(TAG, "Playback speed changed to: $speedText")
+    }
+
+    private val hideSpeedIndicatorRunnable = Runnable {
+        speedIndicator.visibility = View.GONE
+    }
+
+    /**
+     * Skip playback by specified milliseconds (positive = forward, negative = backward)
+     */
+    private fun skipPlayback(milliseconds: Long) {
+        player?.let { p ->
+            val currentPos = p.currentPosition
+            val duration = p.duration
+            val newPos = (currentPos + milliseconds).coerceIn(0, duration)
+
+            p.seekTo(newPos)
+
+            // Show skip indicator
+            val skipText = if (milliseconds > 0) {
+                "+${milliseconds / 1000}s"
+            } else {
+                "${milliseconds / 1000}s"
+            }
+            showSkipIndicator(skipText)
+
+            Log.d(TAG, "Skipped $skipText to position: ${newPos}ms")
+        }
+    }
+
+    /**
+     * Show skip feedback indicator briefly
+     */
+    private fun showSkipIndicator(text: String) {
+        skipIndicator.text = text
+        skipIndicator.visibility = View.VISIBLE
+        skipIndicator.removeCallbacks(hideSkipIndicatorRunnable)
+        skipIndicator.postDelayed(hideSkipIndicatorRunnable, 800)
+    }
+
+    private val hideSkipIndicatorRunnable = Runnable {
+        skipIndicator.visibility = View.GONE
+    }
+
+    /**
+     * Toggle info overlay visibility
+     */
+    private fun toggleInfoOverlay() {
+        if (infoOverlay.visibility == View.VISIBLE) {
+            infoOverlay.visibility = View.GONE
+            infoOverlayHandler.removeCallbacksAndMessages(null)
+        } else {
+            updateInfoOverlay()
+            infoOverlay.visibility = View.VISIBLE
+            // Auto-hide after timeout
+            infoOverlayHandler.removeCallbacksAndMessages(null)
+            infoOverlayHandler.postDelayed({
+                infoOverlay.visibility = View.GONE
+            }, INFO_OVERLAY_TIMEOUT)
+        }
+    }
+
+    /**
+     * Update info overlay with current playback stats
+     */
+    private fun updateInfoOverlay() {
+        infoTitle.text = contentTitle
+
+        player?.let { p ->
+            val position = p.currentPosition
+            val duration = p.duration
+            val posText = "${formatTime(position)} / ${formatTime(duration)}"
+            infoPosition.text = "Position: $posText"
+
+            val quality = availableQualities.getOrNull(currentQualityIndex)?.quality ?: "Unknown"
+            infoQuality.text = "Quality: $quality"
+
+            val speed = speedOptions[currentSpeedIndex]
+            val speedText = if (speed == 1.0f) "1x (Normal)" else "${speed}x"
+            infoSpeed.text = "Speed: $speedText"
+
+            val bufferedPercent = p.bufferedPercentage
+            infoBuffer.text = "Buffered: $bufferedPercent%"
+        }
+    }
+
+    /**
+     * Format milliseconds to HH:MM:SS or MM:SS
+     */
+    private fun formatTime(ms: Long): String {
+        if (ms <= 0) return "00:00"
+        val totalSeconds = ms / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+
+        return if (hours > 0) {
+            String.format("%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format("%02d:%02d", minutes, seconds)
         }
     }
 
@@ -1185,8 +1440,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         super.onDestroy()
         // P0 FIX: Issue #1 - Simplified onDestroy() since player and cache already released in onStop()
 
-        // Stop position tracking
-        positionHandler.removeCallbacks(positionSaveRunnable)
+        // C2 FIX: Remove ALL pending callbacks from ALL handlers to prevent memory leaks
+        // Each Handler holds implicit reference to Activity - must clear all callbacks
+        positionHandler.removeCallbacksAndMessages(null)
+        longPressHandler.removeCallbacksAndMessages(null)
+        infoOverlayHandler.removeCallbacksAndMessages(null)
 
         // Save final position
         saveCurrentPosition()
@@ -1222,5 +1480,12 @@ class VideoPlayerActivity : AppCompatActivity() {
         private const val TAG = "VideoPlayerActivity"
         private const val PREF_QUALITY = "preferred_quality"
         private const val POSITION_SAVE_INTERVAL = 10_000L // Save every 10 seconds
+
+        // L2 FIX: Define all magic numbers as named constants
+        private const val SKIP_SHORT_MS = 10_000L       // 10 second skip
+        private const val SKIP_LONG_MS = 30_000L        // 30 second skip
+        private const val LONG_PRESS_THRESHOLD = 500L   // ms to detect long press
+        private const val INFO_OVERLAY_TIMEOUT = 5_000L // 5 seconds auto-hide
+        private const val SKIP_INDICATOR_TIMEOUT = 800L // Quick feedback indicator
     }
 }

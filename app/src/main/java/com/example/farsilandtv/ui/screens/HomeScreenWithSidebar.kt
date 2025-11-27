@@ -198,9 +198,11 @@ fun HomeScreenWithSidebar(
     }
 
     // Show options dialog when item is long-pressed
-    if (showOptionsDialog && selectedOptionsItem != null) {
+    // M5 FIX: Capture item to prevent concurrent modification race condition
+    val dialogItem = selectedOptionsItem
+    if (showOptionsDialog && dialogItem != null) {
         ContentOptionsDialog(
-            item = selectedOptionsItem!!,
+            item = dialogItem,
             onDismiss = {
                 showOptionsDialog = false
                 selectedOptionsItem = null
