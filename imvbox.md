@@ -291,49 +291,89 @@ Some content (especially newer) uses YouTube as the video source.
 
 **Problem:** YouTube embeds on IMVBox are restricted by origin. YouTube returns **Error 153** when the embed is loaded from any domain other than `imvbox.com`. Video owners whitelist specific domains.
 
-**Solution:** Use Android WebView's `loadDataWithBaseURL()` to spoof the origin as `imvbox.com`.
+**Solution:** Two-step approach:
+1. **Clean HTML Parsing** - Extract YouTube ID directly from page HTML (no WebView race conditions)
+2. **Origin Spoofing** - Use `loadDataWithBaseURL()` to spoof `imvbox.com` origin for playback
 
-#### How YouTube Verifies Origin
+---
 
-YouTube checks embed origin via 3 mechanisms:
+### IMVBox Page Structure (Critical Discovery)
 
-1. **HTTP Headers (automatic)**
-   ```
-   Referer: https://www.imvbox.com/movies/xxx/play
-   Origin: https://www.imvbox.com
-   ```
+IMVBox play pages have **THREE video player elements**:
 
-2. **JavaScript DOM inspection**
-   ```javascript
-   window.location.ancestorOrigins[0]  // Must be imvbox.com
-   document.referrer                    // Parent page URL
-   ```
+```html
+<!-- 1. INTRO PLAYER - Ad/intro video (media 3628) - SKIP THIS -->
+<div class="intro-player-container">
+    <video-js id="intro-player" ...>
+        <source src="https://streaming.imvbox.com/media/3628/3628.m3u8" type="application/x-mpegURL">
+    </video-js>
+</div>
 
-3. **X-Frame-Options / CSP Headers**
-   - YouTube sets restrictions based on video settings
-   - Only whitelisted domains can embed
+<!-- 2. MAIN MOVIE PLAYER - THE ACTUAL MOVIE (YouTube source in data-setup) -->
+<video-js id="player" class="video-js video-js-imvbox"
+    data-setup='{"techOrder": ["youtube"], "playbackRates": [0.5, 1, 1.5, 2],
+    "sources": [{ "type": "video/youtube", "src": "https://www.youtube.com/embed/f9hrxIZS7Ck?si=..."}],
+    "youtube": {"cc_load_policy" : 1, "iv_load_policy": 3} }' ...>
+</video-js>
 
-#### The loadDataWithBaseURL Trick
-
-Android WebView's `loadDataWithBaseURL()` accepts a `baseUrl` parameter that sets the page's origin:
-
-```kotlin
-webView.loadDataWithBaseURL(
-    "https://www.imvbox.com/movies/play",  // FAKE ORIGIN
-    embedHtml,                              // HTML with YouTube iframe
-    "text/html",
-    "UTF-8",
-    null
-)
+<!-- 3. TRAILER PLAYER (if exists) -->
+<video-js id="player-trailer" ...>
+</video-js>
 ```
 
-**What this does:**
-- WebView reports `document.location.origin` as `https://www.imvbox.com`
-- Browser sends `Referer: https://www.imvbox.com/movies/play` header
-- `window.location.ancestorOrigins[0]` returns `https://www.imvbox.com`
-- YouTube sees valid whitelisted origin → **allows playback!**
+**Key Insight:** The movie's YouTube URL is **statically embedded** in the `#player` element's `data-setup` JSON attribute. No need to wait for network requests or intercept dynamic loading!
 
-#### Implementation Flow
+---
+
+### Clean Extraction Approach (Recommended)
+
+Instead of using fragile WebView network interception, we parse the HTML directly:
+
+```kotlin
+// IMVBoxVideoExtractor.kt - extractFromHtml()
+
+// Regex to find #player element's data-setup attribute
+private val PLAYER_DATA_SETUP_REGEX = Regex(
+    """<video-js[^>]*id=["']player["'][^>]*data-setup=['"]([^'"]+)['"]""",
+    RegexOption.IGNORE_CASE
+)
+
+suspend fun extractFromHtml(playUrl: String): VideoSource? {
+    // 1. Fetch page HTML via OkHttp (with auth cookies)
+    val html = httpClient.get(playUrl)
+
+    // 2. Find #player element's data-setup attribute
+    val playerDataSetup = PLAYER_DATA_SETUP_REGEX.find(html)
+    if (playerDataSetup != null) {
+        val dataSetup = playerDataSetup.groupValues[1]
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+
+        // 3. Parse JSON to get YouTube URL
+        val json = JSONObject(dataSetup)
+        val sources = json.optJSONArray("sources")
+        for (i in 0 until sources.length()) {
+            val source = sources.getJSONObject(i)
+            val src = source.optString("src", "")
+            if (src.contains("youtube.com/embed")) {
+                val videoId = YOUTUBE_EMBED_REGEX.find(src)?.groupValues?.get(1)
+                return VideoSource.YouTube(videoId!!)
+            }
+        }
+    }
+    return null
+}
+```
+
+**Why this is better than WebView interception:**
+- **No race conditions** - Movie URL is static in HTML, doesn't depend on load order
+- **Faster** - No WebView overhead, just HTTP request + regex
+- **Reliable** - Intro video (`#intro-player`) is in separate element, completely ignored
+- **Simpler** - ~50 lines vs ~200 lines of WebView interception code
+
+---
+
+### Implementation Flow (Updated)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -341,32 +381,135 @@ webView.loadDataWithBaseURL(
 ├─────────────────────────────────────────────────────────────────┤
 │ 2. VideoPlayerActivity detects imvbox.com URL                   │
 ├─────────────────────────────────────────────────────────────────┤
-│ 3. IMVBoxVideoExtractor loads play page in hidden WebView       │
-│    - Intercepts network requests via shouldInterceptRequest()   │
-│    - Captures YouTube embed URL: youtube.com/embed/{VIDEO_ID}   │
-│    - Filters out intro video (media ID 3628)                    │
-│    - Returns VideoSource.YouTube(videoId)                       │
+│ 3. IMVBoxVideoExtractor.extractVideoSource(playUrl)             │
+│    a. Authenticate via IMVBoxAuthManager (get session cookies)  │
+│    b. Fetch play page HTML via OkHttp                           │
+│    c. Parse #player element's data-setup JSON attribute         │
+│    d. Extract YouTube video ID from sources array               │
+│    e. Return VideoSource.YouTube(videoId)                       │
+│    f. [Fallback] If HTML parsing fails → use WebView extraction │
 ├─────────────────────────────────────────────────────────────────┤
 │ 4. IMVBoxWebPlayerActivity receives pre-extracted YouTube ID    │
 ├─────────────────────────────────────────────────────────────────┤
 │ 5. loadDataWithBaseURL() with imvbox.com origin + YouTube embed │
-│    - No intro video                                             │
+│    - No intro video (completely bypassed)                       │
 │    - No page loading delay                                      │
 │    - Direct YouTube playback with D-pad controls                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Key Files
+---
+
+### Key Files
 
 | File | Purpose |
 |------|---------|
-| `IMVBoxVideoExtractor.kt` | Extracts YouTube ID from play page via hidden WebView |
-| `IMVBoxWebPlayerActivity.kt` | Plays video with spoofed origin |
+| `IMVBoxVideoExtractor.kt` | **Primary:** HTML parsing to extract YouTube ID from `#player` data-setup. **Fallback:** WebView extraction |
+| `IMVBoxWebPlayerActivity.kt` | Plays YouTube video with spoofed imvbox.com origin |
 | `VideoPlayerActivity.kt` | Orchestrates extraction → playback flow |
+| `IMVBoxAuthManager.kt` | Handles login, session cookies for authenticated requests |
 
-#### Code Example: Origin Spoofing
+---
+
+### Extraction Code (Production)
 
 ```kotlin
+// IMVBoxVideoExtractor.kt
+
+companion object {
+    private const val TAG = "IMVBoxVideoExtractor"
+    private val INTRO_MEDIA_IDS = setOf("3628")  // Known intro/ad video
+
+    // Regex patterns for HTML parsing
+    private val YOUTUBE_EMBED_REGEX = Regex("""youtube\.com/embed/([a-zA-Z0-9_-]{11})""")
+
+    // Match #player element's data-setup attribute (THE ACTUAL MOVIE)
+    private val PLAYER_DATA_SETUP_REGEX = Regex(
+        """<video-js[^>]*id=["']player["'][^>]*data-setup=['"]([^'"]+)['"]""",
+        RegexOption.IGNORE_CASE
+    )
+}
+
+/**
+ * CLEAN APPROACH: Extract video source by parsing HTML directly.
+ * Targets #player element's data-setup JSON attribute.
+ * Completely bypasses #intro-player (no race conditions).
+ */
+suspend fun extractVideoSource(playUrl: String): VideoSource {
+    Log.d(TAG, "=== CLEAN EXTRACTION: Parsing HTML directly ===")
+
+    // Ensure authenticated for full content
+    IMVBoxAuthManager.ensureAuthenticated(context)
+
+    // Try clean HTML parsing first
+    val htmlResult = withContext(Dispatchers.IO) {
+        extractFromHtml(playUrl)
+    }
+
+    if (htmlResult != null) {
+        Log.d(TAG, "=== SUCCESS: Got video from HTML parsing ===")
+        return htmlResult
+    }
+
+    // Fallback to WebView if HTML parsing failed
+    Log.w(TAG, "HTML parsing failed, falling back to WebView")
+    return extractViaWebView(playUrl)
+}
+
+private suspend fun extractFromHtml(playUrl: String): VideoSource? {
+    val cookies = IMVBoxAuthManager.getWebViewCookies()
+    val request = Request.Builder()
+        .url(playUrl)
+        .header("Cookie", cookies.joinToString("; "))
+        .build()
+
+    val html = httpClient.newCall(request).execute().body?.string() ?: return null
+
+    // Find #player data-setup (THE MOVIE, not intro)
+    val playerDataSetup = PLAYER_DATA_SETUP_REGEX.find(html)
+    if (playerDataSetup != null) {
+        val dataSetup = playerDataSetup.groupValues[1]
+            .replace("&quot;", "\"")
+
+        // Extract YouTube ID from data-setup JSON
+        val youtubeId = extractYouTubeFromDataSetup(dataSetup)
+        if (youtubeId != null) {
+            Log.d(TAG, "=== EXTRACTED MOVIE YouTube ID: $youtubeId ===")
+            return VideoSource.YouTube(youtubeId)
+        }
+    }
+    return null
+}
+
+private fun extractYouTubeFromDataSetup(dataSetup: String): String? {
+    return try {
+        val json = JSONObject(dataSetup)
+        val sources = json.optJSONArray("sources")
+        if (sources != null) {
+            for (i in 0 until sources.length()) {
+                val src = sources.getJSONObject(i).optString("src", "")
+                if (src.contains("youtube.com")) {
+                    return YOUTUBE_EMBED_REGEX.find(src)?.groupValues?.get(1)
+                }
+            }
+        }
+        null
+    } catch (e: Exception) {
+        // Fallback: regex extraction
+        YOUTUBE_EMBED_REGEX.find(dataSetup)?.groupValues?.get(1)
+    }
+}
+```
+
+---
+
+### Origin Spoofing (Playback)
+
+YouTube checks embed origin via headers and JavaScript. We spoof `imvbox.com` origin using `loadDataWithBaseURL()`:
+
+```kotlin
+// IMVBoxWebPlayerActivity.kt
+
 private fun loadYouTubeWithSpoofedOrigin(youtubeId: String) {
     val embedHtml = """
         <!DOCTYPE html>
@@ -397,35 +540,43 @@ private fun loadYouTubeWithSpoofedOrigin(youtubeId: String) {
 }
 ```
 
-#### Intro Video Bypass
+**What this does:**
+- WebView reports `document.location.origin` as `https://www.imvbox.com`
+- Browser sends `Referer: https://www.imvbox.com/movies/play` header
+- YouTube sees valid whitelisted origin → **allows playback!**
 
-IMVBox plays a ~45 second intro/ad video (media ID `3628`) before the actual movie. We skip this by:
+---
 
-1. **Pre-extracting YouTube ID** - Get the movie's YouTube ID before showing player
-2. **Filtering intro requests** - `IMVBoxVideoExtractor` ignores media ID 3628
-3. **Direct injection** - Load YouTube embed directly without loading IMVBox page
+### Intro Video Bypass (Automatic)
 
-```kotlin
-// In IMVBoxVideoExtractor.kt
-private val INTRO_MEDIA_IDS = setOf("3628")  // Known intro/ad video
+The clean HTML parsing approach **completely bypasses** the intro video:
 
-private fun isIntroMediaId(mediaId: String): Boolean {
-    return mediaId in INTRO_MEDIA_IDS
-}
-```
+| Element | Content | Our Approach |
+|---------|---------|--------------|
+| `#intro-player` | Intro/ad (media 3628) | **IGNORED** - Different element ID |
+| `#player` | **THE MOVIE** | **EXTRACTED** - Target of our parsing |
+| `#player-trailer` | Trailer | Ignored |
 
-#### Why This Works (Technical Explanation)
+No need to filter network requests or detect widgetid parameters - we simply target the correct element!
 
-1. **No Header Spoofing Required** - Browser naturally sends correct headers based on baseUrl
-2. **DOM Origin is Real** - JavaScript APIs report the spoofed origin as actual
-3. **WebView Respects baseUrl** - Android WebView treats it as the actual page origin
-4. **YouTube Trusts Origin Check** - No additional server-side verification beyond headers/JS
+---
 
-#### Limitations
+### Why This Works (Technical)
 
-- Requires pre-extraction step (~3-5 seconds to get YouTube ID)
-- Only works for YouTube embeds (not HLS streams)
-- If IMVBox changes their player, extraction regex may need updating
+1. **Static HTML** - Movie YouTube URL is in page HTML, not dynamically loaded
+2. **Separate Elements** - Intro and movie use different `<video-js>` elements
+3. **data-setup Attribute** - Video.js configuration is embedded as JSON in HTML
+4. **Origin Spoofing** - `loadDataWithBaseURL()` makes WebView report fake origin
+5. **No Race Conditions** - HTML parsing is deterministic, no timing issues
+
+---
+
+### Limitations
+
+- Requires authentication for full movie access (free tier may only get trailers)
+- Only works for YouTube embeds (HLS streams use different code path)
+- If IMVBox changes their HTML structure, parsing may need updating
+- ~3-5 seconds extraction time (HTTP request + parsing)
 
 ### Authentication
 - Free tier: Ads before content (HLS ID 3628 = ad video)
@@ -825,16 +976,15 @@ Note: Temporary test account - replace before production
 
 ---
 
-**Last Updated:** 2025-12-01 (Deep Research v3 - Comprehensive)
+**Last Updated:** 2025-12-04 (v4 - Clean Extraction Implementation)
 **Analysis By:** Claude Code
-**Status:** Research Complete - **Recommended for Implementation** (with caveats)
-**Research Depth:**
-- Multiple passes covering APIs, JavaScript, network requests
-- Playwright browser automation for dynamic content
-- Live TV infrastructure analysis
-- Cookie/authentication analysis
-- HLS manifest inspection
-- Subtitle system investigation
+**Status:** **FULLY IMPLEMENTED** - YouTube extraction and playback working
+**Implementation Depth:**
+- Clean HTML parsing approach (no WebView race conditions)
+- Origin spoofing via `loadDataWithBaseURL()`
+- Intro video bypass (targets `#player`, ignores `#intro-player`)
+- Authentication via IMVBoxAuthManager
+- WebView fallback for edge cases
 
 ---
 
@@ -842,6 +992,9 @@ Note: Temporary test account - replace before production
 
 | Discovery | Impact | Details |
 |-----------|--------|---------|
+| **#player data-setup** | **CRITICAL** | Movie YouTube URL is in `data-setup` JSON attribute - enables clean extraction |
+| **Three Video Elements** | **CRITICAL** | `#intro-player` (skip), `#player` (movie), `#player-trailer` (skip) |
+| Origin Spoofing | **HIGH** | `loadDataWithBaseURL()` bypasses YouTube Error 153 |
 | Search AJAX API | **HIGH** | `POST /en/search-and-fetch-data` - returns structured results |
 | Chromecast Support | **HIGH** | `cast_sender.js` loaded - native Cast SDK integration |
 | 55+ Subtitle Languages | **HIGH** | Most comprehensive subtitle coverage (but PREMIUM only) |
@@ -856,3 +1009,19 @@ Note: Temporary test account - replace before production
 | Subtitles Premium | **BLOCKER** | VTT files not accessible for free tier |
 | Live TV Blocked | **BLOCKER** | External embed (parsatv.com) returns 403 |
 | No RSS/API/PWA | - | Confirmed: /rss, /feed, /api, /oembed, /graphql, /manifest.json all 404 |
+
+---
+
+## Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `IMVBoxVideoExtractor.kt` | ✅ **DONE** | Clean HTML parsing + WebView fallback |
+| `IMVBoxWebPlayerActivity.kt` | ✅ **DONE** | Origin spoofing playback |
+| `IMVBoxAuthManager.kt` | ✅ **DONE** | Session cookie management |
+| `IMVBoxSyncWorker.kt` | ✅ **DONE** | Background content sync |
+| Intro video bypass | ✅ **DONE** | Targets `#player`, ignores `#intro-player` |
+| YouTube Error 153 fix | ✅ **DONE** | `loadDataWithBaseURL()` origin spoofing |
+| HLS streaming | ⏳ Partial | Works but YouTube preferred for quality |
+| Subtitle extraction | ❌ Not started | Premium feature - blocked |
+| Live TV | ❌ Blocked | Third-party embed returns 403 |

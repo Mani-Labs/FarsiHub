@@ -13,21 +13,28 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
 import kotlin.coroutines.resume
 
 /**
  * Extracts video URLs from IMVBox play pages.
  *
- * IMVBox uses two video sources:
- * 1. YouTube embeds - Returns YouTube video ID for playback via YouTube player
- * 2. Self-hosted HLS - Returns direct HLS URL for ExoPlayer
+ * IMVBox page structure:
+ * - #intro-player: Intro video (media 3628) - plays first, SKIP THIS
+ * - #player: ACTUAL MOVIE - YouTube URL is in data-setup JSON attribute
+ * - #player-trailer: Trailer (if exists)
  *
- * Uses a hidden WebView to load the page and intercept network requests,
- * avoiding bot detection that blocks headless browsers.
+ * CLEAN APPROACH: Parse HTML directly to extract YouTube URL from
+ * #player element's data-setup attribute. No WebView race conditions!
+ *
+ * Example HTML:
+ * <video-js id="player" data-setup='{"sources": [{"type": "video/youtube",
+ *   "src": "https://www.youtube.com/embed/f9hrxIZS7Ck"}]}'>
  *
  * IMPORTANT: For full movie access (not just trailers), the user must be
- * logged in via IMVBoxAuthManager. This class will inject session cookies
- * into the WebView before loading the play page.
+ * logged in via IMVBoxAuthManager.
  */
 class IMVBoxVideoExtractor(private val context: Context) {
 
@@ -40,12 +47,20 @@ class IMVBoxVideoExtractor(private val context: Context) {
         // These are NOT the actual movie content - must be filtered out
         private val INTRO_MEDIA_IDS = setOf("3628")
 
-        // Regex patterns
+        // Regex patterns for HTML parsing
         private val YOUTUBE_EMBED_REGEX = Regex("""youtube\.com/embed/([a-zA-Z0-9_-]{11})""")
+        // Match #player element's data-setup attribute (THE ACTUAL MOVIE)
+        private val PLAYER_DATA_SETUP_REGEX = Regex(
+            """<video-js[^>]*id=["']player["'][^>]*data-setup=['"]([^'"]+)['"]""",
+            RegexOption.IGNORE_CASE
+        )
+        // Alternative: match any video-js with data-setup containing youtube
+        private val VIDEOJS_DATA_SETUP_REGEX = Regex(
+            """<video-js[^>]*data-setup=['"]([^'"]*youtube[^'"]+)['"]""",
+            RegexOption.IGNORE_CASE
+        )
+        // HLS patterns
         private val HLS_URL_REGEX = Regex("""streaming\.imvbox\.com/media/(\d+)/\d+\.m3u8""")
-        // More flexible HLS patterns - catch any m3u8 from IMVBox domains
-        private val HLS_GENERIC_REGEX = Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)""")
-        private val IMVBOX_STREAM_REGEX = Regex("""imvbox\.com[^"'\s]*\.m3u8""")
 
         /**
          * Check if a media ID is a known intro/ad video
@@ -54,6 +69,11 @@ class IMVBoxVideoExtractor(private val context: Context) {
             return mediaId in INTRO_MEDIA_IDS
         }
     }
+
+    // OkHttp client for direct HTML fetching
+    private val httpClient = OkHttpClient.Builder()
+        .followRedirects(true)
+        .build()
 
     /**
      * Result of video extraction
@@ -125,22 +145,203 @@ class IMVBoxVideoExtractor(private val context: Context) {
     }
 
     /**
-     * Extract video source from IMVBox play page URL
+     * CLEAN APPROACH: Extract video source by parsing HTML directly.
      *
-     * @param playUrl Full IMVBox play page URL (e.g., https://www.imvbox.com/en/movies/33-days-33-rooz/play)
-     * @return VideoSource with either YouTube ID, HLS URL, or error
+     * IMVBox page has this structure:
+     * - #intro-player: Intro video (media 3628) - SKIP
+     * - #player: THE MOVIE - YouTube URL in data-setup JSON
+     * - #player-trailer: Trailer (if exists)
+     *
+     * We parse the HTML and extract YouTube URL from #player's data-setup attribute.
+     * This bypasses the intro entirely - no race conditions!
+     *
+     * @param playUrl Full IMVBox play page URL
+     * @return VideoSource with YouTube ID, HLS URL, or error
      */
-    @SuppressLint("SetJavaScriptEnabled")
     suspend fun extractVideoSource(playUrl: String): VideoSource {
+        Log.d(TAG, "=== CLEAN EXTRACTION: Parsing HTML directly ===")
+        Log.d(TAG, "Play URL: $playUrl")
+
         // Ensure user is authenticated for full content access
         val isAuthenticated = withContext(Dispatchers.IO) {
             IMVBoxAuthManager.ensureAuthenticated(context)
         }
         Log.d(TAG, "Authentication status: $isAuthenticated")
 
-        // WebView MUST be created on the Main thread
+        // Try clean HTML parsing first
+        val htmlResult = withContext(Dispatchers.IO) {
+            extractFromHtml(playUrl)
+        }
+
+        if (htmlResult != null) {
+            Log.d(TAG, "=== SUCCESS: Got video from HTML parsing ===")
+            return htmlResult
+        }
+
+        // Fallback to WebView if HTML parsing failed
+        Log.w(TAG, "HTML parsing failed, falling back to WebView extraction")
+        return extractViaWebView(playUrl)
+    }
+
+    /**
+     * Parse HTML directly to extract YouTube video ID from #player element.
+     * This is the CLEAN approach - no WebView race conditions.
+     */
+    private suspend fun extractFromHtml(playUrl: String): VideoSource? {
+        return try {
+            // Get auth cookies for the request
+            val cookies = IMVBoxAuthManager.getWebViewCookies()
+            val cookieHeader = cookies.joinToString("; ")
+
+            val request = Request.Builder()
+                .url(playUrl)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+                .header("Cookie", cookieHeader)
+                .header("Accept", "text/html,application/xhtml+xml")
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "HTTP request failed: ${response.code}")
+                return null
+            }
+
+            val html = response.body?.string() ?: return null
+            Log.d(TAG, "Fetched HTML: ${html.length} chars")
+
+            // Method 1: Find #player element's data-setup attribute (THE ACTUAL MOVIE)
+            // This is where IMVBox puts the movie YouTube URL
+            val playerDataSetup = PLAYER_DATA_SETUP_REGEX.find(html)
+            if (playerDataSetup != null) {
+                val dataSetup = playerDataSetup.groupValues[1]
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                Log.d(TAG, "Found #player data-setup: ${dataSetup.take(200)}...")
+
+                // Parse JSON to get YouTube URL
+                val youtubeId = extractYouTubeFromDataSetup(dataSetup)
+                if (youtubeId != null) {
+                    Log.d(TAG, "=== EXTRACTED MOVIE YouTube ID: $youtubeId ===")
+                    return VideoSource.YouTube(youtubeId)
+                }
+
+                // Check for HLS in data-setup (non-intro)
+                val hlsUrl = extractHlsFromDataSetup(dataSetup)
+                if (hlsUrl != null) {
+                    val mediaId = HLS_URL_REGEX.find(hlsUrl)?.groupValues?.get(1) ?: "unknown"
+                    if (!isIntroMediaId(mediaId)) {
+                        Log.d(TAG, "=== EXTRACTED MOVIE HLS: $hlsUrl ===")
+                        return VideoSource.HLS(hlsUrl, mediaId)
+                    }
+                }
+            }
+
+            // Method 2: Look for any video-js with YouTube in data-setup
+            // (but NOT #intro-player which has media 3628)
+            val videoJsMatches = VIDEOJS_DATA_SETUP_REGEX.findAll(html)
+            for (match in videoJsMatches) {
+                val dataSetup = match.groupValues[1]
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+
+                // Skip if this is the intro player (contains media 3628)
+                if (dataSetup.contains("3628")) {
+                    Log.d(TAG, "Skipping intro player data-setup")
+                    continue
+                }
+
+                val youtubeId = extractYouTubeFromDataSetup(dataSetup)
+                if (youtubeId != null) {
+                    Log.d(TAG, "=== EXTRACTED YouTube from video-js: $youtubeId ===")
+                    return VideoSource.YouTube(youtubeId)
+                }
+            }
+
+            // Method 3: Look for YouTube embed URL in page (not in intro context)
+            // Skip any that appear in intro-player section
+            val introSection = Regex("""<div[^>]*intro-player[^>]*>.*?</div>""", RegexOption.DOT_MATCHES_ALL)
+                .find(html)?.value ?: ""
+
+            YOUTUBE_EMBED_REGEX.findAll(html).forEach { match ->
+                val videoId = match.groupValues[1]
+                // Check if this YouTube ID appears in the intro section
+                if (!introSection.contains(videoId)) {
+                    Log.d(TAG, "=== EXTRACTED YouTube from embed: $videoId ===")
+                    return VideoSource.YouTube(videoId)
+                } else {
+                    Log.d(TAG, "Skipping YouTube $videoId (appears in intro section)")
+                }
+            }
+
+            Log.w(TAG, "No movie source found in HTML")
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing HTML: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Extract YouTube video ID from Video.js data-setup JSON string.
+     */
+    private fun extractYouTubeFromDataSetup(dataSetup: String): String? {
+        return try {
+            // Try JSON parsing first
+            val json = JSONObject(dataSetup)
+            val sources = json.optJSONArray("sources")
+            if (sources != null) {
+                for (i in 0 until sources.length()) {
+                    val source = sources.getJSONObject(i)
+                    val src = source.optString("src", "")
+                    val type = source.optString("type", "")
+
+                    if (type.contains("youtube") || src.contains("youtube.com")) {
+                        YOUTUBE_EMBED_REGEX.find(src)?.let { match ->
+                            return match.groupValues[1]
+                        }
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            // Fallback: regex extraction if JSON parsing fails
+            YOUTUBE_EMBED_REGEX.find(dataSetup)?.groupValues?.get(1)
+        }
+    }
+
+    /**
+     * Extract HLS URL from Video.js data-setup JSON string.
+     */
+    private fun extractHlsFromDataSetup(dataSetup: String): String? {
+        return try {
+            val json = JSONObject(dataSetup)
+            val sources = json.optJSONArray("sources")
+            if (sources != null) {
+                for (i in 0 until sources.length()) {
+                    val source = sources.getJSONObject(i)
+                    val src = source.optString("src", "")
+                    if (src.contains(".m3u8")) {
+                        return src
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            // Fallback: regex extraction
+            Regex("""(https?://[^\s"']+\.m3u8)""").find(dataSetup)?.groupValues?.get(1)
+        }
+    }
+
+    /**
+     * Fallback: Extract via WebView if HTML parsing fails.
+     * This is the old approach - only used if clean extraction fails.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private suspend fun extractViaWebView(playUrl: String): VideoSource {
+        Log.d(TAG, "Using WebView fallback extraction")
+
         return withContext(Dispatchers.Main) {
-            // Inject auth cookies before creating WebView
             injectAuthCookies()
             syncCookiesToWebView()
 
@@ -148,6 +349,7 @@ class IMVBoxVideoExtractor(private val context: Context) {
                 suspendCancellableCoroutine { continuation ->
                 var webView: WebView? = null
                 var resumed = false
+                var foundYouTubeId: String? = null
 
                 try {
                     webView = WebView(context).apply {
@@ -155,11 +357,9 @@ class IMVBoxVideoExtractor(private val context: Context) {
                             javaScriptEnabled = true
                             domStorageEnabled = true
                             mediaPlaybackRequiresUserGesture = false
-                            // Mimic real browser
                             userAgentString = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
                         }
 
-                        // Enable third-party cookies for this WebView
                         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
                         webViewClient = object : WebViewClient() {
@@ -169,58 +369,25 @@ class IMVBoxVideoExtractor(private val context: Context) {
                             ): WebResourceResponse? {
                                 val url = request?.url?.toString() ?: return null
 
-                                // Log interesting URLs for debugging
-                                if (url.contains("m3u8") || url.contains("youtube") ||
-                                    url.contains("video") || url.contains("stream") ||
-                                    url.contains("player") || url.contains("embed")) {
-                                    Log.d(TAG, "Intercepted interesting URL: $url")
-                                }
-
-                                // Check for YouTube embed
-                                YOUTUBE_EMBED_REGEX.find(url)?.let { match ->
-                                    val videoId = match.groupValues[1]
-                                    Log.d(TAG, "Found YouTube video: $videoId")
-                                    if (!resumed) {
-                                        resumed = true
-                                        webView?.stopLoading()
-                                        continuation.resume(VideoSource.YouTube(videoId))
+                                // Look for YouTube embeds (skip intro media 3628)
+                                if (url.contains("youtube.com/embed") && !resumed) {
+                                    YOUTUBE_EMBED_REGEX.find(url)?.let { match ->
+                                        val videoId = match.groupValues[1]
+                                        Log.d(TAG, "WebView found YouTube: $videoId")
+                                        foundYouTubeId = videoId
+                                        // Don't return immediately - wait for page to load
                                     }
                                 }
 
-                                // Check for HLS stream - specific pattern
-                                HLS_URL_REGEX.find(url)?.let { match ->
-                                    val mediaId = match.groupValues[1]
-
-                                    // Skip known intro/ad videos
-                                    if (isIntroMediaId(mediaId)) {
-                                        Log.d(TAG, "Skipping intro HLS stream (media ID $mediaId)")
-                                        return@let // Continue looking for actual movie
-                                    }
-
-                                    val hlsUrl = "https://streaming.imvbox.com/media/$mediaId/$mediaId.m3u8"
-                                    Log.d(TAG, "Found HLS stream (specific): $hlsUrl")
-                                    if (!resumed) {
-                                        resumed = true
-                                        webView?.stopLoading()
-                                        continuation.resume(VideoSource.HLS(hlsUrl, mediaId))
-                                    }
-                                }
-
-                                // Check for any m3u8 URL (fallback)
-                                if (url.contains(".m3u8") && !resumed) {
-                                    Log.d(TAG, "Found generic HLS: $url")
-                                    // Extract media ID if possible
-                                    val mediaIdMatch = Regex("""/media/(\d+)/""").find(url)
-                                    val mediaId = mediaIdMatch?.groupValues?.get(1) ?: "unknown"
-
-                                    // Skip known intro/ad videos
-                                    if (isIntroMediaId(mediaId)) {
-                                        Log.d(TAG, "Skipping generic intro HLS (media ID $mediaId)")
-                                        // Don't return - continue looking for actual movie
-                                    } else {
-                                        resumed = true
-                                        webView?.stopLoading()
-                                        continuation.resume(VideoSource.HLS(url, mediaId))
+                                // Skip intro HLS (media 3628)
+                                if (url.contains("m3u8")) {
+                                    HLS_URL_REGEX.find(url)?.let { match ->
+                                        val mediaId = match.groupValues[1]
+                                        if (!isIntroMediaId(mediaId) && !resumed) {
+                                            Log.d(TAG, "WebView found HLS: $url")
+                                            resumed = true
+                                            continuation.resume(VideoSource.HLS(url, mediaId))
+                                        }
                                     }
                                 }
 
@@ -229,146 +396,54 @@ class IMVBoxVideoExtractor(private val context: Context) {
 
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
-                                Log.d(TAG, "Page finished loading: $url")
+                                Log.d(TAG, "WebView page finished: $url")
 
-                                // If page finished loading but no video found, wait a bit more
-                                // Video might load dynamically
-                                view?.postDelayed({
-                                    if (!resumed) {
-                                        // Check page content for video sources (especially Video.js configuration)
-                                        view.evaluateJavascript("""
-                                            (function() {
-                                                // Method 1: Check Video.js player instance
-                                                if (typeof videojs !== 'undefined') {
-                                                    var players = document.querySelectorAll('.video-js');
-                                                    for (var i = 0; i < players.length; i++) {
-                                                        var player = videojs.getPlayer(players[i]);
-                                                        if (player && player.currentSrc()) {
-                                                            var src = player.currentSrc();
-                                                            if (src.indexOf('.m3u8') !== -1) {
-                                                                return JSON.stringify({type: 'hls', url: src});
-                                                            }
-                                                            if (src.indexOf('youtube.com') !== -1) {
-                                                                var ytMatch = src.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-                                                                if (ytMatch) return JSON.stringify({type: 'youtube', id: ytMatch[1]});
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                // Method 2: Check data-setup attribute on video-js elements
-                                                var videoJsEl = document.querySelector('video-js[data-setup], #player[data-setup], .video-js[data-setup]');
-                                                if (videoJsEl) {
-                                                    var setup = videoJsEl.getAttribute('data-setup');
-                                                    if (setup) {
-                                                        // Look for HLS URL
-                                                        var hlsMatch = setup.match(/(https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)/);
-                                                        if (hlsMatch) return JSON.stringify({type: 'hls', url: hlsMatch[1]});
-
-                                                        // Look for YouTube
-                                                        var ytMatch = setup.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-                                                        if (ytMatch) return JSON.stringify({type: 'youtube', id: ytMatch[1]});
-                                                    }
-                                                }
-
-                                                // Method 3: Check for YouTube iframe
-                                                var iframe = document.querySelector('iframe[src*="youtube.com/embed"]');
-                                                if (iframe) {
-                                                    var match = iframe.src.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-                                                    if (match) return JSON.stringify({type: 'youtube', id: match[1]});
-                                                }
-
-                                                // Method 4: Check for video element with src
-                                                var video = document.querySelector('video source[src*=".m3u8"]');
-                                                if (video) {
-                                                    return JSON.stringify({type: 'hls', url: video.src});
-                                                }
-                                                var videoEl = document.querySelector('video[src*=".m3u8"]');
-                                                if (videoEl) {
-                                                    return JSON.stringify({type: 'hls', url: videoEl.src});
-                                                }
-
-                                                // Method 5: Check for any iframe with video player
-                                                var anyIframe = document.querySelector('iframe[src*="player"], iframe[src*="embed"]');
-                                                if (anyIframe) {
-                                                    var ytMatch = anyIframe.src.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-                                                    if (ytMatch) return JSON.stringify({type: 'youtube', id: ytMatch[1]});
-                                                    return JSON.stringify({type: 'iframe', url: anyIframe.src});
-                                                }
-
-                                                // Method 6: Check page source for video URLs
-                                                var pageHtml = document.documentElement.innerHTML;
-
-                                                // Check for streaming.imvbox.com HLS
-                                                var imvboxHls = pageHtml.match(/streaming\.imvbox\.com\/media\/(\d+)\/\d+\.m3u8/);
-                                                if (imvboxHls) {
-                                                    var mediaId = imvboxHls[1];
-                                                    return JSON.stringify({type: 'hls', url: 'https://streaming.imvbox.com/media/' + mediaId + '/' + mediaId + '.m3u8'});
-                                                }
-
-                                                // Check for any HLS URL
-                                                var hlsMatch = pageHtml.match(/(https?:\/\/[^\s"'<>]+\.m3u8)/);
-                                                if (hlsMatch) {
-                                                    return JSON.stringify({type: 'hls', url: hlsMatch[1]});
-                                                }
-
-                                                // Check for YouTube in page source
-                                                var ytMatch = pageHtml.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-                                                if (ytMatch) {
-                                                    return JSON.stringify({type: 'youtube', id: ytMatch[1]});
-                                                }
-
-                                                return JSON.stringify({type: 'none', debug: 'No video source found in page'});
-                                            })()
-                                        """.trimIndent()) { result ->
-                                            Log.d(TAG, "JS evaluation result: $result")
-                                            if (result != "null" && result.isNotEmpty() && !resumed) {
-                                                try {
-                                                    val cleanResult = result.replace("\"", "").replace("\\", "")
-                                                    if (cleanResult.contains("youtube") && cleanResult.contains("id")) {
-                                                        val idMatch = Regex("""id[:\s]*([a-zA-Z0-9_-]{11})""").find(cleanResult)
-                                                        idMatch?.let {
-                                                            val videoId = it.groupValues[1]
-                                                            Log.d(TAG, "Found YouTube via JS: $videoId")
-                                                            resumed = true
-                                                            continuation.resume(VideoSource.YouTube(videoId))
-                                                        }
-                                                    } else if (cleanResult.contains("hls") && cleanResult.contains("url")) {
-                                                        val urlMatch = Regex("""url[:\s]*(https?://[^\s,}]+\.m3u8[^\s,}]*)""").find(cleanResult)
-                                                        urlMatch?.let {
-                                                            val hlsUrl = it.groupValues[1]
-                                                            val mediaIdMatch = Regex("""/media/(\d+)/""").find(hlsUrl)
-                                                            val mediaId = mediaIdMatch?.groupValues?.get(1) ?: "unknown"
-                                                            Log.d(TAG, "Found HLS via JS: $hlsUrl")
-                                                            resumed = true
-                                                            continuation.resume(VideoSource.HLS(hlsUrl, mediaId))
-                                                        }
-                                                    }
-                                                } catch (e: Exception) {
-                                                    Log.e(TAG, "Error parsing JS result: ${e.message}")
-                                                }
+                                // Extract data-setup from #player via JavaScript
+                                view?.evaluateJavascript("""
+                                    (function() {
+                                        var player = document.querySelector('#player[data-setup], video-js#player');
+                                        if (player) {
+                                            var setup = player.getAttribute('data-setup');
+                                            if (setup) {
+                                                var ytMatch = setup.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
+                                                if (ytMatch) return ytMatch[1];
                                             }
                                         }
+                                        return null;
+                                    })()
+                                """.trimIndent()) { result ->
+                                    if (result != "null" && result.isNotEmpty() && !resumed) {
+                                        val videoId = result.replace("\"", "")
+                                        if (videoId.length == 11) {
+                                            Log.d(TAG, "JS extracted YouTube: $videoId")
+                                            resumed = true
+                                            continuation.resume(VideoSource.YouTube(videoId))
+                                        }
                                     }
-                                }, 5000)  // 5 seconds - give Video.js time to initialize
+                                }
                             }
                         }
                     }
 
-                    Log.d(TAG, "Loading: $playUrl")
                     webView.loadUrl(playUrl)
 
                     // Timeout fallback
                     webView.postDelayed({
                         if (!resumed) {
-                            Log.w(TAG, "Timeout - no video source found")
-                            resumed = true
-                            continuation.resume(VideoSource.Error("Timeout - no video source found"))
+                            if (foundYouTubeId != null) {
+                                Log.d(TAG, "Timeout - using found YouTube: $foundYouTubeId")
+                                resumed = true
+                                continuation.resume(VideoSource.YouTube(foundYouTubeId!!))
+                            } else {
+                                Log.e(TAG, "Timeout - no video source found")
+                                resumed = true
+                                continuation.resume(VideoSource.Error("Timeout: No video source found"))
+                            }
                         }
                     }, TIMEOUT_MS - 1000)
 
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error extracting video: ${e.message}", e)
+                    Log.e(TAG, "WebView error: ${e.message}", e)
                     if (!resumed) {
                         resumed = true
                         continuation.resume(VideoSource.Error(e.message ?: "Unknown error"))
