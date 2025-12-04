@@ -46,6 +46,8 @@ FarsiPlex (rebranding to FarsiHub) is a cross-platform Android streaming applica
 - Speed control (0.5x - 2x)
 - Auto Frame Rate (AFR) matching for TV
 - Network monitoring with auto-pause on disconnect
+- **IMVBox YouTube playback** with origin spoofing (bypasses embed restrictions)
+- Auto-skip intro videos on IMVBox content
 
 ### User Features
 - Favorites and watchlist management
@@ -200,6 +202,7 @@ API/Scraper (RetrofitClient, VideoUrlScraper, Namakade)
 | Farsiland | WordPress REST API | Movies, Series, Episodes |
 | FarsiPlex | Sitemap + DooPlay | Movies, Series |
 | Namakade | HTML Scraping | Movies, Series |
+| IMVBox | REST API + HTML Scraping | Movies (YouTube embeds) |
 
 ---
 
@@ -210,16 +213,17 @@ G:\FarsiPlex\
 ├── app/src/main/java/com/example/farsilandtv/
 │   ├── cast/                  # Chromecast (2 files)
 │   ├── data/
-│   │   ├── api/               # Network (4 files)
+│   │   ├── api/               # Network (5 files, incl. IMVBoxAuthManager)
 │   │   ├── cache/             # Caching (1 file)
 │   │   ├── database/          # Room DB (15+ files)
 │   │   ├── download/          # Offline (5 files)
 │   │   ├── health/            # Monitoring (1 file)
+│   │   ├── imvbox/            # IMVBox source (4 files) - NEW
 │   │   ├── models/            # Data classes (5 files)
 │   │   ├── namakade/          # Namakade source (3 files)
 │   │   ├── repository/        # Business logic (7 files)
 │   │   ├── scraper/           # Content extraction (6 files)
-│   │   └── sync/              # Background workers (2 files)
+│   │   └── sync/              # Background workers (3 files, incl. IMVBoxSyncWorker)
 │   ├── di/                    # Hilt modules (3 files)
 │   ├── ui/
 │   │   ├── components/        # Reusable UI (15+ files)
@@ -228,6 +232,8 @@ G:\FarsiPlex\
 │   │   ├── theme/             # Theme (1 file)
 │   │   └── viewmodel/         # State management (5 files)
 │   └── utils/                 # Utilities (23 files)
+├── IMVBoxWebPlayerActivity.kt # WebView player with origin spoofing - NEW
+├── YouTubePlayerActivity.kt   # Standalone YouTube player - NEW
 ├── scripts/                   # Python tools
 ├── CLAUDE.md                  # AI assistant context
 └── README.md                  # This file
@@ -374,6 +380,6 @@ This project is for personal use behind a firewalled network. All rights reserve
 
 ---
 
-**Last Updated:** 2025-12-01
-**Version:** 2.1 (Deep Audit Complete)
-**Status:** Production Ready - 179 Issues Fixed, 89 Tests Added
+**Last Updated:** 2025-12-04
+**Version:** 2.2 (IMVBox Integration)
+**Status:** Production Ready - 179 Issues Fixed, 89 Tests Added, IMVBox YouTube Support

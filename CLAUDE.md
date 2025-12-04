@@ -17,7 +17,7 @@
 - Repositories use `getInstance()` singleton pattern
 - Transitioning to full Hilt injection
 
-**Audit Status:** Deep audit complete (179 issues found, 136 fixed) - Production Ready - Updated 2025-12-01
+**Audit Status:** Deep audit complete (179 issues found, 136 fixed) - Production Ready - Updated 2025-12-04
 
 | Priority | Found | Fixed |
 |----------|-------|-------|
@@ -292,6 +292,46 @@ val selectedSort: StateFlow<SortOption>
 - Network monitoring with auto-pause on disconnect
 - Auto Frame Rate (AFR) matching
 
+### IMVBoxWebPlayerActivity
+
+**Location:** `IMVBoxWebPlayerActivity.kt`
+
+**Purpose:** Play IMVBox content with YouTube embeds using origin spoofing
+
+**Features:**
+- **Origin Spoofing:** Uses `loadDataWithBaseURL()` with imvbox.com origin
+- **YouTube Bypass:** IMVBox is whitelisted by YouTube video owners
+- **Auto-skip Intro:** MutationObserver detects and clicks skip button
+- **D-pad Control:** Touch simulation for play/pause and seek
+- **Fullscreen Support:** WebChromeClient custom view handling
+- **Auth Cookies:** Injects IMVBox login cookies for full movie access
+
+**Key Technique:**
+```kotlin
+// Spoof origin to bypass YouTube embed restrictions
+webView.loadDataWithBaseURL(
+    "https://www.imvbox.com/movies/play",  // Fake origin
+    embedHtml,
+    "text/html", "UTF-8", null
+)
+```
+
+**D-pad Controls (Touch Simulation):**
+- Center/Enter: Tap center to toggle play/pause
+- Left/Right: Double-tap edges for ±10s seek
+- Uses `MotionEvent.dispatchTouchEvent()` for real touch events
+
+### YouTubePlayerActivity
+
+**Location:** `YouTubePlayerActivity.kt`
+
+**Purpose:** Standalone YouTube player for non-IMVBox YouTube content
+
+**Features:**
+- YouTube IFrame API with JavaScript bridge
+- D-pad control overlay with auto-hide
+- Chromecast support via Cast SDK
+
 ### VideoUrlScraper
 
 **Location:** `data/scraper/VideoUrlScraper.kt`
@@ -343,6 +383,8 @@ G:\FarsiPlex\
 │   │   ├── DetailsActivity.kt                  # Movie details (TV/Phone adaptive)
 │   │   ├── SeriesDetailsActivity.kt            # Series details (TV/Phone adaptive)
 │   │   ├── VideoPlayerActivity.kt              # ExoPlayer + Chromecast
+│   │   ├── YouTubePlayerActivity.kt            # Standalone YouTube player
+│   │   ├── IMVBoxWebPlayerActivity.kt          # IMVBox WebView player (origin spoof)
 │   │   ├── DatabaseSourceDialogFragment.kt     # Database selector dialog
 │   │   ├── OptionsFragment.kt                  # Legacy options (deprecated)
 │   │   ├── SearchActivity.kt                   # Legacy search (deprecated)
@@ -355,10 +397,11 @@ G:\FarsiPlex\
 │   │   │   └── CastOptionsProvider.kt          # Cast framework config
 │   │   │
 │   │   ├── data/
-│   │   │   ├── api/                            # Network (4 files)
+│   │   │   ├── api/                            # Network (5 files)
 │   │   │   │   ├── RetrofitClient.kt           # HTTP client setup
 │   │   │   │   ├── WordPressApiService.kt      # WordPress REST API
 │   │   │   │   ├── FarsiPlexApiService.kt      # Sitemap parsing
+│   │   │   │   ├── IMVBoxAuthManager.kt        # IMVBox login/cookie management
 │   │   │   │   └── BackendApiService.kt        # Future backend (placeholder)
 │   │   │   │
 │   │   │   ├── cache/                          # Caching (1 file)
@@ -398,6 +441,12 @@ G:\FarsiPlex\
 │   │   │   │   ├── Genre.kt                    # Genre model
 │   │   │   │   └── FilterCard.kt               # Filter UI model
 │   │   │   │
+│   │   │   ├── imvbox/                         # IMVBox source (4 files)
+│   │   │   │   ├── IMVBoxApiService.kt         # REST API wrapper
+│   │   │   │   ├── IMVBoxVideoExtractor.kt     # YouTube ID extraction from HTML
+│   │   │   │   ├── IMVBoxHtmlParser.kt         # HTML parsing for metadata
+│   │   │   │   └── IMVBoxUrlBuilder.kt         # URL construction
+│   │   │   │
 │   │   │   ├── namakade/                       # Namakade source (3 files)
 │   │   │   │   ├── NamakadeApiService.kt       # API wrapper
 │   │   │   │   ├── NamakadeHtmlParser.kt       # HTML parsing
@@ -420,9 +469,10 @@ G:\FarsiPlex\
 │   │   │   │   ├── FarsiPlexMetadataScraper.kt # FarsiPlex metadata
 │   │   │   │   └── WebSearchScraper.kt         # (placeholder)
 │   │   │   │
-│   │   │   └── sync/                           # Background sync (2 files)
+│   │   │   └── sync/                           # Background sync (3 files)
 │   │   │       ├── ContentSyncWorker.kt        # WordPress API sync
-│   │   │       └── FarsiPlexSyncWorker.kt      # Sitemap sync
+│   │   │       ├── FarsiPlexSyncWorker.kt      # Sitemap sync
+│   │   │       └── IMVBoxSyncWorker.kt         # IMVBox content sync
 │   │   │
 │   │   ├── di/                                 # Hilt modules (3 files)
 │   │   │   ├── DatabaseModule.kt               # Database + DAO providers
@@ -645,9 +695,10 @@ data class VideoUrl(
 8. ✅ Complete Media3 migration (no ExoPlayer v2 imports)
 9. ✅ Add Phone UI support (6 phone screens)
 10. ✅ Deep audit complete (136 issues fixed, 89 tests added)
-11. ⏳ Complete Hilt migration (remove getInstance()) - NEXT
-12. ⏳ Modularize architecture
-13. ⏳ Setup CI/CD pipeline
+11. ✅ IMVBox integration with YouTube playback (origin spoofing)
+12. ⏳ Complete Hilt migration (remove getInstance()) - NEXT
+13. ⏳ Modularize architecture
+14. ⏳ Setup CI/CD pipeline
 
 ---
 
@@ -736,6 +787,13 @@ paging = "3.2.1"
 - HTML scraping via NamakadeApiService
 - Custom extraction patterns via NamakadeHtmlParser
 
+**IMVBox:**
+- REST API for movie listings and metadata
+- HTML scraping for YouTube video ID extraction (data-setup attribute)
+- **YouTube Playback:** Uses origin spoofing technique via `loadDataWithBaseURL()`
+- **Auth Required:** Full movies require IMVBox login (cookies injected via IMVBoxAuthManager)
+- Playback via IMVBoxWebPlayerActivity (WebView with spoofed imvbox.com origin)
+
 ---
 
 ## Section 14: File Count Summary
@@ -748,11 +806,77 @@ paging = "3.2.1"
 | ViewModels | 5 | MainViewModel, DownloadViewModel, Phone*ViewModels |
 | Database | 15+ | Entities, DAOs, migrations |
 | Repository | 7 | ContentRepository, FavoritesRepository, etc. |
-| API | 4 | RetrofitClient, WordPress, FarsiPlex services |
+| API | 5 | RetrofitClient, WordPress, FarsiPlex, IMVBoxAuthManager |
+| IMVBox | 4 | IMVBoxApiService, IMVBoxVideoExtractor, IMVBoxHtmlParser, IMVBoxUrlBuilder |
 | Scraper | 6 | VideoUrlScraper, EpisodeListScraper, etc. |
-| Sync Workers | 2 | ContentSyncWorker, FarsiPlexSyncWorker |
+| Sync Workers | 3 | ContentSyncWorker, FarsiPlexSyncWorker, IMVBoxSyncWorker |
 | Download | 5 | DownloadItem, DownloadManager, DownloadWorker |
 | Utilities | 23 | Security, network, formatting, performance |
 | DI Modules | 3 | DatabaseModule, NetworkModule, RepositoryModule |
 | Cast | 2 | CastManager, CastOptionsProvider |
-| **TOTAL** | **~100+** | Production-ready cross-platform app |
+| Player Activities | 3 | VideoPlayerActivity, YouTubePlayerActivity, IMVBoxWebPlayerActivity |
+| **TOTAL** | **~115+** | Production-ready cross-platform app with IMVBox |
+
+---
+
+## Section 15: IMVBox Integration Technical Details
+
+### Overview
+IMVBox is an Iranian movie streaming service that hosts movies via YouTube embeds. YouTube restricts certain embeds to specific domains (whitelist). IMVBox is whitelisted, so we spoof the origin.
+
+### YouTube Embed Restriction Problem
+YouTube video owners can restrict embeds to specific domains. IMVBox movies are restricted to `imvbox.com`. When loaded from our app, YouTube returns Error 153 ("This video is restricted").
+
+### Solution: Origin Spoofing via loadDataWithBaseURL
+
+```kotlin
+// In IMVBoxWebPlayerActivity.kt
+webView.loadDataWithBaseURL(
+    "https://www.imvbox.com/movies/play",  // FAKE origin
+    embedHtml,                              // HTML with YouTube iframe
+    "text/html",
+    "UTF-8",
+    null
+)
+```
+
+This makes the WebView report `window.location.ancestorOrigins[0]` as `imvbox.com`, which YouTube checks.
+
+### Video ID Extraction (Clean Method)
+IMVBox stores video metadata in a `data-setup` attribute on their Video.js player. The IMVBoxVideoExtractor parses this JSON to find the YouTube ID:
+
+```kotlin
+// In IMVBoxVideoExtractor.kt - Clean extraction from data-setup
+val dataSetup = doc.select("[data-setup]").first()?.attr("data-setup")
+val json = JSONObject(dataSetup)
+val sources = json.getJSONArray("sources")
+// Find source with type "video/youtube"
+```
+
+### Files Structure
+```
+data/imvbox/
+├── IMVBoxApiService.kt       # REST API for listings
+├── IMVBoxVideoExtractor.kt   # YouTube ID extraction from HTML
+├── IMVBoxHtmlParser.kt       # Metadata parsing
+└── IMVBoxUrlBuilder.kt       # URL construction
+
+data/api/
+└── IMVBoxAuthManager.kt      # Login cookie management
+
+data/sync/
+└── IMVBoxSyncWorker.kt       # Background content sync
+
+# Activity
+IMVBoxWebPlayerActivity.kt    # WebView player with origin spoof
+```
+
+### D-pad Control (Known Limitation)
+YouTube iframes don't respond to programmatic JavaScript commands when origin is spoofed. The current approach uses Android `MotionEvent` touch simulation:
+- **Play/Pause:** Tap at center of WebView
+- **Seek ±10s:** Double-tap at left/right edges (YouTube gesture)
+
+**Note:** This approach may have inconsistent results depending on YouTube's internal state.
+
+### Authentication
+Full movies require IMVBox login. IMVBoxAuthManager stores credentials and provides cookies for WebView injection.
