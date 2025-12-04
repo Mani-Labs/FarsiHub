@@ -170,10 +170,19 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         // Setup WebView and load video
         setupWebView()
         injectAuthCookies()
-        loadIMVBoxPage()
 
-        // Start checking for skip button
-        skipCheckHandler.postDelayed(skipCheckRunnable, 3000) // Start after 3 seconds
+        // If we have pre-extracted YouTube ID, use loadDataWithBaseURL to spoof origin
+        // This skips loading IMVBox page entirely while pretending to be imvbox.com
+        if (!preExtractedYouTubeId.isNullOrEmpty()) {
+            Log.d(TAG, "Using loadDataWithBaseURL trick to spoof imvbox.com origin")
+            loadYouTubeWithSpoofedOrigin(preExtractedYouTubeId!!)
+            introSkipped = true
+        } else {
+            // No pre-extracted ID - load actual IMVBox page
+            loadIMVBoxPage()
+            // Start checking for skip button
+            skipCheckHandler.postDelayed(skipCheckRunnable, 3000) // Start after 3 seconds
+        }
 
         // Setup back button handling
         setupBackButton()
@@ -641,6 +650,75 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         webView.evaluateJavascript(js) { result ->
             Log.d(TAG, "YouTube injection result: $result")
         }
+    }
+
+    /**
+     * Load YouTube embed with spoofed imvbox.com origin using loadDataWithBaseURL.
+     *
+     * This trick makes the WebView report its origin as imvbox.com, which YouTube
+     * checks via window.location.ancestorOrigins. Since IMVBox is whitelisted by
+     * YouTube video owners, the embed is allowed.
+     *
+     * This completely skips loading the IMVBox page - we go directly to YouTube!
+     */
+    private fun loadYouTubeWithSpoofedOrigin(youtubeId: String) {
+        Log.d(TAG, "Loading YouTube with spoofed origin: $youtubeId")
+
+        // Create a minimal HTML page with YouTube embed
+        // The baseURL parameter of loadDataWithBaseURL sets the origin
+        val embedHtml = """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>FarsiPlex Player</title>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    html, body {
+                        width: 100%;
+                        height: 100%;
+                        background: #000;
+                        overflow: hidden;
+                    }
+                    .player-container {
+                        width: 100vw;
+                        height: 100vh;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+                    iframe {
+                        width: 100%;
+                        height: 100%;
+                        border: none;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="player-container">
+                    <iframe id="ytplayer"
+                        src="https://www.youtube.com/embed/$youtubeId?autoplay=1&controls=1&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&fs=1&playsinline=1&enablejsapi=1"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                        allowfullscreen>
+                    </iframe>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        // THE KEY TRICK: Use imvbox.com as the base URL!
+        // This makes YouTube think the embed is coming from imvbox.com
+        webView.loadDataWithBaseURL(
+            "https://www.imvbox.com/movies/play",  // Fake origin = imvbox.com
+            embedHtml,
+            "text/html",
+            "UTF-8",
+            null
+        )
+
+        loadingIndicator.visibility = View.GONE
+        Log.d(TAG, "YouTube loaded with spoofed imvbox.com origin")
     }
 
     private fun updatePlayPauseButton() {
