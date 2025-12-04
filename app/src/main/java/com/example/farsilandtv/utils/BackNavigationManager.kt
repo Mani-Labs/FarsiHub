@@ -53,13 +53,19 @@ object BackNavigationManager {
 
     /**
      * Check if on home screen (for MainActivity fragments)
+     * UT-M3 FIX: Wrapped in try-catch for IllegalStateException
      *
      * @param activity The activity to check
      * @return true if no fragments are on back stack (home screen)
      */
     fun isOnHomeScreen(activity: FragmentActivity): Boolean {
-        val isHome = activity.supportFragmentManager.backStackEntryCount == 0
-        Log.d(TAG, "isOnHomeScreen: $isHome (backStackCount=${activity.supportFragmentManager.backStackEntryCount})")
-        return isHome
+        return try {
+            val isHome = activity.supportFragmentManager.backStackEntryCount == 0
+            Log.d(TAG, "isOnHomeScreen: $isHome (backStackCount=${activity.supportFragmentManager.backStackEntryCount})")
+            isHome
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "IllegalStateException checking home screen state: ${e.message}")
+            true // Assume home screen if check fails
+        }
     }
 }

@@ -1,45 +1,27 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.PlaybackPosition
+import com.example.farsilandtv.data.database.PlaybackPositionDao
 import kotlinx.coroutines.flow.Flow
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for playback position and watched status tracking
  * Implements Feature #2: Watched Status Tracking
  *
- * C1 Consolidation: Now uses single AppDatabase instance instead of FarsilandDatabase
- * to eliminate dual database pattern and prevent data consistency issues.
- *
- * SINGLETON PATTERN: Use getInstance() to get the shared instance.
- * This prevents multiple database connections and ensures cache consistency.
+ * Hilt-managed singleton - injected via constructor
  */
-class PlaybackRepository private constructor(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context.applicationContext)
-    private val dao = database.playbackPositionDao()
+@Singleton
+class PlaybackRepository @Inject constructor(
+    private val dao: PlaybackPositionDao
+) {
 
     companion object {
         // Threshold for auto-marking content as completed (95%)
         private const val COMPLETION_THRESHOLD = 0.95f
         // Threshold for episodes (90% - typically skip credits)
         private const val COMPLETION_THRESHOLD_EPISODE = 0.90f
-
-        @Volatile
-        private var INSTANCE: PlaybackRepository? = null
-
-        /**
-         * Get singleton instance of PlaybackRepository
-         * Thread-safe double-check locking pattern
-         */
-        fun getInstance(context: Context): PlaybackRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: PlaybackRepository(context.applicationContext).also {
-                    INSTANCE = it
-                }
-            }
-        }
     }
 
     /**

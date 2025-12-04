@@ -59,7 +59,10 @@ fun ContentOptionsDialog(
     onToggleWatchlist: () -> Unit = {},
     onToggleFavorites: () -> Unit = {},
     onToggleMonitored: () -> Unit = {},
-    onRemoveFromContinueWatching: (() -> Unit)? = null
+    onRemoveFromContinueWatching: (() -> Unit)? = null,
+    // Phase 6: Download for offline
+    isDownloaded: Boolean = false,
+    onDownload: (() -> Unit)? = null
 ) {
     val focusRequester = remember { FocusRequester() }
 
@@ -140,6 +143,19 @@ fun ContentOptionsDialog(
                         isDestructive = true,
                         onClick = {
                             onRemoveFromContinueWatching()
+                            onDismiss()
+                        }
+                    )
+                }
+
+                // Phase 6: Download for offline option (Movies only for now)
+                if (item is ContentOptionsItem.MovieItem && onDownload != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OptionButton(
+                        text = if (isDownloaded) "✓ Downloaded (Tap to Remove)" else "↓ Download for Offline",
+                        isActive = isDownloaded,
+                        onClick = {
+                            onDownload()
                             onDismiss()
                         }
                     )

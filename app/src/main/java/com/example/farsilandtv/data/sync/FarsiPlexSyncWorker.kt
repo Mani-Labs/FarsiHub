@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import androidx.hilt.work.HiltWorker
 import com.example.farsilandtv.data.database.CachedMovie
 import com.example.farsilandtv.data.database.CachedSeries
 import com.example.farsilandtv.data.database.CachedEpisode
@@ -16,9 +17,12 @@ import com.example.farsilandtv.data.database.CachedVideoUrl
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.api.FarsiPlexApiService
 import com.example.farsilandtv.data.api.RetrofitClient
+import com.example.farsilandtv.data.health.ScraperHealthTracker
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.data.scraper.FarsiPlexMetadataScraper
 import com.example.farsilandtv.utils.NotificationHelper
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -34,14 +38,16 @@ import kotlinx.coroutines.withContext
  *
  * Sync frequency: Every 15 minutes (configurable in FarsilandApp.kt)
  */
-class FarsiPlexSyncWorker(
-    context: Context,
-    params: WorkerParameters
+@HiltWorker
+class FarsiPlexSyncWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val contentRepo: ContentRepository,
+    private val healthTracker: ScraperHealthTracker
 ) : CoroutineWorker(context, params) {
 
     private val contentDb = ContentDatabase.getDatabase(context)
     private val farsiPlexApi = FarsiPlexApiService(RetrofitClient.getHttpClient())
-    private val contentRepo = ContentRepository.getInstance(context)
     // FIXED: Use same SharedPreferences as SyncSettingsFragment to show sync status
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
 
@@ -135,9 +141,15 @@ class FarsiPlexSyncWorker(
             // Notifies ContentRepository to invalidate Pagers and refresh UI
             contentRepo.notifySyncCompleted()
 
+            // Phase 5: Record health tracker success
+            healthTracker.recordSuccess(ScraperHealthTracker.ScraperSource.FARSIPLEX)
+
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "FarsiPlex sync failed: ${e.message}", e)
+
+            // Phase 5: Record health tracker failure
+            healthTracker.recordFailure(ScraperHealthTracker.ScraperSource.FARSIPLEX, e.message)
 
             // Check if we've exceeded max retry attempts
             val attemptCount = runAttemptCount

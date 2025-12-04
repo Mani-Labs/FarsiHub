@@ -8,12 +8,14 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.example.farsilandtv.data.cache.PrefetchManager
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.models.Genre
 import com.example.farsilandtv.data.models.FeaturedContent
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.ErrorHandler
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +25,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
+import javax.inject.Inject
 
 /**
  * ViewModel for main browse screen
@@ -34,11 +37,12 @@ import kotlinx.coroutines.async
  * - MIGRATION_9_10 runs heavy DELETE with GROUP BY on main thread
  * - Lazy init defers until first use in viewModelScope (background thread)
  */
-class MainViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val repository by lazy {
-        ContentRepository.getInstance(application.applicationContext)
-    }
+@HiltViewModel
+class MainViewModel @Inject constructor(
+    application: Application,
+    private val repository: ContentRepository,
+    private val prefetchManager: PrefetchManager
+) : AndroidViewModel(application) {
 
     // Feature #18: Paging 3 - Unlimited scrolling (replaces 300-item caps)
     // These flows are database-backed and can handle unlimited items efficiently
@@ -228,6 +232,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     moviesDeferred.await()
                     seriesDeferred.await()
                     episodesDeferred.await()
+
+                    // Phase 4: Background prefetch images after content loads
+                    prefetchLoadedContent()
                 }
 
             } catch (e: Exception) {
@@ -236,6 +243,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 _isLoading.value = false
             }
+        }
+    }
+
+    /**
+     * Phase 4: Prefetch images for loaded content
+     */
+    private fun prefetchLoadedContent() {
+        try {
+            // Prefetch featured content images (highest priority)
+            _featuredContent.value?.let { featured ->
+                // Convert FeaturedContent sealed class to Movie/Series for prefetch
+                val featuredMovies = featured.filterIsInstance<FeaturedContent.FeaturedMovie>()
+                    .map { Movie(
+                        id = it.id,
+                        title = it.title,
+                        posterUrl = it.posterUrl,
+                        backdropUrl = it.backdropUrl,
+                        farsilandUrl = it.farsilandUrl,
+                        description = it.description
+                    ) }
+                val featuredSeries = featured.filterIsInstance<FeaturedContent.FeaturedSeries>()
+                    .map { Series(
+                        id = it.id,
+                        title = it.title,
+                        posterUrl = it.posterUrl,
+                        backdropUrl = it.backdropUrl,
+                        farsilandUrl = it.farsilandUrl,
+                        description = it.description
+                    ) }
+                prefetchManager.prefetchFeaturedContent(featuredMovies, featuredSeries)
+            }
+
+            // Prefetch recent movies and series posters
+            _recentMovies.value?.let { movies ->
+                prefetchManager.prefetchMoviePosters(movies)
+            }
+            _recentSeries.value?.let { seriesList ->
+                prefetchManager.prefetchSeriesPosters(seriesList)
+            }
+
+            // Prefetch recent episode thumbnails
+            _recentEpisodes.value?.let { episodes ->
+                prefetchManager.prefetchEpisodeThumbnails(episodes)
+            }
+
+            Log.d(TAG, "Phase 4: Background prefetch initiated for loaded content")
+        } catch (e: Exception) {
+            Log.w(TAG, "Prefetch failed (non-critical): ${e.message}")
         }
     }
 

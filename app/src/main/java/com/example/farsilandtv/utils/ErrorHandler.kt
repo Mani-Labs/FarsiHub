@@ -39,9 +39,27 @@ object ErrorHandler {
                 "خطا در ارتباط با سرور\nServer communication error"
             }
             else -> {
-                "خطای غیرمنتظره: ${throwable.message}\nUnexpected error: ${throwable.message}"
+                // UT-M4 FIX: Sanitize paths from error messages
+                val sanitizedMessage = sanitizeErrorMessage(throwable.message)
+                "خطای غیرمنتظره: $sanitizedMessage\nUnexpected error: $sanitizedMessage"
             }
         }
+    }
+
+    /**
+     * UT-M4 FIX: Sanitize file paths from error messages
+     * Prevents leaking internal file structure to users
+     */
+    private fun sanitizeErrorMessage(message: String?): String {
+        if (message == null) return "Unknown error"
+
+        // Remove file paths (C:\, /data/data/, etc.)
+        var sanitized = message
+        sanitized = sanitized.replace(Regex("[A-Za-z]:\\\\[^\\s]+"), "[path]")
+        sanitized = sanitized.replace(Regex("/data/data/[^\\s]+"), "[app_data]")
+        sanitized = sanitized.replace(Regex("/storage/emulated/[^\\s]+"), "[storage]")
+
+        return sanitized
     }
 
     /**

@@ -2,10 +2,46 @@ package com.example.farsilandtv.data.scraper
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import com.example.farsilandtv.data.api.RetrofitClient
+import java.io.IOException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * EXTERNAL AUDIT FIX SN-M1: Suspendable OkHttp Call extension to prevent zombie threads
+ *
+ * Problem: execute() is a blocking call that doesn't respond to coroutine cancellation
+ * Result: Cancelled coroutines leave threads blocked for 25 seconds (timeout)
+ * Solution: Use enqueue() with suspendCancellableCoroutine for proper cancellation
+ */
+private suspend fun Call.await(): Response {
+    return suspendCancellableCoroutine { continuation ->
+        // Register cancellation handler BEFORE starting the call
+        continuation.invokeOnCancellation {
+            cancel() // Cancel OkHttp call immediately when coroutine is cancelled
+        }
+
+        enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response)
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                // Only resume with exception if coroutine is still active
+                if (continuation.isActive) {
+                    continuation.resumeWithException(e)
+                }
+            }
+        })
+    }
+}
 
 /**
  * HTML scraper for extracting comprehensive episode metadata from Farsiland.com
@@ -23,6 +59,14 @@ object EpisodeMetadataScraper {
 
     private const val TAG = "EpisodeMetadataScraper"
     private val httpClient = RetrofitClient.getHttpClient()
+
+    // EXTERNAL AUDIT FIX SN-L4: Pre-compiled regex patterns (avoid recompilation on every call)
+    // Issue: Regex patterns compiled in hot paths cause GC pressure
+    // Fix: Compile once at object initialization, reuse throughout lifetime
+    private val IMAGE_URL_PATTERN = Regex(""".*\.(jpg|jpeg|png|webp)$""", RegexOption.IGNORE_CASE)
+    private val DATE_PATTERN = Regex("""([A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+\d{4})""")
+    private val RATING_PATTERN = Regex("""(\d+\.\d+)\s*""")
+    private val VOTE_PATTERN = Regex("""(\d+)\s*votes?""", RegexOption.IGNORE_CASE)
 
     /**
      * Complete episode metadata extracted from page
@@ -123,7 +167,8 @@ object EpisodeMetadataScraper {
             if (posterLink != null) {
                 // Get the full-size image URL from the link href
                 val href = posterLink.attr("href")
-                if (href.matches(Regex(".*\\.(jpg|jpeg|png|webp)$", RegexOption.IGNORE_CASE))) {
+                // EXTERNAL AUDIT FIX SN-L4: Use pre-compiled pattern
+                if (href.matches(IMAGE_URL_PATTERN)) {
                     android.util.Log.d(TAG, "Found episode poster (Method 1): $href")
                     return href
                 }
@@ -232,8 +277,8 @@ object EpisodeMetadataScraper {
             for (element in dateElements) {
                 val text = element.text()
                 // Extract date pattern (e.g., "Oct. 29, 2025")
-                val datePattern = Regex("""([A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+\d{4})""")
-                val match = datePattern.find(text)
+                // EXTERNAL AUDIT FIX SN-L4: Use pre-compiled pattern
+                val match = DATE_PATTERN.find(text)
                 if (match != null) {
                     val date = match.value.trim()
                     android.util.Log.d(TAG, "Found release date: $date")
@@ -267,10 +312,10 @@ object EpisodeMetadataScraper {
             }
 
             // Method 2: Look for rating pattern in text (e.g., "6.8")
-            val ratingPattern = Regex("""(\d+\.\d+)\s*""")
+            // EXTERNAL AUDIT FIX SN-L4: Use pre-compiled pattern
             val voteElements = doc.select("*:contains(votes)")
             for (element in voteElements) {
-                val match = ratingPattern.find(element.text())
+                val match = RATING_PATTERN.find(element.text())
                 if (match != null) {
                     val rating = match.groupValues[1].toFloatOrNull()
                     if (rating != null && rating >= 0 && rating <= 10) {
@@ -306,10 +351,10 @@ object EpisodeMetadataScraper {
             }
 
             // Method 2: Look for "XXX votes" pattern
-            val votePattern = Regex("""(\d+)\s*votes?""", RegexOption.IGNORE_CASE)
+            // EXTERNAL AUDIT FIX SN-L4: Use pre-compiled pattern
             val voteElements = doc.select("*:contains(votes)")
             for (element in voteElements) {
-                val match = votePattern.find(element.text())
+                val match = VOTE_PATTERN.find(element.text())
                 if (match != null) {
                     val count = match.groupValues[1].toIntOrNull()
                     if (count != null) {
@@ -511,7 +556,10 @@ object EpisodeMetadataScraper {
             .get()
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
+        // EXTERNAL AUDIT FIX SN-M1: Use await() instead of execute() to prevent zombie threads
+        // Issue: execute() blocks thread even when coroutine is cancelled
+        // Fix: await() is cancellation-aware and frees thread immediately
+        httpClient.newCall(request).await().use { response ->
             if (!response.isSuccessful) {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }

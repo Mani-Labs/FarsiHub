@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import androidx.hilt.work.HiltWorker
 import com.example.farsilandtv.R
 import com.example.farsilandtv.data.database.CachedMovie
 import com.example.farsilandtv.data.database.CachedSeries
@@ -16,12 +17,17 @@ import com.example.farsilandtv.data.database.CachedEpisode
 import com.example.farsilandtv.data.database.CachedGenre
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.api.RetrofitClient
+import com.example.farsilandtv.data.health.ScraperHealthTracker
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.SyncPreferences
 import com.example.farsilandtv.utils.NotificationHelper
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -39,14 +45,16 @@ import java.util.Locale
  *
  * Sync frequency: Every 10 minutes
  */
-class ContentSyncWorker(
-    context: Context,
-    params: WorkerParameters
+@HiltWorker
+class ContentSyncWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val repository: ContentRepository,
+    private val healthTracker: ScraperHealthTracker
 ) : CoroutineWorker(context, params) {
 
     private val contentDb = ContentDatabase.getDatabase(context)
     private val wordPressApi = RetrofitClient.wordPressApi
-    private val repository = ContentRepository.getInstance(context)
     private val syncPrefs = SyncPreferences(context)
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
 
@@ -212,11 +220,17 @@ class ContentSyncWorker(
 
             // REFACTOR (2025-11-21): Trigger Paging auto-refresh after successful sync
             // Notifies ContentRepository to invalidate Pagers and refresh UI
-            ContentRepository.getInstance(applicationContext).notifySyncCompleted()
+            repository.notifySyncCompleted()
+
+            // Phase 5: Record health tracker success
+            healthTracker.recordSuccess(ScraperHealthTracker.ScraperSource.FARSILAND)
 
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Sync failed: ${e.message}", e)
+
+            // Phase 5: Record health tracker failure
+            healthTracker.recordFailure(ScraperHealthTracker.ScraperSource.FARSILAND, e.message)
 
             // Check if we've exceeded max retry attempts
             val attemptCount = runAttemptCount
@@ -428,6 +442,11 @@ class ContentSyncWorker(
             var page = 1
             var totalSynced = 0
             do {
+                // EXTERNAL AUDIT FIX SN-M3: Check cancellation at start of each pagination iteration
+                // Issue: Pagination continues after WorkManager cancels, wasting resources
+                // Fix: ensureActive() throws CancellationException if cancelled
+                coroutineContext.ensureActive()
+
                 Log.d(TAG, "Fetching movies page $page...")
 
                 val wpMovies = wordPressApi.getMovies(
@@ -485,6 +504,11 @@ class ContentSyncWorker(
             var page = 1
             var totalSynced = 0
             do {
+                // EXTERNAL AUDIT FIX SN-M3: Check cancellation at start of each pagination iteration
+                // Issue: Pagination continues after WorkManager cancels, wasting resources
+                // Fix: ensureActive() throws CancellationException if cancelled
+                coroutineContext.ensureActive()
+
                 Log.d(TAG, "Fetching series page $page...")
 
                 val wpShows = wordPressApi.getTvShows(
@@ -553,6 +577,11 @@ class ContentSyncWorker(
             val allAffectedSeriesIds = mutableSetOf<Int>()
 
             do {
+                // EXTERNAL AUDIT FIX SN-M3: Check cancellation at start of each pagination iteration
+                // Issue: Pagination continues after WorkManager cancels, wasting resources
+                // Fix: ensureActive() throws CancellationException if cancelled
+                coroutineContext.ensureActive()
+
                 Log.d(TAG, "Fetching episodes page $page...")
 
                 val wpEpisodes = wordPressApi.getEpisodes(
@@ -794,17 +823,19 @@ class ContentSyncWorker(
             // Pattern for "Series Name EP##"
             val episodeOnlyPattern = Regex("(.+?)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
 
+            // Use find() with null-safe let{} instead of matches() + find()!!
+            val seasonMatch = seasonEpisodePattern.find(titleText)
+            val episodeMatch = episodeOnlyPattern.find(titleText)
+
             when {
-                seasonEpisodePattern.matches(titleText) -> {
-                    val match = seasonEpisodePattern.find(titleText)!!
-                    seriesTitle = match.groupValues[1].trim()
-                    seasonNum = match.groupValues[2].toIntOrNull() ?: 1
-                    episodeNum = match.groupValues[3].toIntOrNull() ?: 1
+                seasonMatch != null -> {
+                    seriesTitle = seasonMatch.groupValues.getOrNull(1)?.trim() ?: titleText
+                    seasonNum = seasonMatch.groupValues.getOrNull(2)?.toIntOrNull() ?: 1
+                    episodeNum = seasonMatch.groupValues.getOrNull(3)?.toIntOrNull() ?: 1
                 }
-                episodeOnlyPattern.matches(titleText) -> {
-                    val match = episodeOnlyPattern.find(titleText)!!
-                    seriesTitle = match.groupValues[1].trim()
-                    episodeNum = match.groupValues[2].toIntOrNull() ?: 1
+                episodeMatch != null -> {
+                    seriesTitle = episodeMatch.groupValues.getOrNull(1)?.trim() ?: titleText
+                    episodeNum = episodeMatch.groupValues.getOrNull(2)?.toIntOrNull() ?: 1
                 }
                 else -> {
                     // Can't parse - use full title as series name

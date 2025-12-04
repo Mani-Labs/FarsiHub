@@ -236,13 +236,20 @@ class ContentRepositoryTest {
     }
 
     @Test
+    fun `DatabaseSource IMVBOX has correct URL pattern`() {
+        // Assert - urlPattern is SQL LIKE pattern with wildcards
+        assertEquals("%imvbox%", DatabaseSource.IMVBOX.urlPattern)
+    }
+
+    @Test
     fun `DatabaseSource enum has expected values`() {
         // Assert
         val sources = DatabaseSource.values()
-        assertTrue(sources.size >= 3, "Should have at least 3 database sources")
+        assertTrue(sources.size >= 4, "Should have at least 4 database sources")
         assertTrue(sources.any { it.name == "FARSILAND" })
         assertTrue(sources.any { it.name == "FARSIPLEX" })
         assertTrue(sources.any { it.name == "NAMAKADE" })
+        assertTrue(sources.any { it.name == "IMVBOX" })
     }
 
     // ============================================================================

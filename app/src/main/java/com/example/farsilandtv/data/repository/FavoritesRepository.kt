@@ -1,41 +1,23 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.Favorite
 import com.example.farsilandtv.data.database.FavoriteDao
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import kotlinx.coroutines.flow.Flow
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for universal favorites system
  * Handles favorites for both movies and TV series
  *
- * SINGLETON PATTERN: Use getInstance() to get the shared instance.
- * This prevents multiple database connections and ensures cache consistency.
+ * Hilt-managed singleton - injected via constructor
  */
-class FavoritesRepository private constructor(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context.applicationContext)
-    private val favoriteDao: FavoriteDao = database.favoriteDao()
-
-    companion object {
-        @Volatile
-        private var INSTANCE: FavoritesRepository? = null
-
-        /**
-         * Get singleton instance of FavoritesRepository
-         * Thread-safe double-check locking pattern
-         */
-        fun getInstance(context: Context): FavoritesRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: FavoritesRepository(context.applicationContext).also {
-                    INSTANCE = it
-                }
-            }
-        }
-    }
+@Singleton
+class FavoritesRepository @Inject constructor(
+    private val favoriteDao: FavoriteDao
+) {
 
     // ========== Add/Remove Favorites ==========
 

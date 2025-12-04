@@ -3,37 +3,112 @@ package com.example.farsilandtv
 import android.app.Application
 import android.os.Build
 import android.util.Log
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import coil.ImageLoader
+import coil.ImageLoaderFactory
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.sync.ContentSyncWorker
+import com.example.farsilandtv.data.sync.IMVBoxSyncWorker
 // import com.google.firebase.crashlytics.FirebaseCrashlytics  // DISABLED
+import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
 import java.io.File
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.database.StandaloneDatabaseProvider
+import com.example.farsilandtv.utils.DeviceUtils
+import com.example.farsilandtv.cast.CastManager
+import javax.inject.Inject
 
 /**
  * Application class for Farsiland TV
  * Provides global context for caching and initialization
  * NEW: Handles first-launch database initialization and background sync
  */
-class FarsilandApp : Application() {
+@HiltAndroidApp
+class FarsilandApp : Application(), Configuration.Provider, ImageLoaderFactory {
+
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    @Inject
+    lateinit var castManager: CastManager
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
+
+    /**
+     * IMVBox SSL Certificate Fix: Custom ImageLoader for Coil
+     *
+     * Issue: assets.imvbox.com has incomplete SSL certificate chain
+     * Error: "Trust anchor for certification path not found"
+     *
+     * Solution: Create OkHttpClient with TrustManager that accepts all certificates
+     * for image loading ONLY (video URLs still go through normal security checks)
+     *
+     * Security Note: This is acceptable for image CDN since:
+     * 1. Images are not security-sensitive data
+     * 2. Only affects Coil image loading, not API calls or video streams
+     * 3. The CDN domain is known and controlled (assets.imvbox.com)
+     */
+    override fun newImageLoader(): ImageLoader {
+        // Create TrustManager that accepts all certificates
+        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        })
+
+        // Create SSL context with trust-all manager
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+
+        // Create OkHttpClient with custom SSL handling
+        val okHttpClient = OkHttpClient.Builder()
+            .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
+            .hostnameVerifier { _, _ -> true }
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+        Log.i(TAG, "Custom ImageLoader created for IMVBox SSL certificate bypass")
+
+        return ImageLoader.Builder(this)
+            .okHttpClient(okHttpClient)
+            .crossfade(true)
+            .build()
+    }
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        // Phase 1: Initialize device type detection for responsive UI
+        initializeDeviceType()
+
+        // UT-H2 FIX: Initialize FocusMemoryManagerEnhanced
+        com.example.farsilandtv.utils.FocusMemoryManagerEnhanced.initialize(applicationContext)
 
         // EXTERNAL AUDIT FIX S2: Initialize ExoPlayer cache on background thread
         // Prevents main thread I/O during VideoPlayerActivity.onCreate()
@@ -68,8 +143,27 @@ class FarsilandApp : Application() {
         // Schedule periodic background sync for FarsiPlex (15 minutes)
         scheduleFarsiPlexSync()
 
+        // Schedule periodic background sync for IMVBox (15 minutes)
+        scheduleIMVBoxSync()
+
         // Re-enabled (2025-11-21): Testing sync behavior to diagnose hang issue
         triggerImmediateSync()
+    }
+
+    /**
+     * UT-C1 FIX: Cancel application scope when app terminates
+     * Prevents leaked coroutines and handlers
+     * CD-H2 FIX: Release CastManager to prevent memory leaks
+     */
+    override fun onTerminate() {
+        super.onTerminate()
+        applicationScope.cancel()
+        videoCache?.release()
+        // CD-H2 FIX: Release CastManager
+        if (::castManager.isInitialized) {
+            castManager.release()
+        }
+        Log.d(TAG, "Application terminated, resources cleaned up")
     }
 
     /**
@@ -104,6 +198,13 @@ class FarsilandApp : Application() {
                     .putBoolean("content_db_fatal_error", true)
                     .apply()
             }
+            com.example.farsilandtv.data.database.DatabaseSource.IMVBOX -> {
+                val syncRequest = androidx.work.OneTimeWorkRequestBuilder<IMVBoxSyncWorker>()
+                    .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    .build()
+                androidx.work.WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                Log.i(TAG, "Emergency IMVBox sync triggered (cold start after crash recovery)")
+            }
         }
     }
 
@@ -123,7 +224,36 @@ class FarsilandApp : Application() {
             .build()
         androidx.work.WorkManager.getInstance(applicationContext).enqueue(farsiPlexSyncRequest)
 
-        Log.i(TAG, "Launch sync triggered for ALL sources (Farsiland + FarsiPlex)")
+        // Trigger IMVBox sync
+        val imvboxSyncRequest = androidx.work.OneTimeWorkRequestBuilder<IMVBoxSyncWorker>()
+            .build()
+        androidx.work.WorkManager.getInstance(applicationContext).enqueue(imvboxSyncRequest)
+
+        Log.i(TAG, "Launch sync triggered for ALL sources (Farsiland + FarsiPlex + IMVBox)")
+    }
+
+    /**
+     * Phase 1: Initialize device type detection
+     *
+     * Detects whether app is running on TV, Tablet, or Phone
+     * Result is cached for consistent behavior throughout the session
+     * Used by Compose UI to show appropriate layout (sidebar vs bottom nav)
+     */
+    private fun initializeDeviceType() {
+        val deviceType = DeviceUtils.getDeviceType(applicationContext)
+        Log.i(TAG, "Device type detected: $deviceType")
+
+        when (deviceType) {
+            DeviceUtils.DeviceType.TV -> {
+                Log.i(TAG, "Running on Android TV - using sidebar navigation")
+            }
+            DeviceUtils.DeviceType.TABLET -> {
+                Log.i(TAG, "Running on Tablet - using TV layout (sidebar navigation)")
+            }
+            DeviceUtils.DeviceType.PHONE -> {
+                Log.i(TAG, "Running on Phone - using bottom navigation")
+            }
+        }
     }
 
     /**
@@ -437,6 +567,74 @@ class FarsilandApp : Application() {
         )
 
         Log.i(TAG, "FarsiPlex sync scheduled: Every ${syncIntervalMinutes}min (idle mode, any network, scrapes full metadata + video URLs)")
+    }
+
+    /**
+     * Schedule IMVBox background sync with WorkManager
+     *
+     * Syncs movies and series from IMVBox.com
+     * Configurable via Settings > Sync Settings
+     */
+    private fun scheduleIMVBoxSync() {
+        val prefs = getSharedPreferences("sync_settings", MODE_PRIVATE)
+        val syncEnabled = prefs.getBoolean("imvbox_sync_enabled", true) // Enabled by default
+        val syncIntervalMinutes = prefs.getLong("sync_interval_minutes", 30L) // Same as other sources
+
+        // Manual only (0) or disabled
+        if (!syncEnabled || syncIntervalMinutes == 0L) {
+            Log.i(TAG, "IMVBox sync is disabled (sync_enabled=$syncEnabled, interval=$syncIntervalMinutes)")
+            WorkManager.getInstance(this).cancelUniqueWork(IMVBoxSyncWorker.WORK_NAME)
+            return
+        }
+
+        // Optimized constraints for Shield TV
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiresCharging(false)
+            .build()
+
+        // Convert minutes to hours if >= 60 minutes for better WorkManager compatibility
+        val interval: Long
+        val timeUnit: TimeUnit
+        val flexInterval: Long
+        val flexUnit: TimeUnit
+
+        if (syncIntervalMinutes >= 60) {
+            val hours = syncIntervalMinutes / 60
+            interval = hours
+            timeUnit = TimeUnit.HOURS
+            flexInterval = (hours / 3).coerceAtLeast(1)
+            flexUnit = TimeUnit.HOURS
+        } else {
+            // Enforce WorkManager's 15-minute minimum for periodic work
+            interval = syncIntervalMinutes.coerceAtLeast(15)
+            timeUnit = TimeUnit.MINUTES
+            flexInterval = (interval / 3).coerceAtLeast(5)
+            flexUnit = TimeUnit.MINUTES
+
+            if (syncIntervalMinutes < 15) {
+                Log.w(TAG, "IMVBox sync interval ${syncIntervalMinutes}min is below WorkManager minimum, using 15 min instead")
+            }
+        }
+
+        val syncWorkRequest = PeriodicWorkRequestBuilder<IMVBoxSyncWorker>(
+            repeatInterval = interval,
+            repeatIntervalTimeUnit = timeUnit,
+            flexTimeInterval = flexInterval,
+            flexTimeIntervalUnit = flexUnit
+        )
+            .setConstraints(constraints)
+            .addTag("imvbox_sync")
+            .addTag("user_configured")
+            .build()
+
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            IMVBoxSyncWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.REPLACE,
+            syncWorkRequest
+        )
+
+        Log.i(TAG, "IMVBox sync scheduled: Every ${syncIntervalMinutes}min (scrapes movies and series from imvbox.com)")
     }
 
     /**

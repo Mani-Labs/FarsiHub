@@ -1,43 +1,28 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.SearchHistory
+import com.example.farsilandtv.data.database.SearchHistoryDao
 import com.example.farsilandtv.utils.SqlSanitizer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for search history and auto-complete suggestions
  * Implements deduplication and limit management
  *
- * SINGLETON PATTERN: Use getInstance() to get the shared instance.
- * This prevents multiple database connections and ensures cache consistency.
+ * Hilt-managed singleton - injected via constructor
  */
-class SearchRepository private constructor(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context.applicationContext)
-    private val searchHistoryDao = database.searchHistoryDao()
+@Singleton
+class SearchRepository @Inject constructor(
+    private val searchHistoryDao: SearchHistoryDao
+) {
 
     companion object {
         private const val MAX_HISTORY_SIZE = 50 // Keep only 50 most recent searches
         private const val DEFAULT_RECENT_LIMIT = 10 // Show 10 recent searches by default
         private const val DEFAULT_SUGGESTION_LIMIT = 5 // Show 5 auto-complete suggestions
-
-        @Volatile
-        private var INSTANCE: SearchRepository? = null
-
-        /**
-         * Get singleton instance of SearchRepository
-         * Thread-safe double-check locking pattern
-         */
-        fun getInstance(context: Context): SearchRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: SearchRepository(context.applicationContext).also {
-                    INSTANCE = it
-                }
-            }
-        }
     }
 
     /**

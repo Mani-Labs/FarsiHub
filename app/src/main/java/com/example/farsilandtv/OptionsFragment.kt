@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.sync.ContentSyncWorker
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -23,6 +24,7 @@ import java.util.*
 /**
  * Options/Settings fragment - merged with Sync Settings
  */
+@AndroidEntryPoint
 class OptionsFragment : GuidedStepSupportFragment() {
 
     companion object {
@@ -329,6 +331,7 @@ class OptionsFragment : GuidedStepSupportFragment() {
 /**
  * Confirmation dialog for clearing watch history
  */
+@AndroidEntryPoint
 class ClearHistoryConfirmationFragment : GuidedStepSupportFragment() {
 
     companion object {
@@ -406,6 +409,7 @@ class ClearHistoryConfirmationFragment : GuidedStepSupportFragment() {
 /**
  * About screen with app information
  */
+@AndroidEntryPoint
 class AboutFragment : GuidedStepSupportFragment() {
 
     companion object {
@@ -442,6 +446,7 @@ class AboutFragment : GuidedStepSupportFragment() {
 /**
  * Frequency picker for sync interval
  */
+@AndroidEntryPoint
 class FrequencyPickerFragment : GuidedStepSupportFragment() {
 
     companion object {
@@ -505,6 +510,7 @@ class FrequencyPickerFragment : GuidedStepSupportFragment() {
 /**
  * Confirmation dialog for full re-sync
  */
+@AndroidEntryPoint
 class FullResyncConfirmationFragment : GuidedStepSupportFragment() {
 
     companion object {

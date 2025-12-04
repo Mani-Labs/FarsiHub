@@ -9,13 +9,16 @@ import androidx.lifecycle.lifecycleScope
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.database.DatabaseSource
 import com.example.farsilandtv.data.repository.ContentRepository
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import javax.inject.Inject
 
 /**
  * Guided step fragment to select database source (Farsiland or FarsiPlex)
  */
+@AndroidEntryPoint
 class DatabaseSourceSelectionFragment : GuidedStepSupportFragment() {
 
     private var onSourceChanged: ((DatabaseSource) -> Unit)? = null
@@ -81,6 +84,7 @@ class DatabaseSourceSelectionFragment : GuidedStepSupportFragment() {
             DatabaseSource.FARSILAND -> "Original content library"
             DatabaseSource.FARSIPLEX -> "36 movies, 34 TV shows, 558 episodes"
             DatabaseSource.NAMAKADE -> "312 movies, 923 series, 19,373 episodes"
+            DatabaseSource.IMVBOX -> "Persian movies & series (syncs from web)"
         }
     }
 
@@ -100,8 +104,10 @@ class DatabaseSourceSelectionFragment : GuidedStepSupportFragment() {
 /**
  * Confirmation step for database switch
  */
+@AndroidEntryPoint
 class DatabaseSourceConfirmationFragment : GuidedStepSupportFragment() {
 
+    @Inject lateinit var contentRepository: ContentRepository
     private var onSourceChanged: ((DatabaseSource) -> Unit)? = null
 
     // Get newSource from arguments directly (called during UI creation)
@@ -162,7 +168,7 @@ class DatabaseSourceConfirmationFragment : GuidedStepSupportFragment() {
                             // H2 FIX: Clear cache and ensure database state is consistent
                             // before activity recreation
                             try {
-                                ContentRepository.getInstance(context).clearCache()
+                                contentRepository.clearCache()
                             } catch (e: Exception) {
                                 android.util.Log.e("DatabaseSwitch", "Failed to clear cache", e)
                             }

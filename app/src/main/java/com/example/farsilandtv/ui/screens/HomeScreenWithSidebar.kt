@@ -19,6 +19,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
@@ -48,8 +52,12 @@ import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.database.ContinueWatchingItem
 import com.example.farsilandtv.data.database.MonitoredSeries
+import com.example.farsilandtv.data.health.ScraperHealthTracker
 import com.example.farsilandtv.data.repository.FavoritesRepository
+import com.example.farsilandtv.data.repository.PlaylistRepository
+import com.example.farsilandtv.data.repository.SearchRepository
 import com.example.farsilandtv.data.repository.WatchlistRepository
+import com.example.farsilandtv.data.download.DownloadConstants
 import com.example.farsilandtv.ui.components.*
 import com.example.farsilandtv.ui.viewmodel.MainViewModel
 import java.text.SimpleDateFormat
@@ -71,13 +79,16 @@ fun HomeScreenWithSidebar(
     onEpisodeClick: (Episode) -> Unit,
     onFeaturedClick: (FeaturedContent) -> Unit,
     onNavigate: (String) -> Unit,  // Only for external navigation (options, etc)
+    favoritesRepo: FavoritesRepository,
+    watchlistRepo: WatchlistRepository,
+    searchRepo: SearchRepository,
+    playlistRepo: PlaylistRepository,
+    healthTracker: ScraperHealthTracker,
+    downloadManager: com.example.farsilandtv.data.download.DownloadManager,
     modifier: Modifier = Modifier,
     viewModel: MainViewModel = viewModel()
 ) {
     val context = LocalContext.current
-    // FIXED: Use singleton getInstance() and key by context to prevent leaks
-    val favoritesRepo = remember(context) { FavoritesRepository.getInstance(context) }
-    val watchlistRepo = remember(context) { WatchlistRepository.getInstance(context) }
 
     // Internal navigation state - Movies/Shows/Search handled inline
     var currentDestination by remember { mutableStateOf("home") }
@@ -88,6 +99,28 @@ fun HomeScreenWithSidebar(
     val recentMovies by viewModel.recentMovies.observeAsState(emptyList())
     val recentSeries by viewModel.recentSeries.observeAsState(emptyList())
     val isLoading by viewModel.isLoading.observeAsState(false)
+    val errorMessage by viewModel.error.observeAsState()
+
+    // Snackbar state for error messages
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Show error snackbar with retry when error occurs
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let { error ->
+            val result = snackbarHostState.showSnackbar(
+                message = error,
+                actionLabel = "Retry",
+                duration = SnackbarDuration.Long
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                try {
+                    viewModel.loadContent()
+                } catch (e: Exception) {
+                    android.util.Log.e("HomeScreenWithSidebar", "Failed to retry load content", e)
+                }
+            }
+        }
+    }
 
     // Observe favorites
     val favorites by favoritesRepo.getAllFavorites()
@@ -109,6 +142,7 @@ fun HomeScreenWithSidebar(
     var selectedItemIsInWatchlist by remember { mutableStateOf(false) }
     var selectedItemIsInFavorites by remember { mutableStateOf(false) }
     var selectedItemIsMonitored by remember { mutableStateOf(false) }
+    var selectedItemIsDownloaded by remember { mutableStateOf(false) }
     var selectedContinueWatchingId by remember { mutableStateOf<String?>(null) }
 
     // Long-press handler for movies
@@ -118,6 +152,7 @@ fun HomeScreenWithSidebar(
             selectedItemIsInWatchlist = watchlistRepo.isMovieInWatchlist(movie.id)
             selectedItemIsInFavorites = favorites.any { it.contentId == "movie-${movie.id}" }
             selectedItemIsMonitored = false
+            selectedItemIsDownloaded = downloadManager.isDownloaded(DownloadConstants.movieId(movie.id))
             selectedContinueWatchingId = null
             showOptionsDialog = true
         }
@@ -161,8 +196,11 @@ fun HomeScreenWithSidebar(
     // Open sidebar and move focus to it
     val openSidebarWithFocus: () -> Unit = {
         sidebarVisible = true
-        coroutineScope.launch {
-            kotlinx.coroutines.delay(50) // Small delay to ensure sidebar is rendered
+    }
+
+    // Request focus when sidebar becomes visible
+    LaunchedEffect(sidebarVisible) {
+        if (sidebarVisible) {
             try {
                 sidebarFocusRequester.requestFocus()
             } catch (e: Exception) {
@@ -270,6 +308,50 @@ fun HomeScreenWithSidebar(
                         }
                     }
                 }
+            },
+            isDownloaded = selectedItemIsDownloaded,
+            onDownload = (selectedOptionsItem as? ContentOptionsItem.MovieItem)?.let { movieItem ->
+                {
+                    coroutineScope.launch {
+                        val movie = movieItem.movie
+                        if (selectedItemIsDownloaded) {
+                            // Delete download
+                            downloadManager.deleteDownload(DownloadConstants.movieId(movie.id))
+                            android.widget.Toast.makeText(context, "Download removed", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            // Start download - scrape video URL first
+                            val pageUrl = movie.farsilandUrl
+                            if (pageUrl.isBlank()) {
+                                android.widget.Toast.makeText(context, "No source URL available", android.widget.Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
+                            android.widget.Toast.makeText(context, "Finding video URL...", android.widget.Toast.LENGTH_SHORT).show()
+
+                            when (val result = com.example.farsilandtv.data.scraper.VideoUrlScraper.extractVideoUrls(pageUrl)) {
+                                is com.example.farsilandtv.data.scraper.ScraperResult.Success -> {
+                                    val videoUrls = result.data
+                                    if (videoUrls.isNotEmpty()) {
+                                        val bestUrl = videoUrls.first()
+                                        val queued = downloadManager.queueMovieDownload(
+                                            movieId = movie.id,
+                                            title = movie.title,
+                                            posterUrl = movie.posterUrl,
+                                            videoUrl = bestUrl.url
+                                        )
+                                        if (queued) {
+                                            android.widget.Toast.makeText(context, "Download started!", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        android.widget.Toast.makeText(context, "No video URLs found", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                else -> {
+                                    android.widget.Toast.makeText(context, "Failed to find video", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                }
             }
         )
     }
@@ -290,13 +372,13 @@ fun HomeScreenWithSidebar(
                     currentDestination = currentDestination,
                     onNavigate = { destination ->
                         when (destination) {
-                            "home", "movies", "shows", "search" -> {
+                            "home", "movies", "shows", "search", "favorites", "playlists", "downloads", "options" -> {
                                 // Internal Compose navigation - just update state
                                 currentDestination = destination
                                 sidebarVisible = false
                             }
                             else -> {
-                                // External navigation (options) - delegate to fragment
+                                // External navigation - delegate to fragment
                                 onNavigate(destination)
                             }
                         }
@@ -304,7 +386,7 @@ fun HomeScreenWithSidebar(
                     onClose = { sidebarVisible = false },
                     lastUpdatedText = lastUpdatedText.value,
                     focusRequester = sidebarFocusRequester,
-                    modifier = Modifier.width(240.dp)
+                    modifier = Modifier.width(160.dp)
                 )
             }
 
@@ -318,26 +400,118 @@ fun HomeScreenWithSidebar(
                 when (currentDestination) {
                     "movies" -> {
                         MoviesScreen(
+                            favoritesRepo = favoritesRepo,
+                            watchlistRepo = watchlistRepo,
                             onMovieClick = onMovieClick,
-                            onSearchClick = { currentDestination = "search" },
                             onBackToSidebar = openSidebarWithFocus,
                             viewModel = viewModel
                         )
                     }
                     "shows" -> {
                         ShowsScreen(
+                            favoritesRepo = favoritesRepo,
+                            watchlistRepo = watchlistRepo,
                             onSeriesClick = onSeriesClick,
-                            onSearchClick = { currentDestination = "search" },
                             onBackToSidebar = openSidebarWithFocus,
                             viewModel = viewModel
                         )
                     }
                     "search" -> {
                         SearchScreen(
+                            favoritesRepo = favoritesRepo,
+                            watchlistRepo = watchlistRepo,
+                            searchRepo = searchRepo,
                             onMovieClick = onMovieClick,
                             onSeriesClick = onSeriesClick,
                             onBackToSidebar = openSidebarWithFocus,
                             viewModel = viewModel
+                        )
+                    }
+                    "favorites" -> {
+                        FavoritesScreen(
+                            favoritesRepo = favoritesRepo,
+                            onMovieClick = { movieId ->
+                                // Find movie and navigate
+                                val movie = recentMovies.find { it.id == movieId }
+                                if (movie != null) onMovieClick(movie)
+                            },
+                            onSeriesClick = { seriesId ->
+                                // Find series and navigate
+                                val series = recentSeries.find { it.id == seriesId }
+                                if (series != null) onSeriesClick(series)
+                            },
+                            onBackClick = {
+                                currentDestination = "home"
+                                openSidebarWithFocus()
+                            }
+                        )
+                    }
+                    "playlists" -> {
+                        PlaylistsScreen(
+                            playlistRepo = playlistRepo,
+                            onMovieClick = { movieId ->
+                                val movie = recentMovies.find { it.id == movieId }
+                                if (movie != null) onMovieClick(movie)
+                            },
+                            onSeriesClick = { seriesId ->
+                                val series = recentSeries.find { it.id == seriesId }
+                                if (series != null) onSeriesClick(series)
+                            },
+                            onBackClick = {
+                                currentDestination = "home"
+                                openSidebarWithFocus()
+                            }
+                        )
+                    }
+                    "downloads" -> {
+                        DownloadsScreen(
+                            downloadManager = downloadManager,
+                            onPlayDownload = { download ->
+                                // Play downloaded content from local file
+                                if (download.canPlay && download.localFilePath != null) {
+                                    val intent = android.content.Intent(context, com.example.farsilandtv.VideoPlayerActivity::class.java).apply {
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.CONTENT_TYPE,
+                                            if (download.contentType == com.example.farsilandtv.data.download.ContentType.MOVIE)
+                                                com.example.farsilandtv.utils.IntentExtras.ContentType.MOVIE
+                                            else
+                                                com.example.farsilandtv.utils.IntentExtras.ContentType.EPISODE
+                                        )
+                                        // Extract ID from download id (e.g., "movie_123" -> 123)
+                                        val contentId = download.id.substringAfter("_").toIntOrNull() ?: 0
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.CONTENT_ID, contentId)
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.CONTENT_TITLE, download.title)
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.CONTENT_URL, download.videoUrl)
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.CONTENT_POSTER_URL, download.posterUrl)
+                                        // Pass local file as pre-selected video URL
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.SELECTED_VIDEO_URL, "file://${download.localFilePath}")
+                                        putExtra(com.example.farsilandtv.utils.IntentExtras.SELECTED_VIDEO_QUALITY, "Downloaded")
+                                    }
+                                    context.startActivity(intent)
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Download not ready to play",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            },
+                            onBackClick = {
+                                currentDestination = "home"
+                                openSidebarWithFocus()
+                            }
+                        )
+                    }
+                    "options" -> {
+                        OptionsScreen(
+                            healthTracker = healthTracker,
+                            onBackClick = {
+                                currentDestination = "home"
+                                openSidebarWithFocus()
+                            },
+                            onDatabaseSourceChange = {
+                                // Trigger content refresh
+                                viewModel.loadContent()
+                            }
                         )
                     }
                     else -> {
@@ -363,6 +537,21 @@ fun HomeScreenWithSidebar(
                     }
                 }
             }
+        }
+
+        // Error Snackbar - positioned at bottom of screen
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 16.dp)
+        ) { snackbarData ->
+            Snackbar(
+                snackbarData = snackbarData,
+                containerColor = Color(0xFFB71C1C),
+                contentColor = Color.White,
+                actionColor = Color(0xFFFFCDD2)
+            )
         }
     }
 }
@@ -392,7 +581,7 @@ private fun HomeContent(
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 0.dp, bottom = 24.dp)
+        contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 0.dp, bottom = 16.dp)
     ) {
         // Featured Carousel
         item(key = "featured_carousel") {
@@ -533,8 +722,9 @@ private fun NavigationSidebar(
     val navigationItems = listOf(
         NavItem("Home", "home", Icons.Filled.Home),
         NavItem("Movies", "movies", Icons.Filled.PlayArrow),
-        NavItem("TV Shows", "shows", Icons.Filled.List),
+        NavItem("TV Shows", "shows", Icons.Filled.Menu),
         NavItem("Search", "search", Icons.Filled.Search),
+        NavItem("Downloads", "downloads", Icons.Filled.KeyboardArrowDown),
         NavItem("Settings", "options", Icons.Filled.Settings)
     )
 
@@ -558,23 +748,23 @@ private fun NavigationSidebar(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 32.dp, bottom = 24.dp, start = 20.dp, end = 20.dp)
+                    .padding(top = 12.dp, bottom = 8.dp, start = 12.dp, end = 12.dp)
             ) {
                 Column {
                     // App Logo/Name
                     Text(
                         text = "Farsihub",
-                        fontSize = 28.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
-                        letterSpacing = 1.sp
+                        letterSpacing = 0.5.sp
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
                     // Accent line
                     Box(
                         modifier = Modifier
-                            .width(40.dp)
-                            .height(3.dp)
+                            .width(32.dp)
+                            .height(2.dp)
                             .background(
                                 Brush.horizontalGradient(
                                     colors = listOf(
@@ -582,7 +772,7 @@ private fun NavigationSidebar(
                                         Color(0xFFFF8A65)
                                     )
                                 ),
-                                shape = RoundedCornerShape(2.dp)
+                                shape = RoundedCornerShape(1.dp)
                             )
                     )
                 }
@@ -592,19 +782,19 @@ private fun NavigationSidebar(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
+                    .padding(horizontal = 8.dp)
                     .height(1.dp)
                     .background(Color.White.copy(alpha = 0.1f))
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // Navigation Items
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    .padding(horizontal = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 navigationItems.forEachIndexed { index, item ->
                     var isFocused by remember { mutableStateOf(false) }
@@ -665,13 +855,13 @@ private fun NavigationSidebar(
                                     false
                                 }
                             },
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(8.dp),
                         color = backgroundColor
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             // Icon
@@ -679,18 +869,18 @@ private fun NavigationSidebar(
                                 imageVector = item.icon,
                                 contentDescription = item.title,
                                 tint = iconColor,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(18.dp)
                             )
 
-                            Spacer(modifier = Modifier.width(16.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
 
                             // Title
                             Text(
                                 text = item.title,
-                                fontSize = 16.sp,
+                                fontSize = 12.sp,
                                 color = textColor,
                                 fontWeight = if (isFocused || isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                letterSpacing = 0.3.sp
+                                letterSpacing = 0.2.sp
                             )
 
                             Spacer(modifier = Modifier.weight(1f))
@@ -699,11 +889,11 @@ private fun NavigationSidebar(
                             if (isSelected && !isFocused) {
                                 Box(
                                     modifier = Modifier
-                                        .width(4.dp)
-                                        .height(20.dp)
+                                        .width(3.dp)
+                                        .height(14.dp)
                                         .background(
                                             Color(0xFFFF5722),
-                                            shape = RoundedCornerShape(2.dp)
+                                            shape = RoundedCornerShape(1.5.dp)
                                         )
                                 )
                             }
@@ -714,7 +904,7 @@ private fun NavigationSidebar(
 
             // Bottom Section
             Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 20.dp)
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
             ) {
                 // Divider
                 Box(
@@ -724,23 +914,23 @@ private fun NavigationSidebar(
                         .background(Color.White.copy(alpha = 0.1f))
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 // Last Updated
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 4.dp)
+                    modifier = Modifier.padding(horizontal = 2.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Refresh,
                         contentDescription = null,
                         tint = Color(0xFF4A6B4A),
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(12.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Updated $lastUpdatedText",
-                        fontSize = 12.sp,
+                        fontSize = 9.sp,
                         color = Color(0xFF4A6B4A),
                         fontWeight = FontWeight.Normal
                     )
@@ -796,18 +986,18 @@ private fun FavoritesRow(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    Column(modifier = modifier.padding(vertical = 8.dp)) {
+    Column(modifier = modifier.padding(vertical = 6.dp)) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             color = Color.White,
-            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp)
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)
         )
 
         androidx.compose.foundation.lazy.LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
@@ -895,6 +1085,9 @@ private fun EpisodeCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // DEBUG: Log episode thumbnail URL to diagnose image loading issue
+    android.util.Log.d("HomeScreen", "EpisodeCard: ${episode.formattedNumber} thumbnailUrl=${episode.thumbnailUrl}")
+
     val episodeAsMovie = Movie(
         id = episode.id,
         title = "${episode.formattedNumber}: ${episode.title}",
@@ -928,12 +1121,12 @@ private fun ContinueWatchingRow(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    Column(modifier = modifier.padding(vertical = 8.dp)) {
+    Column(modifier = modifier.padding(vertical = 6.dp)) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             color = Color.White,
-            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp)
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)
         )
 
         androidx.compose.foundation.lazy.LazyRow(
@@ -958,8 +1151,8 @@ private fun ContinueWatchingRow(
                         }
                     } else false
                 },
-            contentPadding = PaddingValues(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
                 when (item.contentType) {
@@ -975,6 +1168,7 @@ private fun ContinueWatchingRow(
                         MovieCard(
                             movie = movie,
                             onClick = { onMovieClick(movie) },
+                            progressPercent = item.progressPercentage / 100f,  // Phase 3: Progress bar
                             onLongClick = onItemLongPress?.let { { it(item, movie, null) } }
                         )
                     }
@@ -1026,12 +1220,12 @@ private fun MonitoredSeriesRow(
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
-    Column(modifier = modifier.padding(vertical = 8.dp)) {
+    Column(modifier = modifier.padding(vertical = 6.dp)) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             color = Color.White,
-            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp)
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)
         )
 
         androidx.compose.foundation.lazy.LazyRow(
@@ -1056,8 +1250,8 @@ private fun MonitoredSeriesRow(
                         }
                     } else false
                 },
-            contentPadding = PaddingValues(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             itemsIndexed(series, key = { _, s -> "monitored-${s.id}" }) { index, monitored ->
                 val seriesModel = Series(

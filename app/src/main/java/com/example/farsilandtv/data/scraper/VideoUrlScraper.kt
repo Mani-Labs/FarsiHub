@@ -1,8 +1,10 @@
 package com.example.farsilandtv.data.scraper
 
+import com.example.farsilandtv.BuildConfig
 import com.example.farsilandtv.FarsilandApp
 import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.models.VideoUrl
+import com.example.farsilandtv.data.imvbox.IMVBoxApiService
 import com.example.farsilandtv.data.namakade.NamakadeApiService
 import com.example.farsilandtv.utils.RemoteConfig
 import com.example.farsilandtv.utils.SecureRegex
@@ -97,6 +99,27 @@ object VideoUrlScraper {
     private const val TAG = "VideoUrlScraper"
     private val httpClient = RetrofitClient.getHttpClient()
 
+    // EXTERNAL AUDIT FIX SN-L1: Error message constants (non-UI context, not in string resources)
+    // Issue: Hardcoded error strings scattered throughout code
+    // Fix: Centralize error messages in companion object constants
+    private const val ERROR_SECURITY_HTTPS_REQUIRED = "Security: Only HTTPS URLs from trusted domains are allowed"
+    private const val ERROR_NO_SECURE_URLS = "No secure video URLs found. All URLs were HTTP or from untrusted domains."
+    private const val ERROR_NO_URLS_FOUND = "No video URLs found on page. HTML structure may have changed."
+    private const val ERROR_NO_NAMAKADE_URL = "No video URL found on Namakade page"
+    private const val ERROR_NO_IMVBOX_URL = "No video URL found on IMVBox page"
+
+    // EXTERNAL AUDIT FIX SN-L2: Debug logging optimization
+    // Issue: 50+ android.util.Log.d() calls in production
+    // Note: ProGuard strips all Log.d() calls in release builds (see proguard-rules.pro)
+    // Additional safety: inline helper for explicit debug-only logs
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun logDebug(message: String) {
+        if (BuildConfig.DEBUG) {
+            android.util.Log.d(TAG, message)
+        }
+    }
+    // Existing Log.d() calls are kept as-is since ProGuard removes them automatically
+
     // EXTERNAL AUDIT FIX C2: LRU cache with size limit to prevent OOM
     // Previous: ConcurrentHashMap with no size limit → OOM after days of use
     // Solution: android.util.LruCache with 100-entry limit (thread-safe, auto-evicts oldest)
@@ -150,11 +173,9 @@ object VideoUrlScraper {
             val normalizedUrl = SecureUrlValidator.normalizeToHttps(pageUrl)
             if (normalizedUrl == null) {
                 android.util.Log.e(TAG, "SECURITY: Rejected insecure or untrusted URL: $pageUrl")
-                // AUDIT FIX #30: Use localized string resource
+                // EXTERNAL AUDIT FIX SN-L1: Use error constant instead of hardcoded string
                 return@withContext ScraperResult.ParseError(
-                    // Note: Context not available in object, using hardcoded string
-                    // TODO: Refactor VideoUrlScraper to accept Context for proper localization
-                    "Security: Only HTTPS URLs from trusted domains are allowed",
+                    ERROR_SECURITY_HTTPS_REQUIRED,
                     SecurityException("Cleartext HTTP traffic not permitted")
                 )
             }
@@ -186,14 +207,21 @@ object VideoUrlScraper {
             android.util.Log.d(TAG, "Cache MISS - scraping HTML")
 
             // Determine source domain
+            val isImvbox = securePageUrl.contains("imvbox.com", ignoreCase = true)
             val isNamakade = securePageUrl.contains("namakade.com", ignoreCase = true)
             val isFarsiPlex = securePageUrl.contains("farsiplex.com", ignoreCase = true)
             val sourceType = when {
+                isImvbox -> "IMVBox"
                 isNamakade -> "Namakade"
                 isFarsiPlex -> "FarsiPlex"
                 else -> "Farsiland"
             }
             android.util.Log.d(TAG, "Detected source: $sourceType")
+
+            // IMVBox uses its own HLS extraction (IMVBoxApiService)
+            if (isImvbox) {
+                return@withContext extractFromImvbox(securePageUrl)
+            }
 
             // Namakade uses a different scraper (NamakadeApiService)
             if (isNamakade) {
@@ -234,7 +262,8 @@ object VideoUrlScraper {
                 if (secureUrls.isEmpty()) {
                     android.util.Log.e(TAG, "SECURITY: All video URLs failed security validation")
                     android.util.Log.e(TAG, "========================================")
-                    return@withContext ScraperResult.NoDataFound("No secure video URLs found. All URLs were HTTP or from untrusted domains.")
+                    // EXTERNAL AUDIT FIX SN-L1: Use error constant
+                    return@withContext ScraperResult.NoDataFound(ERROR_NO_SECURE_URLS)
                 }
 
                 // Cache the result
@@ -248,7 +277,8 @@ object VideoUrlScraper {
             // No URLs found - page loaded successfully but no video URLs found
             android.util.Log.e(TAG, "FAILED: No video URLs found via any extraction method")
             android.util.Log.e(TAG, "========================================")
-            ScraperResult.NoDataFound("No video URLs found on page. HTML structure may have changed.")
+            // EXTERNAL AUDIT FIX SN-L1: Use error constant
+            ScraperResult.NoDataFound(ERROR_NO_URLS_FOUND)
 
         } catch (e: Exception) {
             android.util.Log.e(TAG, "========================================")
@@ -301,7 +331,8 @@ object VideoUrlScraper {
             } else {
                 android.util.Log.w(TAG, "No video URL found from Namakade")
                 android.util.Log.d(TAG, "========================================")
-                ScraperResult.NoDataFound("No video URL found on Namakade page")
+                // EXTERNAL AUDIT FIX SN-L1: Use error constant
+                ScraperResult.NoDataFound(ERROR_NO_NAMAKADE_URL)
             }
         } catch (e: java.io.IOException) {
             android.util.Log.e(TAG, "Network error extracting from Namakade", e)
@@ -311,6 +342,57 @@ object VideoUrlScraper {
             android.util.Log.e(TAG, "Error extracting from Namakade", e)
             android.util.Log.d(TAG, "========================================")
             ScraperResult.ParseError("Failed to parse Namakade page: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Extract video URLs from IMVBox.com (HLS streams)
+     * IMVBox uses HLS adaptive streaming: streaming.imvbox.com/media/{id}/{id}.m3u8
+     *
+     * @param pageUrl IMVBox page URL (movie or episode)
+     * @return ScraperResult with video URLs or error
+     */
+    private suspend fun extractFromImvbox(pageUrl: String): ScraperResult<List<VideoUrl>> {
+        android.util.Log.d(TAG, "=== IMVBox Extraction ===")
+
+        return try {
+            val imvboxService = IMVBoxApiService.getInstance(FarsilandApp.instance!!)
+            val result = imvboxService.extractVideoUrl(pageUrl)
+
+            when (result) {
+                is ScraperResult.Success -> {
+                    val urlsList = listOf(result.data)
+                    // Cache the result
+                    urlCache.put(pageUrl, CachedUrls(urlsList, System.currentTimeMillis()))
+                    android.util.Log.d(TAG, "SUCCESS: Found 1 video URL from IMVBox")
+                    android.util.Log.d(TAG, "URL: ${result.data.url}")
+                    android.util.Log.d(TAG, "========================================")
+                    ScraperResult.Success(urlsList)
+                }
+                is ScraperResult.NoDataFound -> {
+                    android.util.Log.w(TAG, "No video URL found from IMVBox")
+                    android.util.Log.d(TAG, "========================================")
+                    ScraperResult.NoDataFound(ERROR_NO_IMVBOX_URL)
+                }
+                is ScraperResult.NetworkError -> {
+                    android.util.Log.e(TAG, "Network error from IMVBox: ${result.message}")
+                    android.util.Log.d(TAG, "========================================")
+                    result
+                }
+                is ScraperResult.ParseError -> {
+                    android.util.Log.e(TAG, "Parse error from IMVBox: ${result.message}")
+                    android.util.Log.d(TAG, "========================================")
+                    result
+                }
+            }
+        } catch (e: java.io.IOException) {
+            android.util.Log.e(TAG, "Network error extracting from IMVBox", e)
+            android.util.Log.d(TAG, "========================================")
+            ScraperResult.NetworkError("Network error: ${e.message}", e)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error extracting from IMVBox", e)
+            android.util.Log.d(TAG, "========================================")
+            ScraperResult.ParseError("Failed to parse IMVBox page: ${e.message}", e)
         }
     }
 

@@ -266,94 +266,84 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * Toggle play/pause using JavaScript
+     * Toggle play/pause by simulating touch at center of WebView
+     * This sends real Android touch events that the YouTube iframe will receive
      */
     private fun togglePlayPause() {
-        // Try multiple methods to toggle play/pause
-        val js = """
-            (function() {
-                // Method 1: Video.js player
-                if (typeof videojs !== 'undefined') {
-                    var players = document.querySelectorAll('.video-js');
-                    for (var i = 0; i < players.length; i++) {
-                        var player = videojs.getPlayer(players[i]);
-                        if (player) {
-                            if (player.paused()) {
-                                player.play();
-                                return 'playing';
-                            } else {
-                                player.pause();
-                                return 'paused';
-                            }
-                        }
-                    }
-                }
+        // Simulate tap at center of WebView to toggle YouTube play/pause
+        val centerX = webView.width / 2f
+        val centerY = webView.height / 2f
 
-                // Method 2: YouTube iframe
-                var ytFrame = document.querySelector('iframe[src*="youtube"]');
-                if (ytFrame && ytFrame.contentWindow) {
-                    // YouTube postMessage API
-                    ytFrame.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
-                    return 'youtube-toggle';
-                }
+        val downTime = android.os.SystemClock.uptimeMillis()
+        val eventTime = downTime + 50
 
-                // Method 3: HTML5 video element
-                var video = document.querySelector('video');
-                if (video) {
-                    if (video.paused) {
-                        video.play();
-                        return 'playing';
-                    } else {
-                        video.pause();
-                        return 'paused';
-                    }
-                }
+        // Send touch down
+        val downEvent = android.view.MotionEvent.obtain(
+            downTime, downTime,
+            android.view.MotionEvent.ACTION_DOWN,
+            centerX, centerY, 0
+        )
+        webView.dispatchTouchEvent(downEvent)
+        downEvent.recycle()
 
-                return 'no-player';
-            })()
-        """.trimIndent()
+        // Send touch up (complete the tap)
+        val upEvent = android.view.MotionEvent.obtain(
+            downTime, eventTime,
+            android.view.MotionEvent.ACTION_UP,
+            centerX, centerY, 0
+        )
+        webView.dispatchTouchEvent(upEvent)
+        upEvent.recycle()
 
-        webView.evaluateJavascript(js) { result ->
-            Log.d(TAG, "Play/pause result: $result")
-            isPlaying = result?.contains("playing") == true
-            updatePlayPauseButton()
-        }
+        Log.d(TAG, "Simulated tap at center: $centerX, $centerY")
     }
 
     /**
-     * Seek video by given seconds (positive = forward, negative = back)
+     * Seek video by simulating double-tap on left/right edge of WebView
+     * YouTube supports double-tap gesture: left = -10s, right = +10s
      */
     private fun seekVideo(seconds: Int) {
-        val js = """
-            (function() {
-                // Method 1: Video.js player
-                if (typeof videojs !== 'undefined') {
-                    var players = document.querySelectorAll('.video-js');
-                    for (var i = 0; i < players.length; i++) {
-                        var player = videojs.getPlayer(players[i]);
-                        if (player) {
-                            var newTime = player.currentTime() + $seconds;
-                            player.currentTime(Math.max(0, newTime));
-                            return 'seeked-videojs';
-                        }
-                    }
-                }
-
-                // Method 2: HTML5 video element
-                var video = document.querySelector('video');
-                if (video) {
-                    var newTime = video.currentTime + $seconds;
-                    video.currentTime = Math.max(0, newTime);
-                    return 'seeked-html5';
-                }
-
-                return 'no-player';
-            })()
-        """.trimIndent()
-
-        webView.evaluateJavascript(js) { result ->
-            Log.d(TAG, "Seek result: $result")
+        // Double-tap on left edge for rewind, right edge for forward
+        val tapX = if (seconds < 0) {
+            webView.width * 0.15f  // Left 15% of screen
+        } else {
+            webView.width * 0.85f  // Right 15% of screen
         }
+        val tapY = webView.height / 2f
+
+        val downTime = android.os.SystemClock.uptimeMillis()
+
+        // First tap
+        simulateTap(tapX, tapY, downTime)
+
+        // Second tap (double-tap) after short delay
+        webView.postDelayed({
+            simulateTap(tapX, tapY, android.os.SystemClock.uptimeMillis())
+            Log.d(TAG, "Double-tap seek ${if (seconds < 0) "back" else "forward"} at $tapX")
+        }, 50)
+    }
+
+    /**
+     * Helper to simulate a single tap at given coordinates
+     */
+    private fun simulateTap(x: Float, y: Float, downTime: Long) {
+        val eventTime = downTime + 30
+
+        val downEvent = android.view.MotionEvent.obtain(
+            downTime, downTime,
+            android.view.MotionEvent.ACTION_DOWN,
+            x, y, 0
+        )
+        webView.dispatchTouchEvent(downEvent)
+        downEvent.recycle()
+
+        val upEvent = android.view.MotionEvent.obtain(
+            downTime, eventTime,
+            android.view.MotionEvent.ACTION_UP,
+            x, y, 0
+        )
+        webView.dispatchTouchEvent(upEvent)
+        upEvent.recycle()
     }
 
     /**

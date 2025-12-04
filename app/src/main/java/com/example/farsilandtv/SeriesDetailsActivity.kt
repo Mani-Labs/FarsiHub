@@ -1,6 +1,7 @@
 package com.example.farsilandtv
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -16,13 +17,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
+import com.example.farsilandtv.data.download.DownloadManager
 import com.example.farsilandtv.data.models.Episode
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.repository.ContentRepository
+import com.example.farsilandtv.data.repository.FavoritesRepository
+import com.example.farsilandtv.data.repository.WatchlistRepository
+import com.example.farsilandtv.ui.components.ShimmerDetailsScreen
 import com.example.farsilandtv.ui.screens.SeriesDetailsScreen
+import com.example.farsilandtv.ui.screens.phone.PhoneSeriesDetailsScreen
 import com.example.farsilandtv.ui.theme.FarsilandTVTheme
+import com.example.farsilandtv.utils.DeviceUtils
 import com.example.farsilandtv.utils.IntentExtras
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
  * Series Details Activity - displays episodes using Compose TV
@@ -31,6 +40,7 @@ import kotlinx.coroutines.launch
  * Back navigation: Returns to previous screen (not home/exit)
  * Phase 2.1: Migrated to Compose TV from SeriesDetailsFragment
  */
+@AndroidEntryPoint
 class SeriesDetailsActivity : ComponentActivity() {
 
     companion object {
@@ -38,13 +48,21 @@ class SeriesDetailsActivity : ComponentActivity() {
         const val EXTRA_SERIES = "series"
     }
 
-    private lateinit var contentRepository: ContentRepository
+    @Inject lateinit var contentRepository: ContentRepository
+    @Inject lateinit var favoritesRepository: FavoritesRepository
+    @Inject lateinit var watchlistRepository: WatchlistRepository
+    @Inject lateinit var downloadManager: DownloadManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize repository
-        contentRepository = ContentRepository.getInstance(applicationContext)
+        // Phase 7: Set orientation based on device type
+        requestedOrientation = when (DeviceUtils.getDeviceType(this)) {
+            DeviceUtils.DeviceType.PHONE -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            DeviceUtils.DeviceType.TV,
+            DeviceUtils.DeviceType.TABLET -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        // contentRepository is now Hilt-injected
 
         // Setup back press handler
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -71,9 +89,14 @@ class SeriesDetailsActivity : ComponentActivity() {
 
         Log.d(TAG, "Loading series: ${series.title}")
 
+        // Detect device type for responsive UI
+        val deviceType = DeviceUtils.getDeviceType(this)
+        Log.d(TAG, "Device type: $deviceType")
+
         setContent {
             FarsilandTVTheme {
                 var episodesBySeason by remember { mutableStateOf<Map<Int, List<Episode>>?>(null) }
+                var similarSeries by remember { mutableStateOf<List<Series>>(emptyList()) }
                 var isLoading by remember { mutableStateOf(true) }
                 var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -100,19 +123,29 @@ class SeriesDetailsActivity : ComponentActivity() {
                     }
                 }
 
+                // Load similar series based on genres
+                LaunchedEffect(series.id) {
+                    try {
+                        val result = contentRepository.getTvShows(page = 1, perPage = 50)
+                        result.getOrNull()?.let { allSeries ->
+                            val currentGenres = series.genres.toSet()
+                            similarSeries = allSeries
+                                .filter { it.id != series.id }
+                                .filter { otherSeries ->
+                                    // Match if they share at least one genre
+                                    otherSeries.genres.any { it in currentGenres }
+                                }
+                                .take(10) // Limit to 10 similar shows
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to load similar series", e)
+                    }
+                }
+
                 when {
                     isLoading -> {
-                        // Show loading state
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Loading episodes...",
-                                color = Color.White,
-                                style = androidx.compose.material3.MaterialTheme.typography.titleLarge
-                            )
-                        }
+                        // Show shimmer loading state
+                        ShimmerDetailsScreen()
                     }
                     errorMessage != null -> {
                         // Show error state
@@ -122,14 +155,38 @@ class SeriesDetailsActivity : ComponentActivity() {
                         }
                     }
                     episodesBySeason != null -> {
-                        // Show series details
-                        SeriesDetailsScreen(
-                            series = series,
-                            episodesBySeason = episodesBySeason!!,
-                            onBackClick = { finish() },
-                            onPlayEpisode = { episode -> playEpisode(episode) },
-                            onSeriesClick = { /* Navigate to series details */ }
-                        )
+                        // Show series details based on device type
+                        when (deviceType) {
+                            DeviceUtils.DeviceType.TV,
+                            DeviceUtils.DeviceType.TABLET -> {
+                                // TV/Tablet: Use D-pad optimized screen
+                                SeriesDetailsScreen(
+                                    series = series,
+                                    episodesBySeason = episodesBySeason!!,
+                                    favoritesRepo = favoritesRepository,
+                                    watchlistRepo = watchlistRepository,
+                                    downloadManager = downloadManager,
+                                    onBackClick = { finish() },
+                                    onPlayEpisode = { episode -> playEpisode(episode) },
+                                    onSeriesClick = { navigateToSeries(it) },
+                                    similarSeries = similarSeries
+                                )
+                            }
+                            DeviceUtils.DeviceType.PHONE -> {
+                                // Phone: Use touch-optimized screen
+                                PhoneSeriesDetailsScreen(
+                                    series = series,
+                                    episodesBySeason = episodesBySeason!!,
+                                    favoritesRepo = favoritesRepository,
+                                    watchlistRepo = watchlistRepository,
+                                    downloadManager = downloadManager,
+                                    onBackClick = { finish() },
+                                    onPlayEpisode = { episode -> playEpisode(episode) },
+                                    onSeriesClick = { navigateToSeries(it) },
+                                    similarSeries = similarSeries
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -147,6 +204,14 @@ class SeriesDetailsActivity : ComponentActivity() {
             episode.seriesId?.let { putExtra(IntentExtras.SERIES_ID, it) }
             putExtra(IntentExtras.EPISODE_SEASON, episode.season)
             putExtra(IntentExtras.EPISODE_NUMBER, episode.episode)
+        }
+        startActivity(intent)
+    }
+
+    private fun navigateToSeries(series: Series) {
+        Log.d(TAG, "Navigating to similar series: ${series.title}")
+        val intent = Intent(this, SeriesDetailsActivity::class.java).apply {
+            putExtra(EXTRA_SERIES, series)
         }
         startActivity(intent)
     }

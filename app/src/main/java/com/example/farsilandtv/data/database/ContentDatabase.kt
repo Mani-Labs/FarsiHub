@@ -85,6 +85,7 @@ abstract class ContentDatabase : RoomDatabase() {
     abstract fun videoUrlDao(): CachedVideoUrlDao
 
     companion object {
+        private const val TAG = "ContentDatabase"
         /**
          * Migration from version 1 to 2 (AUDIT FIX C1.2)
          * Adds FTS4 (Full Text Search) virtual tables for fast search
@@ -100,6 +101,9 @@ abstract class ContentDatabase : RoomDatabase() {
          */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(database: SupportSQLiteDatabase) {
+                // RD-L5: Log version check for debugging migration issues
+                android.util.Log.i(TAG, "Migration 1→2: Starting FTS4 virtual table creation")
+
                 // Create FTS4 virtual table for movies (indexes title column)
                 database.execSQL("""
                     CREATE VIRTUAL TABLE IF NOT EXISTS cached_movies_fts
@@ -301,6 +305,7 @@ abstract class ContentDatabase : RoomDatabase() {
                     // Bug #8 fix: Validate database file exists before trying to load
                     try {
                         val assetPath = "databases/$databaseName"
+
                         val dbExists = try {
                             context.applicationContext.assets.open(assetPath).use { true }
                         } catch (e: Exception) {
@@ -453,6 +458,11 @@ abstract class ContentDatabase : RoomDatabase() {
                 DatabaseSource.NAMAKADE -> {
                     // Namakade doesn't have a sync worker (no API available)
                     android.util.Log.i("ContentDatabase", "Namakade is static - no sync available")
+                    return
+                }
+                DatabaseSource.IMVBOX -> {
+                    // IMVBox uses bundled database - no sync worker needed
+                    android.util.Log.i("ContentDatabase", "IMVBox uses bundled database - no sync available")
                     return
                 }
             }

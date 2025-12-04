@@ -2,11 +2,13 @@ package com.example.farsilandtv
 
 import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
+import dagger.hilt.android.AndroidEntryPoint
 
 /**
  * Activity for viewing playlist details and items
  * Hosts PlaylistDetailFragment
  */
+@AndroidEntryPoint
 class PlaylistDetailActivity : FragmentActivity() {
 
     companion object {

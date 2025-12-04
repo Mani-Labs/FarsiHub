@@ -2,22 +2,28 @@ package com.example.farsilandtv.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.Surface
 import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Movie
+import com.example.farsilandtv.utils.DeviceUtils
+import com.example.farsilandtv.utils.LocalDeviceType
 
 /**
  * Feature #16: Compose Component - Movie Card
@@ -29,8 +35,16 @@ import com.example.farsilandtv.data.models.Movie
  * - Favorite indicator (Feature #1)
  * - Watched indicator (Feature #2)
  * - TV focus highlight with border
+ *
+ * UC-L5 FIX: D-pad navigation documentation
+ * Focus behavior:
+ * - Receives focus via D-pad navigation
+ * - Shows focus ring when focused (3dp primary color border)
+ * - Enter/Select triggers onClick
+ * - Long press (hold Select) triggers onLongClick (opens options menu)
+ * - Scale animation (1.05x) on focus for visual feedback
  */
-@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.material3.ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MovieCard(
     movie: Movie,
@@ -38,45 +52,35 @@ fun MovieCard(
     modifier: Modifier = Modifier,
     isFavorite: Boolean = false,
     isWatched: Boolean = false,
+    progressPercent: Float? = null,  // Phase 3: Watch progress (0.0-1.0)
     onLongClick: (() -> Unit)? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    var longPressTriggered by remember(movie.id) { mutableStateOf(false) }
 
-    Card(
-        onClick = onClick,
-        modifier = modifier
-            .width(160.dp)
-            .height(240.dp)
-            .onFocusChanged { focusState ->
-                isFocused = focusState.isFocused
-            }
-            .then(
-                if (onLongClick != null) {
-                    Modifier.combinedClickable(
-                        onClick = onClick,
-                        onLongClick = onLongClick
-                    )
-                } else Modifier
-            ),
-        shape = RoundedCornerShape(6.dp),
-        border = if (isFocused) {
-            BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
-        } else {
-            null
-        },
-        colors = CardDefaults.cardColors(
-            containerColor = Color.Transparent
-        )
-    ) {
+    // Check device type - use touch-friendly click for phones
+    val deviceType = LocalDeviceType.current
+    val isPhone = deviceType == DeviceUtils.DeviceType.PHONE
+
+    // Card content composable to avoid duplication
+    val cardContent: @Composable () -> Unit = {
         Box(
             modifier = Modifier.fillMaxSize()
         ) {
             // Poster image with progressive loading
+            // DEBUG: Log poster URL for IMVBox image loading diagnosis
+            android.util.Log.d("MovieCard", "Loading image: ${movie.posterUrl} for ${movie.title}")
             AsyncImage(
                 model = movie.posterUrl,
                 contentDescription = movie.title,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                onError = { error ->
+                    android.util.Log.e("MovieCard", "Image load FAILED for ${movie.title}: ${error.result.throwable?.message}")
+                },
+                onSuccess = {
+                    android.util.Log.d("MovieCard", "Image load SUCCESS for ${movie.title}")
+                }
             )
 
             // Genre badges at bottom
@@ -84,10 +88,10 @@ fun MovieCard(
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    movie.genres.take(2).forEach { genre ->
+                    movie.genres.take(1).forEach { genre ->
                         GenreBadge(genreName = genre)
                     }
                 }
@@ -97,8 +101,8 @@ fun MovieCard(
             Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 if (isWatched) {
                     WatchedBadge()
@@ -112,10 +116,82 @@ fun MovieCard(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(8.dp)
+                    .padding(4.dp)
             ) {
                 SourceBadge(sourceUrl = movie.farsilandUrl)
             }
+
+            // Phase 3: Progress bar at bottom for continue watching
+            if (progressPercent != null && progressPercent > 0f) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(Color.Black.copy(alpha = 0.5f))
+                ) {
+                    LinearProgressIndicator(
+                        progress = { progressPercent.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = Color.Transparent
+                    )
+                }
+            }
+        }
+    }
+
+    // Use different container based on device type
+    if (isPhone) {
+        // Phone: Use Box with combinedClickable for touch support
+        Box(
+            modifier = modifier
+                .width(112.dp)
+                .height(168.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+        ) {
+            cardContent()
+        }
+    } else {
+        // TV/Tablet: Use TV Material 3 Surface for D-pad focus support
+        Surface(
+            onClick = {
+                if (!longPressTriggered) {
+                    onClick()
+                }
+                longPressTriggered = false
+            },
+            onLongClick = onLongClick?.let { callback ->
+                {
+                    longPressTriggered = true
+                    callback()
+                }
+            },
+            modifier = modifier
+                .width(112.dp)
+                .height(168.dp)
+                .onFocusChanged { focusState ->
+                    isFocused = focusState.isFocused
+                }
+                .then(
+                    if (isFocused) {
+                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+                    } else Modifier
+                ),
+            shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(6.dp)),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = Color.Transparent,
+                focusedContainerColor = Color.Transparent
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f)
+        ) {
+            cardContent()
         }
     }
 }
@@ -127,16 +203,42 @@ fun MovieCard(
 fun MovieCardSkeleton(
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier
-            .width(160.dp)
-            .height(240.dp),
-        shape = RoundedCornerShape(6.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF2C2C2C)
+    Column(modifier = modifier.width(112.dp)) {
+        // Poster placeholder with shimmer
+        Box(
+            modifier = Modifier
+                .width(112.dp)
+                .height(168.dp)
+                .background(
+                    shimmerBrush(),
+                    shape = RoundedCornerShape(6.dp)
+                )
         )
-    ) {
-        // Shimmer effect would go here in full implementation
-        Box(modifier = Modifier.fillMaxSize())
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Title placeholder
+        Box(
+            modifier = Modifier
+                .width(90.dp)
+                .height(12.dp)
+                .background(
+                    shimmerBrush(),
+                    shape = RoundedCornerShape(3.dp)
+                )
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Subtitle placeholder
+        Box(
+            modifier = Modifier
+                .width(60.dp)
+                .height(10.dp)
+                .background(
+                    shimmerBrush(),
+                    shape = RoundedCornerShape(3.dp)
+                )
+        )
     }
 }

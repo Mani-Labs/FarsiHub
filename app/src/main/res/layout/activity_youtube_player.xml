@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- WebView for YouTube embed - NOT focusable -->
+    <WebView
+        android:id="@+id/youtube_webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:focusable="false"
+        android:focusableInTouchMode="false" />
+
+    <!-- Transparent overlay to capture D-pad focus instead of WebView -->
+    <View
+        android:id="@+id/focus_interceptor"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:background="@android:color/transparent" />
+
+    <ProgressBar
+        android:id="@+id/loading_indicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="visible" />
+
+    <!-- Cast button at top right -->
+    <androidx.mediarouter.app.MediaRouteButton
+        android:id="@+id/cast_button"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp" />
+
+    <!-- TV Control Overlay - shown on D-pad press, auto-hides -->
+    <LinearLayout
+        android:id="@+id/control_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="@drawable/gradient_bottom_overlay"
+        android:paddingTop="48dp"
+        android:paddingBottom="24dp"
+        android:visibility="gone">
+
+        <!-- Control buttons row -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- Rewind 10s button -->
+            <ImageButton
+                android:id="@+id/btn_rewind"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_margin="16dp"
+                android:background="@drawable/control_button_background"
+                android:src="@drawable/ic_rewind_10"
+                android:scaleType="centerInside"
+                android:padding="12dp"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:contentDescription="Rewind 10 seconds" />
+
+            <!-- Play/Pause button -->
+            <ImageButton
+                android:id="@+id/btn_play_pause"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_margin="16dp"
+                android:background="@drawable/control_button_background"
+                android:src="@drawable/ic_play_pause"
+                android:scaleType="centerInside"
+                android:padding="16dp"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:contentDescription="Play or Pause" />
+
+            <!-- Forward 10s button -->
+            <ImageButton
+                android:id="@+id/btn_forward"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_margin="16dp"
+                android:background="@drawable/control_button_background"
+                android:src="@drawable/ic_forward_10"
+                android:scaleType="centerInside"
+                android:padding="12dp"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:contentDescription="Forward 10 seconds" />
+
+        </LinearLayout>
+
+        <!-- Hint text -->
+        <TextView
+            android:id="@+id/control_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="16dp"
+            android:text="D-pad: Left/Right = Seek 10s | OK = Play/Pause | Back = Exit"
+            android:textColor="#CCFFFFFF"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
+</FrameLayout>

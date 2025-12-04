@@ -1,10 +1,13 @@
 package com.example.farsilandtv
 
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
+import com.example.farsilandtv.utils.DeviceUtils
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -20,6 +23,7 @@ import kotlinx.coroutines.launch
  * - Non-home screens: navigate back to previous screen
  * - Home screen: double-back-to-exit (press back twice within 2 seconds)
  */
+@AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
     companion object {
@@ -37,6 +41,16 @@ class MainActivity : FragmentActivity() {
         setTheme(R.style.Theme_FarsilandTV)
 
         super.onCreate(savedInstanceState)
+
+        // Phase 7: Set orientation based on device type
+        // - Phone: Portrait (standard mobile experience)
+        // - TV/Tablet: Landscape (designed for 10-foot UI)
+        val deviceType = DeviceUtils.getDeviceType(this)
+        requestedOrientation = when (deviceType) {
+            DeviceUtils.DeviceType.PHONE -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            DeviceUtils.DeviceType.TV,
+            DeviceUtils.DeviceType.TABLET -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
         setContentView(R.layout.activity_main)
 
         // Setup back press handler with double-back-to-exit on home screen

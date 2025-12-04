@@ -1,6 +1,5 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
 import com.example.farsilandtv.data.database.*
@@ -10,20 +9,22 @@ import com.example.farsilandtv.data.models.Series
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for watchlist and progress tracking
  * Handles all watchlist operations and playback progress
  *
- * FIXED: Added singleton pattern to prevent multiple instances
- * Each new instance was creating new DB connections, wasting memory
+ * Hilt-managed singleton - injected via constructor
  */
-class WatchlistRepository private constructor(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context.applicationContext)
-    private val movieDao = database.watchlistMovieDao()
-    private val seriesDao = database.monitoredSeriesDao()
-    private val episodeDao = database.episodeProgressDao()
+@Singleton
+class WatchlistRepository @Inject constructor(
+    private val database: AppDatabase,
+    private val movieDao: WatchlistMovieDao,
+    private val seriesDao: MonitoredSeriesDao,
+    private val episodeDao: EpisodeProgressDao
+) {
 
     companion object {
         private const val TAG = "WatchlistRepository"
@@ -32,21 +33,6 @@ class WatchlistRepository private constructor(context: Context) {
         // Changed from 0.90f (90%) to 0.95f (95%) to eliminate dual source of truth
         // This prevents UI contradictions where watchlist shows "Completed" but continue watching shows "Resume"
         private const val COMPLETION_THRESHOLD = 0.95f
-
-        @Volatile
-        private var INSTANCE: WatchlistRepository? = null
-
-        /**
-         * Get singleton instance of WatchlistRepository
-         * Uses double-checked locking for thread safety
-         */
-        fun getInstance(context: Context): WatchlistRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: WatchlistRepository(context.applicationContext).also {
-                    INSTANCE = it
-                }
-            }
-        }
     }
 
     // ========== Movie Watchlist (Manual Bookmarks) ==========

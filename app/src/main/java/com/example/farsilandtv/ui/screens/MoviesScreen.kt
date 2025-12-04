@@ -42,8 +42,10 @@ import com.example.farsilandtv.data.repository.FavoritesRepository
 import com.example.farsilandtv.data.repository.WatchlistRepository
 import com.example.farsilandtv.ui.components.ContentOptionsDialog
 import com.example.farsilandtv.ui.components.ContentOptionsItem
+import com.example.farsilandtv.ui.components.GenreChip
 import com.example.farsilandtv.ui.components.MovieCard
 import com.example.farsilandtv.ui.components.MovieCardSkeleton
+import com.example.farsilandtv.ui.components.SortButton
 import com.example.farsilandtv.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.launch
 
@@ -54,16 +56,15 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
 fun MoviesScreen(
+    favoritesRepo: FavoritesRepository,
+    watchlistRepo: WatchlistRepository,
     onMovieClick: (Movie) -> Unit,
-    onSearchClick: () -> Unit = {},
     onFilterClick: () -> Unit = {},
     onBackToSidebar: () -> Unit = {},  // Called when pressing Back/Left on first item
     modifier: Modifier = Modifier,
     viewModel: MainViewModel = viewModel()
 ) {
     val context = LocalContext.current
-    val favoritesRepo = remember(context) { FavoritesRepository.getInstance(context) }
-    val watchlistRepo = remember(context) { WatchlistRepository.getInstance(context) }
     val coroutineScope = rememberCoroutineScope()
 
     // Data
@@ -106,10 +107,11 @@ fun MoviesScreen(
         }
     }
 
-    // Options dialog
-    if (showOptionsDialog && selectedMovie != null) {
+    // Options dialog - capture item to prevent null during recomposition
+    val dialogMovie = selectedMovie
+    if (showOptionsDialog && dialogMovie != null) {
         ContentOptionsDialog(
-            item = ContentOptionsItem.MovieItem(selectedMovie!!),
+            item = ContentOptionsItem.MovieItem(dialogMovie),
             onDismiss = {
                 showOptionsDialog = false
                 selectedMovie = null
@@ -119,23 +121,19 @@ fun MoviesScreen(
             isMonitored = false,
             onToggleWatchlist = {
                 coroutineScope.launch {
-                    selectedMovie?.let { movie ->
-                        if (selectedIsInWatchlist) {
-                            watchlistRepo.removeMovieFromWatchlist(movie.id)
-                        } else {
-                            watchlistRepo.addMovieToWatchlist(movie)
-                        }
+                    if (selectedIsInWatchlist) {
+                        watchlistRepo.removeMovieFromWatchlist(dialogMovie.id)
+                    } else {
+                        watchlistRepo.addMovieToWatchlist(dialogMovie)
                     }
                 }
             },
             onToggleFavorites = {
                 coroutineScope.launch {
-                    selectedMovie?.let { movie ->
-                        if (selectedIsInFavorites) {
-                            favoritesRepo.removeMovieFromFavorites(movie.id)
-                        } else {
-                            favoritesRepo.addMovieToFavorites(movie)
-                        }
+                    if (selectedIsInFavorites) {
+                        favoritesRepo.removeMovieFromFavorites(dialogMovie.id)
+                    } else {
+                        favoritesRepo.addMovieToFavorites(dialogMovie)
                     }
                 }
             }
@@ -172,7 +170,6 @@ fun MoviesScreen(
                 onSortSelected = { sort ->
                     viewModel.setMovieSortOption(sort)
                 },
-                onSearchClick = onSearchClick,
                 itemCount = movies.itemCount
             )
 
@@ -180,13 +177,13 @@ fun MoviesScreen(
             when (movies.loadState.refresh) {
                 is LoadState.Loading -> {
                     LazyVerticalGrid(
-                        columns = GridCells.Fixed(6),
+                        columns = GridCells.Fixed(4),
                         contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(24) { MovieCardSkeleton() }
+                        items(16) { MovieCardSkeleton() }
                     }
                 }
 
@@ -202,14 +199,14 @@ fun MoviesScreen(
                         EmptyState(message = "No movies found")
                     } else {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(6),
+                            columns = GridCells.Fixed(4),
                             state = gridState,
                             contentPadding = PaddingValues(
                                 start = 48.dp, end = 48.dp,
                                 top = 16.dp, bottom = 48.dp
                             ),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(20.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
                             items(
@@ -217,7 +214,7 @@ fun MoviesScreen(
                                 key = { index -> movies[index]?.id ?: index }
                             ) { index ->
                                 val movie = movies[index]
-                                val isLeftmostColumn = index % 6 == 0  // 6-column grid
+                                val isLeftmostColumn = index % 4 == 0  // 4-column grid
                                 if (movie != null) {
                                     MovieCard(
                                         movie = movie,
@@ -468,7 +465,6 @@ private fun FilterBar(
     sortOptions: List<String>,
     selectedSort: String,
     onSortSelected: (String) -> Unit,
-    onSearchClick: () -> Unit,
     itemCount: Int,
     modifier: Modifier = Modifier
 ) {
@@ -513,133 +509,7 @@ private fun FilterBar(
                 selected = selectedSort,
                 onSelected = onSortSelected
             )
-
-            // Search button
-            SearchButton(onClick = onSearchClick)
         }
-    }
-}
-
-@Composable
-private fun GenreChip(
-    text: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var isFocused by remember { mutableStateOf(false) }
-    val backgroundColor by animateColorAsState(
-        targetValue = when {
-            isFocused -> Color(0xFFFF5722)
-            isSelected -> Color(0xFF333333)
-            else -> Color.Transparent
-        },
-        animationSpec = tween(150),
-        label = "chip_bg"
-    )
-    val borderColor = when {
-        isFocused -> Color(0xFFFF5722)
-        isSelected -> Color(0xFF333333)
-        else -> Color(0xFF444444)
-    }
-
-    Surface(
-        onClick = onClick,
-        modifier = modifier.onFocusChanged { isFocused = it.isFocused },
-        shape = RoundedCornerShape(20.dp),
-        color = backgroundColor,
-        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor)
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            color = if (isFocused || isSelected) Color.White else Color(0xFFAAAAAA),
-            fontSize = 13.sp,
-            fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
-        )
-    }
-}
-
-@Composable
-private fun SortButton(
-    options: List<String>,
-    selected: String,
-    onSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var isFocused by remember { mutableStateOf(false) }
-    var expanded by remember { mutableStateOf(false) }
-
-    Box(modifier = modifier) {
-        Surface(
-            onClick = { expanded = true },
-            modifier = Modifier.onFocusChanged { isFocused = it.isFocused },
-            shape = RoundedCornerShape(8.dp),
-            color = if (isFocused) Color(0xFFFF5722) else Color(0xFF1E1E1E)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = selected,
-                    color = Color.White,
-                    fontSize = 13.sp
-                )
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Sort",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.background(Color(0xFF2A2A2A))
-        ) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = option,
-                            color = if (option == selected) Color(0xFFFF5722) else Color.White
-                        )
-                    },
-                    onClick = {
-                        onSelected(option)
-                        expanded = false
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchButton(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var isFocused by remember { mutableStateOf(false) }
-
-    Surface(
-        onClick = onClick,
-        modifier = modifier.onFocusChanged { isFocused = it.isFocused },
-        shape = RoundedCornerShape(8.dp),
-        color = if (isFocused) Color(0xFFFF5722) else Color(0xFF1E1E1E)
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Search,
-            contentDescription = "Search",
-            tint = Color.White,
-            modifier = Modifier
-                .padding(10.dp)
-                .size(20.dp)
-        )
     }
 }
 

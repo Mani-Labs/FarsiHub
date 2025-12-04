@@ -2,11 +2,13 @@ package com.example.farsilandtv
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.fragment.app.Fragment
@@ -16,16 +18,39 @@ import com.example.farsilandtv.data.models.FeaturedContent
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.ui.screens.HomeScreenWithSidebar
+import com.example.farsilandtv.ui.screens.phone.PhoneNavigationHost
 import com.example.farsilandtv.ui.theme.FarsilandTVTheme
 import com.example.farsilandtv.ui.viewmodel.MainViewModel
+import com.example.farsilandtv.utils.DeviceUtils
 import com.example.farsilandtv.utils.IntentExtras
+import com.example.farsilandtv.utils.LocalDeviceType
+import com.example.farsilandtv.data.download.DownloadManager
+import com.example.farsilandtv.data.health.ScraperHealthTracker
+import com.example.farsilandtv.data.repository.FavoritesRepository
+import com.example.farsilandtv.data.repository.PlaylistRepository
+import com.example.farsilandtv.data.repository.SearchRepository
+import com.example.farsilandtv.data.repository.WatchlistRepository
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * HomeComposeFragment - Compose wrapper for HomeScreenWithSidebar
  * Phase 3.3: Replaces HomeFragment with Compose TV implementation
  * with sidebar navigation menu
  */
+@AndroidEntryPoint
 class HomeComposeFragment : Fragment() {
+
+    companion object {
+        private const val TAG = "HomeComposeFragment"
+    }
+
+    @Inject lateinit var favoritesRepo: FavoritesRepository
+    @Inject lateinit var watchlistRepo: WatchlistRepository
+    @Inject lateinit var searchRepo: SearchRepository
+    @Inject lateinit var playlistRepo: PlaylistRepository
+    @Inject lateinit var healthTracker: ScraperHealthTracker
+    @Inject lateinit var downloadManager: DownloadManager
 
     private lateinit var viewModel: MainViewModel
     private var composeView: ComposeView? = null
@@ -82,15 +107,53 @@ class HomeComposeFragment : Fragment() {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
 
             setContent {
-                FarsilandTVTheme {
-                    HomeScreenWithSidebar(
-                        onMovieClick = { movie -> openMovieDetails(movie) },
-                        onSeriesClick = { series -> openSeriesDetails(series) },
-                        onEpisodeClick = { episode -> playEpisode(episode) },
-                        onFeaturedClick = { content -> handleFeaturedClick(content) },
-                        onNavigate = { destination -> handleNavigation(destination) },
-                        viewModel = viewModel
-                    )
+                // Detect device type and provide to Compose tree
+                val deviceType = DeviceUtils.getDeviceType(requireContext())
+                Log.i(TAG, "HomeComposeFragment: Device type = $deviceType")
+
+                CompositionLocalProvider(LocalDeviceType provides deviceType) {
+                    FarsilandTVTheme {
+                        // Branch UI based on device type
+                        when (deviceType) {
+                            DeviceUtils.DeviceType.TV,
+                            DeviceUtils.DeviceType.TABLET -> {
+                                Log.d(TAG, "Using TV/Tablet layout: HomeScreenWithSidebar")
+                                // TV/Tablet: Use existing sidebar navigation
+                                HomeScreenWithSidebar(
+                                    onMovieClick = { movie -> openMovieDetails(movie) },
+                                    onSeriesClick = { series -> openSeriesDetails(series) },
+                                    onEpisodeClick = { episode -> playEpisode(episode) },
+                                    onFeaturedClick = { content -> handleFeaturedClick(content) },
+                                    onNavigate = { destination -> handleNavigation(destination) },
+                                    favoritesRepo = favoritesRepo,
+                                    watchlistRepo = watchlistRepo,
+                                    searchRepo = searchRepo,
+                                    playlistRepo = playlistRepo,
+                                    healthTracker = healthTracker,
+                                    downloadManager = downloadManager,
+                                    viewModel = viewModel
+                                )
+                            }
+                            DeviceUtils.DeviceType.PHONE -> {
+                                Log.d(TAG, "Using PHONE layout: PhoneNavigationHost")
+                                // Phone: Use bottom navigation
+                                PhoneNavigationHost(
+                                    onMovieClick = { movie -> openMovieDetails(movie) },
+                                    onSeriesClick = { series -> openSeriesDetails(series) },
+                                    onEpisodeClick = { episode -> playEpisode(episode) },
+                                    onFeaturedClick = { content -> handleFeaturedClick(content) },
+                                    onNavigate = { destination -> handleNavigation(destination) },
+                                    favoritesRepo = favoritesRepo,
+                                    watchlistRepo = watchlistRepo,
+                                    searchRepo = searchRepo,
+                                    playlistRepo = playlistRepo,
+                                    downloadManager = downloadManager,
+                                    healthTracker = healthTracker,
+                                    viewModel = viewModel
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

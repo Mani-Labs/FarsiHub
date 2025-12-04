@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -405,7 +406,17 @@ class NamakadeApiService {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }
 
-            response.body?.string() ?: throw Exception("Empty response body")
+            val body = response.body ?: throw Exception("Empty response body")
+
+            // EXTERNAL AUDIT FIX SN-M2: Add response size limit to prevent OOM
+            // Issue: No limit on response size → OOM risk on large malicious responses
+            // Fix: Check Content-Length header before reading, reject responses > 5MB
+            val contentLength = response.header("Content-Length")?.toLongOrNull() ?: 0
+            if (contentLength > 5 * 1024 * 1024) { // 5MB limit
+                throw IOException("Response too large: $contentLength bytes (max 5MB)")
+            }
+
+            body.string()
         }
     }
 

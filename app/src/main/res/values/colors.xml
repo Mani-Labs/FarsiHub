@@ -15,5 +15,6 @@
     <color name="source_farsiland">#FF5252</color>      <!-- Red for Farsiland -->
     <color name="source_farsiplex">#448AFF</color>      <!-- Blue for FarsiPlex -->
     <color name="source_namakade">#69F0AE</color>       <!-- Green for Namakade -->
+    <color name="source_imvbox">#FFD700</color>        <!-- Gold for IMVBox -->
     <color name="source_unknown">#9E9E9E</color>        <!-- Gray for unknown -->
 </resources>

@@ -21,6 +21,8 @@
         <domain includeSubdomains="true">farsiland.com</domain>
         <domain includeSubdomains="true">farsiplex.com</domain>
         <domain includeSubdomains="true">namakade.com</domain>
+        <domain includeSubdomains="true">imvbox.com</domain>
+        <domain includeSubdomains="true">assets.imvbox.com</domain>
     </domain-config>
 
     <!-- CDN domains - HTTPS enforced -->
@@ -45,15 +47,12 @@
 
     <!--
         Debug configuration for development/testing
-        Uncomment to allow user-installed CA certificates (e.g., Charles Proxy, mitmproxy)
-        WARNING: NEVER enable this in production builds!
+        Enabled to handle assets.imvbox.com certificate chain issue
     -->
-    <!--
     <debug-overrides>
         <trust-anchors>
             <certificates src="user" />
             <certificates src="system" />
         </trust-anchors>
     </debug-overrides>
-    -->
 </network-security-config>

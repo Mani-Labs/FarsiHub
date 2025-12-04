@@ -8,19 +8,46 @@ glide = "4.16.0"
 okhttp = "4.12.0"
 jsoup = "1.17.1"
 retrofit = "2.9.0"
-media3 = "1.2.0"
+media3 = "1.3.1"  # BC-H1: Updated for security patches
 room = "2.6.1"
 coil = "2.5.0"
 coroutines = "1.8.0"
 moshi = "1.15.1"
 lifecycle = "2.7.0"
 work = "2.9.0"
+# BC-H5: Additional dependency versions moved from build.gradle.kts
+paging = "3.2.1"
+cast = "21.4.0"
+shimmer = "0.5.0"
+composeLiveData = "1.5.4"
+junit = "4.13.2"
+kotlinTest = "1.9.22"
+coroutinesTest = "1.7.3"
+archCore = "2.2.0"
+mockito = "5.7.0"
+mockitoKotlin = "5.1.0"
+turbine = "1.0.0"
+robolectric = "4.11.1"
+androidxTest = "1.5.0"
+lifecycleTesting = "2.6.2"
+junitExt = "1.1.5"
+testRunner = "1.5.2"
+testRules = "1.5.0"
+espresso = "3.5.1"
+composeUiTest = "1.5.4"  # BC-M3: Compose UI testing
+# Hilt DI
+hilt = "2.51.1"
+hiltWork = "1.2.0"
+ksp = "2.0.0-1.0.21"
+# YouTube Player (for IMVBox YouTube content + Chromecast)
+androidYoutubePlayer = "12.1.1"
+androidYoutubePlayerChromecast = "0.30"
 # Feature #16: Jetpack Compose for TV
-composeBom = "2024.06.00"  # Updated for TV Material compatibility
+composeBom = "2024.11.00"  # BC-H3: Updated to latest stable
 activityCompose = "1.9.0"
 navigationCompose = "2.7.7"
-tvFoundation = "1.0.0-alpha10"
-tvMaterial = "1.0.0-alpha10"
+tvFoundation = "1.0.0-alpha12"  # BC-H2: Updated to latest alpha (verified available)
+tvMaterial = "1.1.0-alpha01"    # BC-H2: Updated to latest version (1.0.0 stable deprecated, moved to 1.1.0-alpha)
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -40,8 +67,10 @@ jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 
 # Video Player (upgraded to Media3 from ExoPlayer)
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls", version.ref = "media3" }
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 media3-ui-leanback = { group = "androidx.media3", name = "media3-ui-leanback", version.ref = "media3" }
+media3-datasource-okhttp = { group = "androidx.media3", name = "media3-datasource-okhttp", version.ref = "media3" }
 
 # Database
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
@@ -77,9 +106,49 @@ lifecycle-runtime = { group = "androidx.lifecycle", name = "lifecycle-runtime-kt
 # WorkManager (for background sync)
 work-runtime = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 
+# Hilt DI
+hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
+hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version = "1.2.0" }
+hilt-work = { group = "androidx.hilt", name = "hilt-work", version.ref = "hiltWork" }
+hilt-work-compiler = { group = "androidx.hilt", name = "hilt-compiler", version.ref = "hiltWork" }
+
+# BC-H5: Additional libraries moved from hard-coded versions
+media3-cast = { group = "androidx.media3", name = "media3-cast", version.ref = "media3" }
+cast-framework = { group = "com.google.android.gms", name = "play-services-cast-framework", version.ref = "cast" }
+# YouTube Player (for IMVBox YouTube content + Chromecast)
+youtube-player-core = { group = "com.pierfrancescosoffritti.androidyoutubeplayer", name = "core", version.ref = "androidYoutubePlayer" }
+youtube-player-chromecast = { group = "com.pierfrancescosoffritti.androidyoutubeplayer", name = "chromecast-sender", version.ref = "androidYoutubePlayerChromecast" }
+room-paging = { group = "androidx.room", name = "room-paging", version.ref = "room" }
+paging-runtime = { group = "androidx.paging", name = "paging-runtime-ktx", version.ref = "paging" }
+paging-compose = { group = "androidx.paging", name = "paging-compose", version.ref = "paging" }
+shimmer = { group = "com.facebook.shimmer", name = "shimmer", version.ref = "shimmer" }
+compose-runtime-livedata = { group = "androidx.compose.runtime", name = "runtime-livedata", version.ref = "composeLiveData" }
+
+# Test dependencies
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlinTest" }
+coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+arch-core-testing = { group = "androidx.arch.core", name = "core-testing", version.ref = "archCore" }
+mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
+mockito-kotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version.ref = "mockitoKotlin" }
+turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTest" }
+lifecycle-runtime-testing = { group = "androidx.lifecycle", name = "lifecycle-runtime-testing", version.ref = "lifecycleTesting" }
+androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitExt" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "testRunner" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "testRules" }
+espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
+room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
+# BC-M3: Compose UI test dependencies
+compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4", version.ref = "composeUiTest" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 

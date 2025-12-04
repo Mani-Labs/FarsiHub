@@ -1,5 +1,6 @@
 package com.example.farsilandtv.ui.screens
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -33,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.farsilandtv.data.download.DownloadManager
 import com.example.farsilandtv.data.models.Episode
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.repository.FavoritesRepository
@@ -57,6 +60,9 @@ import kotlinx.coroutines.launch
 fun SeriesDetailsScreen(
     series: Series,
     episodesBySeason: Map<Int, List<Episode>>,
+    favoritesRepo: FavoritesRepository,
+    watchlistRepo: WatchlistRepository,
+    downloadManager: DownloadManager,
     onBackClick: () -> Unit,
     onPlayEpisode: (Episode) -> Unit,
     onSeriesClick: (Series) -> Unit = {},
@@ -66,14 +72,11 @@ fun SeriesDetailsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // Repositories
-    val favoritesRepo = remember(context) { FavoritesRepository.getInstance(context) }
-    val watchlistRepo = remember(context) { WatchlistRepository.getInstance(context) }
-
     // State
     var isFavorite by remember { mutableStateOf(false) }
     var isMonitored by remember { mutableStateOf(false) }
-    var selectedSeason by remember { mutableStateOf(episodesBySeason.keys.minOrNull() ?: 1) }
+    var selectedSeason by rememberSaveable { mutableStateOf(episodesBySeason.keys.minOrNull() ?: 1) }
+    var downloadingAll by remember { mutableStateOf(false) }
 
     // Load initial states
     LaunchedEffect(series.id) {
@@ -85,6 +88,13 @@ fun SeriesDetailsScreen(
     val playButtonFocus = remember { FocusRequester() }
     val favoriteButtonFocus = remember { FocusRequester() }
     val monitorButtonFocus = remember { FocusRequester() }
+    val downloadButtonFocus = remember { FocusRequester() }
+    val shareButtonFocus = remember { FocusRequester() }
+
+    // Request focus on Play button when screen loads
+    LaunchedEffect(Unit) {
+        playButtonFocus.requestFocus()
+    }
 
     // Calculate total episodes
     val totalEpisodes = episodesBySeason.values.flatten().size
@@ -159,9 +169,45 @@ fun SeriesDetailsScreen(
                             Toast.makeText(context, "Marked $totalEpisodes episodes as watched", Toast.LENGTH_SHORT).show()
                         }
                     },
+                    downloadingAll = downloadingAll,
+                    onDownloadAllClick = {
+                        scope.launch {
+                            downloadingAll = true
+                            Toast.makeText(context, "Download feature requires playing episodes first", Toast.LENGTH_LONG).show()
+                            downloadingAll = false
+                        }
+                    },
+                    onShareClick = {
+                        val shareText = buildString {
+                            append("Check out \"${series.title}\"")
+                            series.year?.let { append(" ($it)") }
+                            series.rating?.let { append(" ⭐ ${String.format("%.1f", it)}") }
+                            append("\n")
+                            append("$totalEpisodes Episodes")
+                            append("\n\n")
+                            if (series.description.isNotBlank()) {
+                                val shortDesc = if (series.description.length > 150) {
+                                    series.description.take(150) + "..."
+                                } else {
+                                    series.description
+                                }
+                                append(shortDesc)
+                                append("\n\n")
+                            }
+                            append("Watch on FarsiPlex!")
+                        }
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, series.title)
+                            putExtra(Intent.EXTRA_TEXT, shareText)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Share series"))
+                    },
                     playButtonFocus = playButtonFocus,
                     favoriteButtonFocus = favoriteButtonFocus,
-                    monitorButtonFocus = monitorButtonFocus
+                    monitorButtonFocus = monitorButtonFocus,
+                    downloadButtonFocus = downloadButtonFocus,
+                    shareButtonFocus = shareButtonFocus
                 )
             }
 
@@ -232,14 +278,19 @@ private fun SeriesHeroSection(
     totalEpisodes: Int,
     isFavorite: Boolean,
     isMonitored: Boolean,
+    downloadingAll: Boolean,
     onBackClick: () -> Unit,
     onPlayClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onMonitorClick: () -> Unit,
     onMarkAllWatchedClick: () -> Unit,
+    onDownloadAllClick: () -> Unit,
+    onShareClick: () -> Unit,
     playButtonFocus: FocusRequester,
     favoriteButtonFocus: FocusRequester,
     monitorButtonFocus: FocusRequester,
+    downloadButtonFocus: FocusRequester,
+    shareButtonFocus: FocusRequester,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -457,7 +508,31 @@ private fun SeriesHeroSection(
                         onClick = onMonitorClick,
                         focusRequester = monitorButtonFocus,
                         onLeftPress = { favoriteButtonFocus.requestFocus() },
-                        onRightPress = { }
+                        onRightPress = { downloadButtonFocus.requestFocus() }
+                    )
+
+                    // Download All button
+                    SeriesActionButton(
+                        icon = if (downloadingAll) Icons.Default.Refresh else Icons.Default.ArrowDropDown,
+                        label = if (downloadingAll) "Downloading..." else "Download All",
+                        isPrimary = false,
+                        isActive = downloadingAll,
+                        onClick = onDownloadAllClick,
+                        focusRequester = downloadButtonFocus,
+                        onLeftPress = { monitorButtonFocus.requestFocus() },
+                        onRightPress = { shareButtonFocus.requestFocus() }
+                    )
+
+                    // Share button
+                    SeriesActionButton(
+                        icon = Icons.Default.Share,
+                        label = "Share",
+                        isPrimary = false,
+                        isActive = false,
+                        onClick = onShareClick,
+                        focusRequester = shareButtonFocus,
+                        onLeftPress = { downloadButtonFocus.requestFocus() },
+                        onRightPress = { /* Already rightmost */ }
                     )
                 }
             }
@@ -673,6 +748,8 @@ private fun SeasonTab(
 private fun EpisodeListItem(
     episode: Episode,
     onClick: () -> Unit,
+    onDownloadClick: (() -> Unit)? = null,
+    isDownloaded: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
@@ -726,6 +803,24 @@ private fun EpisodeListItem(
                         )
                     }
                 }
+
+                // Downloaded badge
+                if (isDownloaded) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CheckCircle,
+                            contentDescription = "Downloaded",
+                            tint = Color.White,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.width(16.dp))
@@ -762,12 +857,40 @@ private fun EpisodeListItem(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Duration
-                episode.runtime?.let { runtime ->
-                    Text(
-                        text = "${runtime} min",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.5f)
+                // Duration + download status
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    episode.runtime?.let { runtime ->
+                        Text(
+                            text = "${runtime} min",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.5f)
+                        )
+                    }
+
+                    if (isDownloaded) {
+                        Text(
+                            text = "• Downloaded",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFF4CAF50)
+                        )
+                    }
+                }
+            }
+
+            // Download button (if callback provided and not downloaded)
+            if (onDownloadClick != null && !isDownloaded) {
+                IconButton(
+                    onClick = onDownloadClick,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = "Download",
+                        tint = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }

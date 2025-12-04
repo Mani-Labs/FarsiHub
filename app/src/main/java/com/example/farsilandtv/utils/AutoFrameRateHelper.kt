@@ -15,6 +15,9 @@ import androidx.annotation.RequiresApi
  * - Shield TV with HDMI 2.0+ display
  *
  * Supported frame rates: 23.976, 24, 25, 29.97, 30, 50, 59.94, 60 fps
+ *
+ * UT-M5 NOTE: This implementation uses Window.setAttributes() which does NOT require
+ * WRITE_SETTINGS permission. It only affects the current window, not system-wide settings.
  */
 object AutoFrameRateHelper {
     private const val TAG = "AutoFrameRate"

@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.util.Log
 import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Episode
 
@@ -19,6 +20,13 @@ import com.example.farsilandtv.data.models.Episode
  *
  * Card for displaying episode in series details screen
  * Shows thumbnail, title, description, progress, and watched status
+ *
+ * UC-L5 FIX: D-pad navigation documentation
+ * Focus behavior:
+ * - Receives focus via D-pad navigation
+ * - Shows focus ring when focused (card border changes)
+ * - Enter/Select triggers onClick (plays episode)
+ * - Horizontal layout optimized for TV landscape orientation
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,7 +38,7 @@ fun EpisodeCard(
     Card(
         onClick = onClick,
         modifier = modifier
-            .height(120.dp)
+            .height(84.dp)
             .fillMaxWidth(),
         border = BorderStroke(2.dp, Color.Transparent),
         colors = CardDefaults.cardColors(
@@ -43,11 +51,13 @@ fun EpisodeCard(
             // Episode thumbnail (16:9 aspect ratio)
             Box(
                 modifier = Modifier
-                    .width(180.dp)
+                    .width(126.dp)
                     .fillMaxHeight()
             ) {
+                val imageUrl = episode.thumbnailUrl ?: episode.episodePosterUrl
+                Log.d("EpisodeCard", "Episode ${episode.id} thumbnailUrl=$imageUrl")
                 AsyncImage(
-                    model = episode.thumbnailUrl ?: episode.episodePosterUrl,
+                    model = imageUrl,
                     contentDescription = "Episode ${episode.formattedNumber} thumbnail",
                     modifier = Modifier.fillMaxSize()
                 )
@@ -56,7 +66,7 @@ fun EpisodeCard(
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(6.dp)
+                        .padding(4.dp)
                 ) {
                     SourceBadge(sourceUrl = episode.farsilandUrl)
                 }
@@ -66,14 +76,16 @@ fun EpisodeCard(
                     Surface(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(8.dp),
+                            .padding(4.dp),
                         shape = MaterialTheme.shapes.small,
                         color = MaterialTheme.colorScheme.primary
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Check,
                             contentDescription = "Watched",
-                            modifier = Modifier.padding(4.dp),
+                            modifier = Modifier
+                                .padding(2.dp)
+                                .size(12.dp),
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
@@ -84,47 +96,39 @@ fun EpisodeCard(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(12.dp),
+                    .padding(8.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
                 // Title and description
                 Column {
                     Text(
                         text = "${episode.formattedNumber}: ${episode.title}",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.bodyMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Text(
-                        text = episode.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (!episode.description.isNullOrBlank()) {
+                        Text(
+                            text = episode.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
                 // Bottom row: progress bar and metadata
                 Column {
                     // Runtime and air date
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         episode.runtime?.let { runtime ->
                             Text(
                                 text = "${runtime}m",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        episode.airDate?.let { airDate ->
-                            Text(
-                                text = airDate,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -132,7 +136,7 @@ fun EpisodeCard(
                         episode.quality?.let { quality ->
                             Text(
                                 text = quality,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
@@ -140,12 +144,12 @@ fun EpisodeCard(
 
                     // Progress bar (only show if in progress)
                     if (episode.isInProgress && episode.totalDuration > 0) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         LinearProgressIndicator(
                             progress = episode.playbackPosition.toFloat() / episode.totalDuration.toFloat(),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(3.dp),
+                                .height(2.dp),
                             color = MaterialTheme.colorScheme.primary,
                             trackColor = MaterialTheme.colorScheme.surfaceVariant
                         )

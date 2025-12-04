@@ -2,9 +2,12 @@ package com.example.farsilandtv.data.database
 
 import android.content.Context
 import android.content.SharedPreferences
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Manages user's database source preference
@@ -12,7 +15,10 @@ import kotlinx.coroutines.flow.callbackFlow
  * EXTERNAL AUDIT FIX F2 (2025-11-21): Added Flow-based reactive observation
  * Allows UI and Paging to automatically update when database source changes
  */
-class DatabasePreferences(context: Context) {
+@Singleton
+class DatabasePreferences @Inject constructor(
+    @ApplicationContext context: Context
+) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences(
         PREFS_NAME,
@@ -82,14 +88,16 @@ class DatabasePreferences(context: Context) {
         private const val PREFS_NAME = "database_preferences"
         private const val KEY_DATABASE_SOURCE = "database_source"
 
+        /**
+         * Thread-safe singleton for legacy code (non-Hilt components)
+         * Hilt-enabled components should use @Inject instead
+         */
         @Volatile
         private var INSTANCE: DatabasePreferences? = null
 
         fun getInstance(context: Context): DatabasePreferences {
             return INSTANCE ?: synchronized(this) {
-                val instance = DatabasePreferences(context.applicationContext)
-                INSTANCE = instance
-                instance
+                INSTANCE ?: DatabasePreferences(context.applicationContext).also { INSTANCE = it }
             }
         }
     }

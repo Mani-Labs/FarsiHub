@@ -109,7 +109,7 @@ fun FeaturedCarousel(
     }
 
     var currentIndex by remember { mutableStateOf(0) }
-    var isPaused by remember { mutableStateOf(false) }
+    var isPaused by remember(content.size) { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
 
     // Focus requesters for buttons
@@ -142,7 +142,7 @@ fun FeaturedCarousel(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(420.dp)
+            .height(280.dp)
             .bringIntoViewRequester(bringIntoViewRequester)
             .onFocusChanged { focusState ->
                 isFocused = focusState.hasFocus
@@ -160,249 +160,231 @@ fun FeaturedCarousel(
                 }
             }
     ) {
-        // Background with crossfade animation
+        // UC-L3 FIX: Consolidate all animations into single AnimatedContent
+        // Reduces overhead from 3 animations to 1
         AnimatedContent(
             targetState = currentContent,
             transitionSpec = {
                 fadeIn(animationSpec = tween(600)) togetherWith
                 fadeOut(animationSpec = tween(600))
             },
-            label = "featured_backdrop"
+            label = "featured_content_transition"
         ) { item ->
             Box(modifier = Modifier.fillMaxSize()) {
-                // Main backdrop image
-                AsyncImage(
-                    model = item.backdropUrl ?: item.posterUrl,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Multi-layer gradient overlay for depth
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color.Black.copy(alpha = 0.9f),
-                                    Color.Black.copy(alpha = 0.6f),
-                                    Color.Transparent
-                                ),
-                                startX = 0f,
-                                endX = 800f
-                            )
-                        )
-                )
-
-                // Bottom gradient for text area
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color.Transparent,
-                                    Color.Black.copy(alpha = 0.8f)
-                                ),
-                                startY = 0f,
-                                endY = 1200f
-                            )
-                        )
-                )
-
-                // Top vignette
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(100.dp)
-                        .align(Alignment.TopCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color(0xFF121212),
-                                    Color.Transparent
-                                )
-                            )
-                        )
-                )
-            }
-        }
-
-        // Content row: Poster + Info
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 48.dp, end = 48.dp, top = 60.dp, bottom = 32.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Poster thumbnail with shadow
-            AnimatedContent(
-                targetState = currentContent.posterUrl,
-                transitionSpec = {
-                    fadeIn(tween(400)) togetherWith fadeOut(tween(400))
-                },
-                label = "poster_transition"
-            ) { posterUrl ->
-                Box(
-                    modifier = Modifier
-                        .width(180.dp)
-                        .height(270.dp)
-                        .shadow(
-                            elevation = 16.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            ambientColor = Color.Black,
-                            spotColor = Color.Black
-                        )
-                        .clip(RoundedCornerShape(12.dp))
-                        .border(
-                            width = if (isFocused) 3.dp else 0.dp,
-                            color = if (isFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                ) {
+                // Background with backdrop image
+                Box(modifier = Modifier.fillMaxSize()) {
+                    // Main backdrop image
                     AsyncImage(
-                        model = posterUrl,
-                        contentDescription = currentContent.title,
+                        model = item.backdropUrl ?: item.posterUrl,
+                        contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
-                }
-            }
 
-            Spacer(modifier = Modifier.width(40.dp))
-
-            // Info column
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 100.dp),
-                verticalArrangement = Arrangement.Center
-            ) {
-                // Content type badge + Year + Rating row
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Content type badge
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = if (isMovie) Color(0xFFE50914) else Color(0xFF5C6BC0)
-                    ) {
-                        Text(
-                            text = if (isMovie) "MOVIE" else "TV SHOW",
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            letterSpacing = 1.sp
-                        )
-                    }
-
-                    // Year
-                    currentContent.year?.let { year ->
-                        Text(
-                            text = year.toString(),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = Color.White.copy(alpha = 0.7f)
-                        )
-                    }
-
-                    // Rating with star
-                    currentContent.rating?.let { rating ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "★",
-                                color = Color(0xFFFFD700),
-                                fontSize = 16.sp
+                    // Multi-layer gradient overlay for depth
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.Black.copy(alpha = 0.9f),
+                                        Color.Black.copy(alpha = 0.6f),
+                                        Color.Transparent
+                                    ),
+                                    startX = 0f,
+                                    endX = 800f
+                                )
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = String.format("%.1f", rating),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = Color.White.copy(alpha = 0.9f),
-                                fontWeight = FontWeight.Medium
+                    )
+
+                    // Bottom gradient for text area
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        Color.Transparent,
+                                        Color.Black.copy(alpha = 0.8f)
+                                    ),
+                                    startY = 0f,
+                                    endY = 1200f
+                                )
                             )
-                        }
-                    }
-                }
+                    )
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Title with animation
-                AnimatedContent(
-                    targetState = currentContent.title,
-                    transitionSpec = {
-                        slideInVertically { it / 2 } + fadeIn() togetherWith
-                        slideOutVertically { -it / 2 } + fadeOut()
-                    },
-                    label = "title_transition"
-                ) { title ->
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.displaySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        lineHeight = 44.sp
+                    // Top vignette
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(60.dp)
+                            .align(Alignment.TopCenter)
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color(0xFF121212),
+                                        Color.Transparent
+                                    )
+                                )
+                            )
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Genre chips
-                if (currentContent.genres.isNotEmpty()) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Content row: Poster + Info
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Poster thumbnail with shadow
+                    Box(
+                        modifier = Modifier
+                            .width(120.dp)
+                            .height(180.dp)
+                            .shadow(
+                                elevation = 16.dp,
+                                shape = RoundedCornerShape(12.dp),
+                                ambientColor = Color.Black,
+                                spotColor = Color.Black
+                            )
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                width = if (isFocused) 3.dp else 0.dp,
+                                color = if (isFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                shape = RoundedCornerShape(12.dp)
+                            )
                     ) {
-                        currentContent.genres.take(3).forEach { genre ->
+                        AsyncImage(
+                            model = item.posterUrl,
+                            contentDescription = item.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(20.dp))
+
+                    // Info column
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 40.dp),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        // Content type badge + Year + Rating row
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Content type badge
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = Color.White.copy(alpha = 0.15f),
-                                border = androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    Color.White.copy(alpha = 0.3f)
-                                )
+                                shape = RoundedCornerShape(3.dp),
+                                color = if (isMovie) Color(0xFFE50914) else Color(0xFF5C6BC0)
                             ) {
                                 Text(
-                                    text = genre,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White.copy(alpha = 0.9f)
+                                    text = if (isMovie) "MOVIE" else "TV",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    fontSize = 9.sp
                                 )
                             }
+
+                            // Year
+                            item.year?.let { year ->
+                                Text(
+                                    text = year.toString(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.7f)
+                                )
+                            }
+
+                            // Rating with star
+                            item.rating?.let { rating ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "★",
+                                        color = Color(0xFFFFD700),
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = String.format("%.1f", rating),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.White.copy(alpha = 0.9f),
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
                         }
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                // Description
-                if (currentContent.description.isNotBlank()) {
-                    Text(
-                        text = currentContent.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.75f),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        lineHeight = 22.sp
-                    )
+                        // Title
+                        Text(
+                            text = item.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
 
-                    Spacer(modifier = Modifier.height(24.dp))
-                }
+                        Spacer(modifier = Modifier.height(6.dp))
 
-                // Action buttons
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Play button (primary, filled)
-                    var playBtnFocused by remember { mutableStateOf(false) }
-                    Button(
-                        onClick = { onContentClick(currentContent) },
+                        // Genre chips
+                        if (item.genres.isNotEmpty()) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                item.genres.take(2).forEach { genre ->
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color.White.copy(alpha = 0.15f),
+                                        border = androidx.compose.foundation.BorderStroke(
+                                            1.dp,
+                                            Color.White.copy(alpha = 0.3f)
+                                        )
+                                    ) {
+                                        Text(
+                                            text = genre,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.White.copy(alpha = 0.9f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Description
+                        if (item.description.isNotBlank()) {
+                            Text(
+                                text = item.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.75f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+
+                        // Action buttons
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Play button (primary, filled)
+                            var playBtnFocused by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = { onContentClick(item) },
                         modifier = Modifier
-                            .height(52.dp)
+                            .height(36.dp)
                             .focusRequester(playButtonFocusRequester)
                             .onFocusChanged { playBtnFocused = it.isFocused }
                             .onPreviewKeyEvent { keyEvent ->
@@ -436,22 +418,22 @@ fun FeaturedCarousel(
                         Icon(
                             imageVector = Icons.Filled.PlayArrow,
                             contentDescription = null,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(18.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "Play",
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Bold
                         )
                     }
 
-                    // More Info button (secondary, outlined)
-                    var infoBtnFocused by remember { mutableStateOf(false) }
-                    OutlinedButton(
-                        onClick = { onContentClick(currentContent) },
+                            // More Info button (secondary, outlined)
+                            var infoBtnFocused by remember { mutableStateOf(false) }
+                            OutlinedButton(
+                                onClick = { onContentClick(item) },
                         modifier = Modifier
-                            .height(52.dp)
+                            .height(36.dp)
                             .focusRequester(infoButtonFocusRequester)
                             .onFocusChanged { infoBtnFocused = it.isFocused }
                             .onPreviewKeyEvent { keyEvent ->
@@ -485,14 +467,16 @@ fun FeaturedCarousel(
                         Icon(
                             imageVector = Icons.Filled.Info,
                             contentDescription = null,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(16.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "More Info",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Medium
-                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Info",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -503,7 +487,7 @@ fun FeaturedCarousel(
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 48.dp, bottom = 24.dp),
+                    .padding(end = 24.dp, bottom = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -542,7 +526,7 @@ fun FeaturedCarousel(
                 text = "${currentIndex + 1} / ${content.size}",
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(start = 48.dp, bottom = 24.dp),
+                    .padding(start = 24.dp, bottom = 12.dp),
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White.copy(alpha = 0.5f),
                 fontWeight = FontWeight.Medium
@@ -552,105 +536,86 @@ fun FeaturedCarousel(
 }
 
 /**
- * Skeleton loading state
+ * Skeleton loading state with shimmer animation
  */
 @Composable
 fun FeaturedCarouselSkeleton() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(420.dp)
-            .background(
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF1E1E1E),
-                        Color(0xFF2A2A2A),
-                        Color(0xFF1E1E1E)
-                    )
-                )
-            )
+            .height(280.dp)
+            .background(Color(0xFF121212))
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 48.dp, top = 60.dp, bottom = 32.dp),
+                .padding(start = 24.dp, top = 24.dp, bottom = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Poster skeleton
+            // Poster skeleton with shimmer
             Box(
                 modifier = Modifier
-                    .width(180.dp)
-                    .height(270.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF333333))
+                    .width(120.dp)
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(shimmerBrush())
             )
 
-            Spacer(modifier = Modifier.width(40.dp))
+            Spacer(modifier = Modifier.width(20.dp))
 
             Column {
-                // Badge skeleton
+                // Badge skeleton with shimmer
                 Box(
                     modifier = Modifier
-                        .width(70.dp)
+                        .width(50.dp)
+                        .height(16.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(shimmerBrush())
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Title skeleton with shimmer
+                Box(
+                    modifier = Modifier
+                        .width(200.dp)
                         .height(24.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFF333333))
+                        .background(shimmerBrush())
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-                // Title skeleton
-                Box(
-                    modifier = Modifier
-                        .width(300.dp)
-                        .height(40.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFF333333))
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Genre skeleton
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    repeat(3) {
+                // Genre skeleton with shimmer
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    repeat(2) {
                         Box(
                             modifier = Modifier
-                                .width(80.dp)
-                                .height(28.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(Color(0xFF333333))
+                                .width(60.dp)
+                                .height(20.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(shimmerBrush())
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // Description skeleton
-                Box(
-                    modifier = Modifier
-                        .width(400.dp)
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFF333333))
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Buttons skeleton
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                // Buttons skeleton with shimmer
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(
                         modifier = Modifier
-                            .width(120.dp)
-                            .height(52.dp)
+                            .width(80.dp)
+                            .height(36.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF444444))
+                            .background(shimmerBrush())
                     )
                     Box(
                         modifier = Modifier
-                            .width(140.dp)
-                            .height(52.dp)
+                            .width(70.dp)
+                            .height(36.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF333333))
+                            .background(shimmerBrush())
                     )
                 }
             }

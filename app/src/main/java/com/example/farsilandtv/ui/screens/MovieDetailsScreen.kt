@@ -1,5 +1,6 @@
 package com.example.farsilandtv.ui.screens
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
@@ -7,9 +8,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -34,7 +37,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.farsilandtv.data.download.DownloadConstants
+import com.example.farsilandtv.data.download.DownloadManager
 import com.example.farsilandtv.data.models.Movie
+import com.example.farsilandtv.data.scraper.ScraperResult
+import com.example.farsilandtv.data.scraper.VideoUrlScraper
 import com.example.farsilandtv.data.repository.FavoritesRepository
 import com.example.farsilandtv.data.repository.PlaybackRepository
 import com.example.farsilandtv.data.repository.WatchlistRepository
@@ -55,6 +62,10 @@ import kotlinx.coroutines.launch
 @Composable
 fun MovieDetailsScreen(
     movie: Movie,
+    favoritesRepo: FavoritesRepository,
+    playbackRepo: PlaybackRepository,
+    watchlistRepo: WatchlistRepository,
+    downloadManager: DownloadManager,
     onBackClick: () -> Unit,
     onPlayClick: (Movie) -> Unit,
     onMovieClick: (Movie) -> Unit = {},
@@ -64,21 +75,19 @@ fun MovieDetailsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // Repositories
-    val favoritesRepo = remember(context) { FavoritesRepository.getInstance(context) }
-    val playbackRepo = remember(context) { PlaybackRepository.getInstance(context) }
-    val watchlistRepo = remember(context) { WatchlistRepository.getInstance(context) }
-
     // State
     var isFavorite by remember { mutableStateOf(false) }
     var isWatched by remember { mutableStateOf(false) }
     var isInWatchlist by remember { mutableStateOf(false) }
+    var isDownloaded by remember { mutableStateOf(false) }
+    var isDownloading by remember { mutableStateOf(false) }
 
     // Load initial states
     LaunchedEffect(movie.id) {
         isFavorite = favoritesRepo.isMovieFavorited(movie.id).first()
         isWatched = playbackRepo.isCompleted(movie.id, "movie").first() ?: false
         isInWatchlist = watchlistRepo.isMovieInWatchlist(movie.id)
+        isDownloaded = downloadManager.isDownloaded(DownloadConstants.movieId(movie.id))
     }
 
     // Focus requesters for buttons
@@ -86,6 +95,13 @@ fun MovieDetailsScreen(
     val favoriteButtonFocus = remember { FocusRequester() }
     val watchlistButtonFocus = remember { FocusRequester() }
     val watchedButtonFocus = remember { FocusRequester() }
+    val downloadButtonFocus = remember { FocusRequester() }
+    val shareButtonFocus = remember { FocusRequester() }
+
+    // Request focus on Play button when screen loads
+    LaunchedEffect(Unit) {
+        playButtonFocus.requestFocus()
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
         // Blurred backdrop as ambient background
@@ -155,10 +171,72 @@ fun MovieDetailsScreen(
                             isWatched = !isWatched
                         }
                     },
+                    isDownloaded = isDownloaded,
+                    isDownloading = isDownloading,
+                    onDownloadClick = {
+                        scope.launch {
+                            if (isDownloaded) {
+                                downloadManager.deleteDownload(DownloadConstants.movieId(movie.id))
+                                Toast.makeText(context, "Download removed", Toast.LENGTH_SHORT).show()
+                                isDownloaded = false
+                            } else if (!isDownloading) {
+                                // Get the page URL to scrape video from
+                                val pageUrl = movie.farsilandUrl
+                                if (pageUrl.isBlank()) {
+                                    Toast.makeText(context, "No source URL available", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+
+                                isDownloading = true
+                                Toast.makeText(context, "Finding video URL...", Toast.LENGTH_SHORT).show()
+
+                                // Scrape video URL
+                                when (val result = VideoUrlScraper.extractVideoUrls(pageUrl)) {
+                                    is ScraperResult.Success -> {
+                                        val videoUrls = result.data
+                                        if (videoUrls.isNotEmpty()) {
+                                            // Get best quality URL (first one is highest quality)
+                                            val bestUrl = videoUrls.first()
+                                            Toast.makeText(context, "Starting download (${bestUrl.quality})...", Toast.LENGTH_SHORT).show()
+
+                                            // Queue download
+                                            val queued = downloadManager.queueMovieDownload(
+                                                movieId = movie.id,
+                                                title = movie.title,
+                                                posterUrl = movie.posterUrl,
+                                                videoUrl = bestUrl.url
+                                            )
+
+                                            if (queued) {
+                                                Toast.makeText(context, "Download started!", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                Toast.makeText(context, "Failed to start download", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "No video URLs found", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    is ScraperResult.NetworkError -> {
+                                        Toast.makeText(context, "Network error: ${result.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                    is ScraperResult.ParseError -> {
+                                        Toast.makeText(context, "Parse error: ${result.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                    is ScraperResult.NoDataFound -> {
+                                        Toast.makeText(context, "No video found: ${result.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                                isDownloading = false
+                            }
+                        }
+                    },
                     playButtonFocus = playButtonFocus,
                     favoriteButtonFocus = favoriteButtonFocus,
                     watchlistButtonFocus = watchlistButtonFocus,
-                    watchedButtonFocus = watchedButtonFocus
+                    watchedButtonFocus = watchedButtonFocus,
+                    downloadButtonFocus = downloadButtonFocus,
+                    shareButtonFocus = shareButtonFocus,
+                    context = context
                 )
             }
 
@@ -204,15 +282,21 @@ private fun HeroSection(
     isFavorite: Boolean,
     isWatched: Boolean,
     isInWatchlist: Boolean,
+    isDownloaded: Boolean,
+    isDownloading: Boolean,
     onBackClick: () -> Unit,
     onPlayClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onWatchlistClick: () -> Unit,
     onWatchedClick: () -> Unit,
+    onDownloadClick: () -> Unit,
     playButtonFocus: FocusRequester,
     favoriteButtonFocus: FocusRequester,
     watchlistButtonFocus: FocusRequester,
     watchedButtonFocus: FocusRequester,
+    downloadButtonFocus: FocusRequester,
+    shareButtonFocus: FocusRequester,
+    context: android.content.Context,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -398,8 +482,9 @@ private fun HeroSection(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Action buttons
+                // Action buttons (scrollable for smaller screens)
                 Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     // Play button
@@ -447,6 +532,61 @@ private fun HeroSection(
                         onClick = onWatchedClick,
                         focusRequester = watchedButtonFocus,
                         onLeftPress = { watchlistButtonFocus.requestFocus() },
+                        onRightPress = { downloadButtonFocus.requestFocus() }
+                    )
+
+                    // Download button
+                    DetailActionButton(
+                        icon = when {
+                            isDownloaded -> Icons.Filled.CheckCircle
+                            isDownloading -> Icons.Filled.Refresh
+                            else -> Icons.Default.KeyboardArrowDown
+                        },
+                        label = when {
+                            isDownloaded -> "Downloaded"
+                            isDownloading -> "Downloading..."
+                            else -> "Download"
+                        },
+                        isPrimary = false,
+                        isActive = isDownloaded || isDownloading,
+                        onClick = onDownloadClick,
+                        focusRequester = downloadButtonFocus,
+                        onLeftPress = { watchedButtonFocus.requestFocus() },
+                        onRightPress = { shareButtonFocus.requestFocus() }
+                    )
+
+                    // Share button
+                    DetailActionButton(
+                        icon = Icons.Default.Share,
+                        label = "Share",
+                        isPrimary = false,
+                        isActive = false,
+                        onClick = {
+                            val shareText = buildString {
+                                append("Check out \"${movie.title}\"")
+                                movie.year?.let { append(" ($it)") }
+                                movie.rating?.let { append(" ⭐ ${String.format("%.1f", it)}") }
+                                append("\n\n")
+                                if (movie.description.isNotBlank()) {
+                                    val shortDesc = if (movie.description.length > 150) {
+                                        movie.description.take(150) + "..."
+                                    } else {
+                                        movie.description
+                                    }
+                                    append(shortDesc)
+                                    append("\n\n")
+                                }
+                                append("Watch on FarsiPlex!")
+                            }
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, movie.title)
+                                putExtra(Intent.EXTRA_TEXT, shareText)
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share movie"))
+                        },
+                        focusRequester = shareButtonFocus,
+                        onLeftPress = { downloadButtonFocus.requestFocus() },
                         onRightPress = { /* Already rightmost */ }
                     )
                 }

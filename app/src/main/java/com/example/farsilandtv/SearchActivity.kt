@@ -9,8 +9,13 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
+import com.example.farsilandtv.data.repository.FavoritesRepository
+import com.example.farsilandtv.data.repository.SearchRepository
+import com.example.farsilandtv.data.repository.WatchlistRepository
 import com.example.farsilandtv.ui.screens.SearchScreen
 import com.example.farsilandtv.ui.theme.FarsilandTVTheme
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * Search Activity - displays search interface using Compose TV
@@ -19,11 +24,16 @@ import com.example.farsilandtv.ui.theme.FarsilandTVTheme
  * Back navigation: Returns to previous screen (not home/exit)
  * Phase 2.3: Migrated to Compose TV from SearchFragment
  */
+@AndroidEntryPoint
 class SearchActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "SearchActivity"
     }
+
+    @Inject lateinit var favoritesRepo: FavoritesRepository
+    @Inject lateinit var watchlistRepo: WatchlistRepository
+    @Inject lateinit var searchRepo: SearchRepository
 
     // State for voice search support
     private var initialSearchQuery by mutableStateOf("")
@@ -51,6 +61,9 @@ class SearchActivity : ComponentActivity() {
                 // Use key to force recomposition when voice search query changes
                 key(queryKey) {
                     SearchScreen(
+                        favoritesRepo = favoritesRepo,
+                        watchlistRepo = watchlistRepo,
+                        searchRepo = searchRepo,
                         initialQuery = initialSearchQuery,
                         onMovieClick = { movie -> openMovieDetails(movie) },
                         onSeriesClick = { series -> openSeriesDetails(series) }
