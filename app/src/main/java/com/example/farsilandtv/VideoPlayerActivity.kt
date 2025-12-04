@@ -3,7 +3,9 @@ package com.example.farsilandtv
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
@@ -21,6 +23,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
 import com.example.farsilandtv.data.models.VideoUrl
@@ -49,13 +52,26 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.C
 import com.example.farsilandtv.utils.AutoFrameRateHelper
 import com.example.farsilandtv.utils.IntentExtras
+import com.example.farsilandtv.cast.CastManager
+import com.example.farsilandtv.data.imvbox.IMVBoxVideoExtractor
+import androidx.mediarouter.app.MediaRouteButton
+import com.google.android.gms.cast.framework.CastButtonFactory
+import com.google.android.gms.cast.framework.CastSession
 import java.io.File
 import kotlinx.coroutines.launch
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import okhttp3.OkHttpClient
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
+import java.util.concurrent.TimeUnit
 
 /**
  * Video Player Activity for movies and episodes
  * Uses ExoPlayer for direct MP4 playback from Farsiland CDN
  */
+@AndroidEntryPoint
 class VideoPlayerActivity : AppCompatActivity() {
 
     private lateinit var playerView: PlayerView
@@ -86,7 +102,10 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     // Flag to defer video URL fetching until activity is started
     private var pendingVideoFetch = false
-    private var cache: SimpleCache? = null
+    // Video caching is managed by FarsilandApp.videoCache singleton
+
+    // YouTube WebView player (for fallback when no YouTube app)
+    private var youTubeWebView: android.webkit.WebView? = null
 
     // M6 FIX: Network monitoring during playback
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -96,10 +115,10 @@ class VideoPlayerActivity : AppCompatActivity() {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
 
-    private lateinit var repository: ContentRepository
+    @javax.inject.Inject lateinit var repository: ContentRepository
+    @javax.inject.Inject lateinit var watchlistRepo: WatchlistRepository
+    @javax.inject.Inject lateinit var playbackRepo: PlaybackRepository
     private val videoScraper = VideoUrlScraper
-    private val watchlistRepo by lazy { WatchlistRepository.getInstance(this) }
-    private val playbackRepo by lazy { PlaybackRepository.getInstance(this) }
 
     // Content info from intent
     private lateinit var contentType: String // "movie" or "episode"
@@ -110,6 +129,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var seriesId: Int = 0 // For episodes
     private var seasonNumber: Int = 0 // For episodes
     private var episodeNumber: Int = 0 // For episodes
+    private var isImvboxContent: Boolean = false // Skip YouTube embed for IMVBox (Error 153)
 
     // Quality selection
     private var availableQualities: List<VideoUrl> = emptyList()
@@ -117,6 +137,11 @@ class VideoPlayerActivity : AppCompatActivity() {
     private val prefs by lazy {
         getSharedPreferences("VideoPlayerPrefs", Context.MODE_PRIVATE)
     }
+
+    // Chromecast support
+    @javax.inject.Inject lateinit var castManager: CastManager
+    private var castButton: MediaRouteButton? = null
+    private var isCastingActive = false
 
     // CDN mirror fallback - track which URLs have been tried
     private var currentVideoUrl: String = ""
@@ -146,9 +171,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         try {
             setContentView(R.layout.activity_video_player)
-
-            // EXTERNAL AUDIT FIX S1: Use singleton getInstance() for cache persistence
-            repository = ContentRepository.getInstance(this)
+            // Repository, watchlistRepo, playbackRepo are now Hilt-injected
 
             // H4 FIX: Fail-fast validation of required intent extras
             // Extract all intent extras first
@@ -171,6 +194,60 @@ class VideoPlayerActivity : AppCompatActivity() {
                 // AUDIT FIX #30: Use localized string resource
                 Toast.makeText(this, getString(R.string.error_no_content_url), Toast.LENGTH_LONG).show()
                 finish()
+                return
+            }
+
+            // IMVBox content: Pre-extract YouTube ID to skip intro video entirely
+            // YouTube embeds only work on imvbox.com (whitelisted by video owners)
+            // Direct youtube.com/embed fails with Error 153
+            if (contentUrl.contains("imvbox.com")) {
+                Log.d(TAG, "IMVBox content detected - extracting YouTube ID to skip intro")
+                isImvboxContent = true
+                val playUrl = if (contentUrl.endsWith("/play")) contentUrl else "$contentUrl/play"
+
+                // Pre-extract YouTube ID in background to skip ~45 second intro
+                lifecycleScope.launch {
+                    try {
+                        Log.d(TAG, "Extracting video source from IMVBox...")
+                        val extractor = IMVBoxVideoExtractor(this@VideoPlayerActivity)
+                        val videoSource = extractor.extractVideoSource(playUrl)
+
+                        val youtubeId: String? = when (videoSource) {
+                            is IMVBoxVideoExtractor.VideoSource.YouTube -> {
+                                Log.d(TAG, "Extracted YouTube ID: ${videoSource.videoId}")
+                                videoSource.videoId
+                            }
+                            is IMVBoxVideoExtractor.VideoSource.HLS -> {
+                                Log.d(TAG, "Got HLS stream, no YouTube ID to pre-inject")
+                                null
+                            }
+                            is IMVBoxVideoExtractor.VideoSource.Error -> {
+                                Log.w(TAG, "Extraction failed: ${videoSource.message}")
+                                null
+                            }
+                        }
+
+                        // Launch WebView player with optional pre-extracted YouTube ID
+                        val intent = IMVBoxWebPlayerActivity.createIntent(
+                            context = this@VideoPlayerActivity,
+                            playUrl = playUrl,
+                            title = contentTitle,
+                            youtubeId = youtubeId  // Skip intro if YouTube ID available
+                        )
+                        startActivity(intent)
+                        finish()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to extract YouTube ID, falling back", e)
+                        // Fallback: launch without pre-extracted ID (will use skip button)
+                        val intent = IMVBoxWebPlayerActivity.createIntent(
+                            context = this@VideoPlayerActivity,
+                            playUrl = playUrl,
+                            title = contentTitle
+                        )
+                        startActivity(intent)
+                        finish()
+                    }
+                }
                 return
             }
 
@@ -231,6 +308,9 @@ class VideoPlayerActivity : AppCompatActivity() {
             // Setup quality button in control bar
             setupQualityButton()
 
+            // Setup back button in player controls (for phone users)
+            setupBackButton()
+
             // Setup back press handler
             onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
@@ -248,6 +328,9 @@ class VideoPlayerActivity : AppCompatActivity() {
 
             // Initialize ExoPlayer
             initializePlayer()
+
+            // Initialize Chromecast support
+            initializeCast()
 
             // M6 FIX: Register network callback to monitor connectivity during playback
             registerNetworkCallback()
@@ -359,6 +442,133 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Setup back button for phone users
+     * Allows easy exit from fullscreen video player
+     */
+    private fun setupBackButton() {
+        playerView.findViewById<View>(R.id.exo_back)?.setOnClickListener {
+            // Save position and finish activity
+            saveCurrentPosition(forceSync = true)
+            finish()
+        }
+
+        // Set title text in player controls
+        playerView.findViewById<TextView>(R.id.exo_title)?.text = contentTitle
+    }
+
+    /**
+     * Initialize Chromecast support
+     * Sets up MediaRouteButton and handles cast session callbacks
+     */
+    private fun initializeCast() {
+        try {
+            // CastManager is injected via Hilt @Inject
+            castManager.initialize()
+
+            // Setup cast button in player controls
+            castButton = playerView.findViewById(R.id.cast_button)
+            castButton?.let { button ->
+                CastButtonFactory.setUpMediaRouteButton(this, button)
+                button.visibility = View.VISIBLE
+                Log.d(TAG, "Cast button initialized")
+            }
+
+            // Listen for cast session events
+            castManager.onCastSessionStarted = { session ->
+                Log.d(TAG, "Cast session started - transferring playback to Chromecast")
+                handleCastSessionStarted(session)
+            }
+
+            castManager.onCastSessionEnded = {
+                Log.d(TAG, "Cast session ended - returning to local playback")
+                handleCastSessionEnded()
+            }
+
+            castManager.onCastAvailabilityChanged = { available ->
+                Log.d(TAG, "Cast availability changed: $available")
+                runOnUiThread {
+                    castButton?.visibility = if (available) View.VISIBLE else View.GONE
+                }
+            }
+
+            Log.i(TAG, "Chromecast support initialized")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize Chromecast: ${e.message}", e)
+            // Non-fatal - app works fine without cast
+        }
+    }
+
+    /**
+     * Handle cast session started - transfer playback to Chromecast
+     */
+    private fun handleCastSessionStarted(session: CastSession) {
+        if (isCastingActive) return // Already casting
+
+        // Save current playback state
+        val currentPosition = player?.currentPosition ?: 0L
+        val wasPlaying = player?.isPlaying ?: false
+
+        // Pause local playback
+        player?.pause()
+
+        // Get current video info
+        val videoUrl = currentVideoUrl
+        val quality = availableQualities.getOrNull(currentQualityIndex)?.quality ?: ""
+        val title = if (contentType == "episode") {
+            "$contentTitle (S${seasonNumber}E${episodeNumber})"
+        } else {
+            contentTitle
+        }
+
+        if (videoUrl.isNotEmpty()) {
+            // Start casting
+            castManager.castMedia(
+                videoUrl = videoUrl,
+                title = title,
+                posterUrl = contentPosterUrl,
+                position = currentPosition
+            )
+
+            isCastingActive = true
+
+            runOnUiThread {
+                Toast.makeText(this, "Casting to ${session.castDevice?.friendlyName ?: "Chromecast"}", Toast.LENGTH_SHORT).show()
+            }
+
+            Log.i(TAG, "Started casting: $title at position ${currentPosition}ms")
+        }
+    }
+
+    /**
+     * Handle cast session ended - return to local playback
+     */
+    private fun handleCastSessionEnded() {
+        if (!isCastingActive) return
+
+        // Get position from CastPlayer before it becomes unavailable
+        val castPosition = castManager.getSavedPosition()
+        val wasPlaying = castManager.wasPlayingBeforeHandoff()
+
+        isCastingActive = false
+
+        runOnUiThread {
+            // Resume local playback at saved position
+            if (currentVideoUrl.isNotEmpty() && castPosition > 0) {
+                val mediaItem = MediaItem.fromUri(currentVideoUrl)
+                player?.apply {
+                    setMediaItem(mediaItem)
+                    seekTo(castPosition)
+                    prepare()
+                    playWhenReady = wasPlaying
+                }
+
+                Toast.makeText(this, "Playback returned to device", Toast.LENGTH_SHORT).show()
+                Log.i(TAG, "Local playback resumed at position ${castPosition}ms")
+            }
+        }
+    }
+
     // H3 FIX: Lock object for network callback registration to prevent race condition
     private val networkCallbackLock = Any()
 
@@ -391,15 +601,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 }
 
                 override fun onAvailable(network: Network) {
-                    // Network reconnected
-                    runOnUiThread {
-                        Toast.makeText(
-                            this@VideoPlayerActivity,
-                            R.string.network_connection_restored,
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        Log.d(TAG, "Network connection restored")
-                    }
+                    // Network reconnected - no toast needed, just log
+                    Log.d(TAG, "Network connection restored")
                 }
             }
 
@@ -422,17 +625,23 @@ class VideoPlayerActivity : AppCompatActivity() {
         Log.d(TAG, "Setting Referer header: $referer")
 
         // Setup HTTP data source with appropriate Referer header
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .setDefaultRequestProperties(
-                mapOf("Referer" to referer)
-            )
+        // Use OkHttpDataSource with custom SSL handling for IMVBox streaming
+        // IMVBox's streaming server has incomplete certificate chain (server misconfiguration)
+        val httpDataSourceFactory = createDataSourceFactory(referer)
 
-        // TEMPORARY FIX: Disable caching to prevent IllegalStateException crashes
-        // The SimpleCache was causing crashes with "IllegalStateException: null"
-        // TODO: Re-enable caching after fixing SimpleCache initialization issue
-        Log.d(TAG, "Caching temporarily disabled - using direct HTTP")
-        val dataSourceFactory = httpDataSourceFactory
+        // Use FarsilandApp's singleton video cache (100MB)
+        // Falls back to direct HTTP if cache not available
+        val appCache = FarsilandApp.videoCache
+        val dataSourceFactory = if (appCache != null) {
+            Log.d(TAG, "Video caching enabled - using FarsilandApp.videoCache")
+            CacheDataSource.Factory()
+                .setCache(appCache)
+                .setUpstreamDataSourceFactory(httpDataSourceFactory)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        } else {
+            Log.d(TAG, "Video cache not available - using direct HTTP")
+            httpDataSourceFactory
+        }
 
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
@@ -471,6 +680,16 @@ class VideoPlayerActivity : AppCompatActivity() {
             .build().also { exoPlayer ->
             playerView.player = exoPlayer
 
+            // Restore saved playback speed
+            val prefs = getSharedPreferences("player_prefs", Context.MODE_PRIVATE)
+            currentSpeedIndex = prefs.getInt(PREF_SPEED_INDEX, 2) // Default 1.0x (index 2)
+            val savedSpeed = speedOptions[currentSpeedIndex]
+            exoPlayer.playbackParameters = PlaybackParameters(savedSpeed)
+            if (savedSpeed != 1.0f) {
+                speedIndicator.text = "${savedSpeed}x"
+                speedIndicator.visibility = View.VISIBLE
+            }
+
             // Add player listeners
             exoPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -499,12 +718,13 @@ class VideoPlayerActivity : AppCompatActivity() {
                         Log.e(TAG, "HTTP error detected: $statusCode for URL: $currentVideoUrl")
 
                         // Clear cache for this video to prevent repeated errors from cached bad response
-                        cache?.let {
+                        // Clear cached data for this URL on HTTP errors
+                        FarsilandApp.videoCache?.let { appCache ->
                             try {
                                 // Remove all cache keys - ExoPlayer will rebuild cache on next load
-                                val keys = it.keys
+                                val keys = appCache.keys.toList() // Copy to avoid ConcurrentModification
                                 for (key in keys) {
-                                    it.removeResource(key)
+                                    appCache.removeResource(key)
                                 }
                                 Log.d(TAG, "Cache cleared after HTTP error $statusCode")
                             } catch (e: Exception) {
@@ -626,8 +846,6 @@ class VideoPlayerActivity : AppCompatActivity() {
                 }
 
                 // Fetch video URLs from the page
-                Toast.makeText(this@VideoPlayerActivity, "Fetching video...", Toast.LENGTH_SHORT).show()
-
                 val scraperResult = videoScraper.extractVideoUrls(contentUrl)
 
                 // Handle different scraper result types
@@ -692,12 +910,6 @@ class VideoPlayerActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                Toast.makeText(
-                    this@VideoPlayerActivity,
-                    "Loading ${selectedVideo.quality}...",
-                    Toast.LENGTH_SHORT
-                ).show()
-
                 // Load saved position if available
                 loadSavedPosition(selectedVideo.url)
 
@@ -729,6 +941,21 @@ class VideoPlayerActivity : AppCompatActivity() {
                 throw IllegalArgumentException("Invalid video URL format: $videoUrl")
             }
 
+            // Check if this is a YouTube URL - ExoPlayer can't play these directly
+            if (isYouTubeUrl(videoUrl)) {
+                Log.d(TAG, "YouTube URL detected - launching YouTube player")
+                // For IMVBox content, show login prompt since HLS requires authentication
+                if (isImvboxContent) {
+                    Toast.makeText(
+                        this,
+                        "Full movie requires IMVBox login. Go to Settings → IMVBox Account",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                launchYouTubePlayer(videoUrl)
+                return
+            }
+
             Log.d(TAG, "Creating MediaItem from URI...")
             val mediaItem = MediaItem.fromUri(videoUrl)
 
@@ -743,7 +970,6 @@ class VideoPlayerActivity : AppCompatActivity() {
 
             loadingIndicator.visibility = View.GONE
             Log.d(TAG, "Player initialized successfully")
-            Toast.makeText(this, "Playing: $contentTitle", Toast.LENGTH_SHORT).show()
 
         } catch (e: Exception) {
             Log.e(TAG, "========================================")
@@ -755,6 +981,309 @@ class VideoPlayerActivity : AppCompatActivity() {
             Log.e(TAG, "========================================")
             showError("Error playing video: ${e.message}")
         }
+    }
+
+    /**
+     * Create data source factory with custom SSL handling for IMVBox streaming.
+     *
+     * IMVBox's streaming.imvbox.com server has an incomplete certificate chain
+     * (missing intermediate CA certificates). This is a server misconfiguration
+     * on their side, but we handle it here for personal use app.
+     *
+     * SECURITY NOTE: This relaxed SSL is ONLY applied for personal use behind
+     * a firewalled network (as documented in CLAUDE.md). For public apps,
+     * the server should be fixed to send the full certificate chain.
+     */
+    private fun createDataSourceFactory(referer: String): OkHttpDataSource.Factory {
+        // Create OkHttpClient with relaxed SSL for streaming.imvbox.com
+        val okHttpClient = try {
+            // Trust manager that accepts all certificates
+            // This is safe for personal use app behind firewalled network
+            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+                override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+                override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+            })
+
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+
+            OkHttpClient.Builder()
+                .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
+                .hostnameVerifier { _, _ -> true }  // Accept all hostnames
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create custom SSL OkHttpClient, using default: ${e.message}")
+            OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .build()
+        }
+
+        Log.d(TAG, "Using OkHttpDataSource with custom SSL handling for IMVBox streaming")
+
+        return OkHttpDataSource.Factory(okHttpClient)
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .setDefaultRequestProperties(mapOf("Referer" to referer))
+    }
+
+    /**
+     * Check if URL is a YouTube video URL
+     */
+    private fun isYouTubeUrl(url: String): Boolean {
+        return url.contains("youtube.com/watch") ||
+               url.contains("youtu.be/") ||
+               url.contains("youtube.com/embed/")
+    }
+
+    /**
+     * Extract YouTube video ID from various URL formats
+     */
+    private fun extractYouTubeVideoId(url: String): String? {
+        // youtube.com/watch?v=VIDEO_ID
+        val watchPattern = Regex("""youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})""")
+        watchPattern.find(url)?.let { return it.groupValues[1] }
+
+        // youtu.be/VIDEO_ID
+        val shortPattern = Regex("""youtu\.be/([a-zA-Z0-9_-]{11})""")
+        shortPattern.find(url)?.let { return it.groupValues[1] }
+
+        // youtube.com/embed/VIDEO_ID
+        val embedPattern = Regex("""youtube\.com/embed/([a-zA-Z0-9_-]{11})""")
+        embedPattern.find(url)?.let { return it.groupValues[1] }
+
+        return null
+    }
+
+    /**
+     * Launch YouTube player for video playback
+     * Uses YouTubePlayerActivity with built-in Chromecast support
+     *
+     * For IMVBox content, skipEmbed=true bypasses the embed attempt (Error 153)
+     * and opens YouTube app directly.
+     */
+    private fun launchYouTubePlayer(url: String) {
+        val videoId = extractYouTubeVideoId(url)
+
+        if (videoId == null) {
+            Log.e(TAG, "Could not extract YouTube video ID from: $url")
+            showError("Invalid YouTube URL")
+            return
+        }
+
+        Log.d(TAG, "Launching YouTubePlayerActivity for video ID: $videoId, skipEmbed: $isImvboxContent")
+
+        try {
+            // Use our custom YouTubePlayerActivity with Chromecast support
+            // For IMVBox content, skip embed attempt and open YouTube app directly
+            val intent = YouTubePlayerActivity.createIntent(
+                context = this,
+                videoId = videoId,
+                title = contentTitle,
+                startPositionSeconds = 0f,
+                skipEmbed = isImvboxContent
+            )
+            startActivity(intent)
+            finish() // Close VideoPlayerActivity since we're switching to YouTube player
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch YouTubePlayerActivity: ${e.message}", e)
+            showError("Could not play YouTube video: ${e.message}")
+        }
+    }
+
+    /**
+     * Play YouTube video in an embedded WebView
+     * This is used as fallback when no YouTube app is installed
+     * Uses YouTube IFrame API for a clean, fullscreen player experience
+     */
+    @android.annotation.SuppressLint("SetJavaScriptEnabled")
+    private fun playYouTubeInWebView(videoId: String) {
+        Log.d(TAG, "Playing YouTube video in WebView: $videoId")
+
+        // Hide ExoPlayer, show loading
+        playerView.visibility = View.GONE
+        loadingIndicator.visibility = View.VISIBLE
+
+        // Keep screen on during YouTube playback
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Create and show WebView
+        val webView = android.webkit.WebView(this).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+            )
+
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                mediaPlaybackRequiresUserGesture = false
+                loadWithOverviewMode = true
+                useWideViewPort = true
+                builtInZoomControls = false
+                displayZoomControls = false
+                // Desktop Chrome for better YouTube player experience
+                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+
+            webChromeClient = object : android.webkit.WebChromeClient() {
+                override fun onProgressChanged(view: android.webkit.WebView?, newProgress: Int) {
+                    // Hide loading when page is mostly loaded
+                    if (newProgress > 80) {
+                        loadingIndicator.visibility = View.GONE
+                    }
+                }
+            }
+
+            webViewClient = object : android.webkit.WebViewClient() {
+                override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+                    Log.d(TAG, "YouTube WebView loaded: $url")
+                    loadingIndicator.visibility = View.GONE
+                    // Auto-click play button after a short delay
+                    view?.postDelayed({
+                        view.evaluateJavascript("""
+                            (function() {
+                                var playBtn = document.querySelector('.ytp-large-play-button');
+                                if (playBtn) playBtn.click();
+                            })();
+                        """.trimIndent(), null)
+                    }, 500)
+                }
+
+                override fun onReceivedError(
+                    view: android.webkit.WebView?,
+                    request: android.webkit.WebResourceRequest?,
+                    error: android.webkit.WebResourceError?
+                ) {
+                    // Only handle main frame errors
+                    if (request?.isForMainFrame == true) {
+                        Log.e(TAG, "YouTube WebView error: ${error?.description}")
+                        loadingIndicator.visibility = View.GONE
+                        showError("Failed to load video. Check your internet connection.")
+                    }
+                }
+            }
+        }
+
+        // Store reference for cleanup
+        youTubeWebView = webView
+
+        // Add WebView to root layout
+        val rootView = findViewById<android.widget.FrameLayout>(android.R.id.content)
+        rootView.addView(webView)
+
+        // Create a clean fullscreen YouTube player using nocookie domain
+        val embedHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    html, body {
+                        width: 100%;
+                        height: 100%;
+                        background: #000;
+                        overflow: hidden;
+                    }
+                    .player-container {
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        width: 100%;
+                        height: 100%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        background: #000;
+                    }
+                    iframe {
+                        width: 100%;
+                        height: 100%;
+                        border: none;
+                    }
+                    .loading {
+                        position: absolute;
+                        color: #fff;
+                        font-family: sans-serif;
+                        font-size: 18px;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="player-container">
+                    <iframe id="ytplayer"
+                        src="https://www.youtube-nocookie.com/embed/$videoId?autoplay=1&controls=1&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&fs=0&cc_load_policy=0&playsinline=1&enablejsapi=1"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowfullscreen>
+                    </iframe>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        Log.d(TAG, "Loading YouTube embed player for: $videoId")
+        webView.loadDataWithBaseURL(
+            "https://www.youtube-nocookie.com",
+            embedHtml,
+            "text/html",
+            "UTF-8",
+            null
+        )
+
+        // Handle back button with modern API
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                cleanupYouTubeWebView()
+                finish()
+            }
+        })
+
+        // Also support D-pad/remote back key
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus()
+        webView.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_UP) {
+                cleanupYouTubeWebView()
+                finish()
+                true
+            } else {
+                false
+            }
+        }
+
+        Log.d(TAG, "YouTube WebView player started")
+    }
+
+    /**
+     * Clean up YouTube WebView resources
+     */
+    private fun cleanupYouTubeWebView() {
+        youTubeWebView?.let { webView ->
+            Log.d(TAG, "Cleaning up YouTube WebView")
+            val rootView = findViewById<android.widget.FrameLayout>(android.R.id.content)
+            rootView.removeView(webView)
+            webView.stopLoading()
+            webView.destroy()
+            youTubeWebView = null
+        }
+        // Remove keep screen on flag
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Only access playerView if it was initialized (activity may finish early for IMVBox redirect)
+        if (::playerView.isInitialized) {
+            playerView.visibility = View.VISIBLE
+        }
+    }
+
+    /**
+     * Check if an intent can be resolved (app exists to handle it)
+     */
+    private fun isIntentResolvable(intent: Intent): Boolean {
+        return packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) != null
     }
 
     /**
@@ -871,6 +1400,14 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun playVideoAtPosition(videoUrl: String, position: Long) {
         try {
             currentVideoUrl = videoUrl
+
+            // Check if this is a YouTube URL - can't resume position in YouTube app
+            if (isYouTubeUrl(videoUrl)) {
+                Log.d(TAG, "YouTube URL detected - launching YouTube app (position not supported)")
+                launchYouTubePlayer(videoUrl)
+                return
+            }
+
             val mediaItem = MediaItem.fromUri(videoUrl)
             player?.apply {
                 setMediaItem(mediaItem)
@@ -1063,18 +1600,24 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * Handle key events for enhanced player controls
+     * Intercept key events BEFORE PlayerView processes them
+     * This is critical - PlayerView shows controls on any D-pad press by default
+     * Using dispatchKeyEvent ensures we handle Left/Right for seeking before PlayerView
+     *
      * Q/Menu: Quality selector
      * S: Cycle playback speed
      * I: Toggle info overlay
      * Left/Right: Skip 10s/30s ONLY when controls are hidden
-     * Up: Shows player controls (default behavior)
+     * Up/Down/Center: Shows player controls
      *
      * When controls are visible, D-pad navigates the control bar normally
      */
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Ignore repeat events for most keys
-        if (event?.repeatCount == 0) {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
+        val action = event.action
+
+        // Handle key down events
+        if (action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             when (keyCode) {
                 KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_Q -> {
                     showQualitySelector()
@@ -1098,79 +1641,76 @@ class VideoPlayerActivity : AppCompatActivity() {
                     // Let default handle navigation when already visible
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    // Only skip when controls are hidden
-                    // Check visibility BEFORE PlayerView processes the key
-                    val controlsVisible = playerView.isControllerFullyVisible
-                    Log.d(TAG, "DPAD_LEFT pressed, controlsVisible=$controlsVisible")
-                    if (!controlsVisible) {
+                    // CRITICAL: Check visibility and intercept BEFORE PlayerView
+                    if (!playerView.isControllerFullyVisible) {
                         isLongPressing = false
                         longPressHandler.postDelayed({
                             isLongPressing = true
                             skipPlayback(-SKIP_LONG_MS)
                         }, LONG_PRESS_THRESHOLD)
-                        return true
+                        return true  // Consume event - don't let PlayerView show controls
                     }
-                    // Let default behavior handle navigation when controls visible
+                    // Controls visible - let PlayerView handle navigation
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    // Only skip when controls are hidden
-                    val controlsVisible = playerView.isControllerFullyVisible
-                    Log.d(TAG, "DPAD_RIGHT pressed, controlsVisible=$controlsVisible")
-                    if (!controlsVisible) {
+                    // CRITICAL: Check visibility and intercept BEFORE PlayerView
+                    if (!playerView.isControllerFullyVisible) {
                         isLongPressing = false
                         longPressHandler.postDelayed({
                             isLongPressing = true
                             skipPlayback(SKIP_LONG_MS)
                         }, LONG_PRESS_THRESHOLD)
+                        return true  // Consume event - don't let PlayerView show controls
+                    }
+                    // Controls visible - let PlayerView handle navigation
+                }
+            }
+        }
+
+        // Handle key up events for skip completion
+        if (action == KeyEvent.ACTION_UP) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (!playerView.isControllerFullyVisible) {
+                        longPressHandler.removeCallbacksAndMessages(null)
+                        if (!isLongPressing) {
+                            skipPlayback(-SKIP_SHORT_MS)
+                        }
+                        isLongPressing = false
                         return true
                     }
-                    // Let default behavior handle navigation when controls visible
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (!playerView.isControllerFullyVisible) {
+                        longPressHandler.removeCallbacksAndMessages(null)
+                        if (!isLongPressing) {
+                            skipPlayback(SKIP_SHORT_MS)
+                        }
+                        isLongPressing = false
+                        return true
+                    }
                 }
             }
         }
-        return super.onKeyDown(keyCode, event)
-    }
 
-    /**
-     * Handle key release for skip controls
-     * Only processes skip when controls are hidden
-     */
-    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                // Only handle if controls are hidden (we initiated the skip)
-                if (!playerView.isControllerFullyVisible) {
-                    longPressHandler.removeCallbacksAndMessages(null)
-                    if (!isLongPressing) {
-                        skipPlayback(-SKIP_SHORT_MS)
-                    }
-                    isLongPressing = false
-                    return true
-                }
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                // Only handle if controls are hidden (we initiated the skip)
-                if (!playerView.isControllerFullyVisible) {
-                    longPressHandler.removeCallbacksAndMessages(null)
-                    if (!isLongPressing) {
-                        skipPlayback(SKIP_SHORT_MS)
-                    }
-                    isLongPressing = false
-                    return true
-                }
-            }
-        }
-        return super.onKeyUp(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 
     /**
      * Cycle through playback speed options
+     * Saves preference for next playback session
      */
     private fun cyclePlaybackSpeed() {
         currentSpeedIndex = (currentSpeedIndex + 1) % speedOptions.size
         val newSpeed = speedOptions[currentSpeedIndex]
 
         player?.playbackParameters = PlaybackParameters(newSpeed)
+
+        // Save speed preference for future sessions
+        getSharedPreferences("player_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putInt(PREF_SPEED_INDEX, currentSpeedIndex)
+            .apply()
 
         // Show speed indicator
         val speedText = if (newSpeed == 1.0f) "1x" else "${newSpeed}x"
@@ -1317,13 +1857,11 @@ class VideoPlayerActivity : AppCompatActivity() {
         // Save position to database immediately
         saveCurrentPosition()
 
-        // Release BOTH player and cache together (prevents crash)
+        // Release player (cache is managed by FarsilandApp singleton)
         player?.release()
         player = null
-        cache?.release()
-        cache = null
 
-        Log.d(TAG, "Player and cache released in onStop()")
+        Log.d(TAG, "Player released in onStop() - cache managed by FarsilandApp")
     }
 
     /**
@@ -1440,6 +1978,9 @@ class VideoPlayerActivity : AppCompatActivity() {
         super.onDestroy()
         // P0 FIX: Issue #1 - Simplified onDestroy() since player and cache already released in onStop()
 
+        // Clean up YouTube WebView if it was used (prevents memory leak)
+        cleanupYouTubeWebView()
+
         // C2 FIX: Remove ALL pending callbacks from ALL handlers to prevent memory leaks
         // Each Handler holds implicit reference to Activity - must clear all callbacks
         positionHandler.removeCallbacksAndMessages(null)
@@ -1463,14 +2004,20 @@ class VideoPlayerActivity : AppCompatActivity() {
         networkCallback = null
         isNetworkCallbackRegistered = false  // EXTERNAL AUDIT FIX C4.3: Ensure flag is cleared
 
-        // Defensive cleanup (player and cache should already be null from onStop)
+        // Defensive cleanup (player should already be null from onStop)
+        // Note: Video cache is managed by FarsilandApp singleton - never release it here
         player?.release()
         player = null
-        cache?.release()
-        cache = null
 
         // AFR: Restore default display mode before destroying activity
         AutoFrameRateHelper.disableAFR(this)
+
+        // Clear cast callbacks to prevent leaks
+        if (::castManager.isInitialized) {
+            castManager.onCastSessionStarted = null
+            castManager.onCastSessionEnded = null
+            castManager.onCastAvailabilityChanged = null
+        }
 
         // Clear saved state
         savedPlaybackState = null
@@ -1479,6 +2026,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "VideoPlayerActivity"
         private const val PREF_QUALITY = "preferred_quality"
+        private const val PREF_SPEED_INDEX = "preferred_speed_index"
         private const val POSITION_SAVE_INTERVAL = 10_000L // Save every 10 seconds
 
         // L2 FIX: Define all magic numbers as named constants
