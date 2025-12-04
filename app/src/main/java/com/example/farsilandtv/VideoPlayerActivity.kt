@@ -1975,11 +1975,13 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        // P0 FIX: Issue #1 - Simplified onDestroy() since player and cache already released in onStop()
+        // CRITICAL FIX: Do ALL cleanup BEFORE super.onDestroy() because:
+        // 1. super.onDestroy() marks lifecycle as DESTROYED
+        // 2. lifecycleScope.launch() crashes if lifecycle is DESTROYED
+        // 3. Handlers must be cleared before lifecycle destruction
 
-        // Clean up YouTube WebView if it was used (prevents memory leak)
-        cleanupYouTubeWebView()
+        // Save final position FIRST (uses lifecycleScope which requires valid lifecycle)
+        saveCurrentPosition()
 
         // C2 FIX: Remove ALL pending callbacks from ALL handlers to prevent memory leaks
         // Each Handler holds implicit reference to Activity - must clear all callbacks
@@ -1987,8 +1989,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         longPressHandler.removeCallbacksAndMessages(null)
         infoOverlayHandler.removeCallbacksAndMessages(null)
 
-        // Save final position
-        saveCurrentPosition()
+        // Clean up YouTube WebView if it was used (prevents memory leak)
+        cleanupYouTubeWebView()
 
         // M6 FIX: Unregister network callback to prevent memory leak
         // EXTERNAL AUDIT FIX C4.3: Clear registration flag after unregister
@@ -2021,6 +2023,9 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         // Clear saved state
         savedPlaybackState = null
+
+        // Call super.onDestroy() LAST per Android lifecycle best practice
+        super.onDestroy()
     }
 
     companion object {

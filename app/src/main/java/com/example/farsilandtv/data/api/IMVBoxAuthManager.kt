@@ -48,27 +48,33 @@ object IMVBoxAuthManager {
     )
 
     // Custom CookieJar for OkHttp
+    // CRITICAL FIX: Synchronize on cookieStore for ALL operations to prevent
+    // ConcurrentModificationException when modifying/reading inner lists
     private val cookieJar = object : CookieJar {
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-            val host = url.host
-            cookieStore.getOrPut(host) { mutableListOf() }.apply {
-                // Remove existing cookies with same name
-                val newCookieNames = cookies.map { it.name }.toSet()
-                removeAll { it.name in newCookieNames }
-                addAll(cookies)
+            synchronized(cookieStore) {
+                val host = url.host
+                cookieStore.getOrPut(host) { mutableListOf() }.apply {
+                    // Remove existing cookies with same name
+                    val newCookieNames = cookies.map { it.name }.toSet()
+                    removeAll { it.name in newCookieNames }
+                    addAll(cookies)
+                }
+                Log.d(TAG, "Saved ${cookies.size} cookies for $host: ${cookies.map { it.name }}")
             }
-            Log.d(TAG, "Saved ${cookies.size} cookies for $host: ${cookies.map { it.name }}")
         }
 
         override fun loadForRequest(url: HttpUrl): List<Cookie> {
-            val host = url.host
-            val cookies = cookieStore[host]?.filter { cookie ->
-                // Check if cookie is still valid and matches the path
-                !cookie.expiresAt.let { it < System.currentTimeMillis() } &&
-                url.encodedPath.startsWith(cookie.path)
-            } ?: emptyList()
-            Log.d(TAG, "Loading ${cookies.size} cookies for $host")
-            return cookies
+            synchronized(cookieStore) {
+                val host = url.host
+                val cookies = cookieStore[host]?.filter { cookie ->
+                    // Check if cookie is still valid and matches the path
+                    !cookie.expiresAt.let { it < System.currentTimeMillis() } &&
+                    url.encodedPath.startsWith(cookie.path)
+                } ?: emptyList()
+                Log.d(TAG, "Loading ${cookies.size} cookies for $host")
+                return cookies
+            }
         }
     }
 

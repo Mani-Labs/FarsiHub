@@ -457,9 +457,11 @@ class IMVBoxVideoExtractor(private val context: Context) {
                     // Timeout fallback
                     webView?.postDelayed({
                         if (resumed.compareAndSet(false, true)) {
-                            if (foundYouTubeId != null) {
-                                Log.d(TAG, "Timeout - using found YouTube: $foundYouTubeId")
-                                continuation.resume(VideoSource.YouTube(foundYouTubeId!!))
+                            // Smart cast: after null check, foundYouTubeId is non-null
+                            val youtubeId = foundYouTubeId
+                            if (youtubeId != null) {
+                                Log.d(TAG, "Timeout - using found YouTube: $youtubeId")
+                                continuation.resume(VideoSource.YouTube(youtubeId))
                             } else {
                                 Log.e(TAG, "Timeout - no video source found")
                                 continuation.resume(VideoSource.Error("Timeout: No video source found"))
