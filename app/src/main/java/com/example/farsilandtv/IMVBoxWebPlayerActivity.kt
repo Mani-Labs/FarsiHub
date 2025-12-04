@@ -274,6 +274,12 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
      * This sends real Android touch events that the YouTube iframe will receive
      */
     private fun togglePlayPause() {
+        // LAYOUT FIX: Verify WebView has been laid out before calculating coordinates
+        if (webView.width == 0 || webView.height == 0) {
+            Log.w(TAG, "WebView not laid out yet, skipping togglePlayPause")
+            return
+        }
+
         // Simulate tap at center of WebView to toggle YouTube play/pause
         val centerX = webView.width / 2f
         val centerY = webView.height / 2f
@@ -307,6 +313,12 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
      * YouTube supports double-tap gesture: left = -10s, right = +10s
      */
     private fun seekVideo(seconds: Int) {
+        // LAYOUT FIX: Verify WebView has been laid out before calculating coordinates
+        if (webView.width == 0 || webView.height == 0) {
+            Log.w(TAG, "WebView not laid out yet, skipping seekVideo")
+            return
+        }
+
         // Double-tap on left edge for rewind, right edge for forward
         val tapX = if (seconds < 0) {
             webView.width * 0.15f  // Left 15% of screen
@@ -321,10 +333,15 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         simulateTap(tapX, tapY, downTime)
 
         // Second tap (double-tap) after short delay
-        webView.postDelayed({
-            simulateTap(tapX, tapY, android.os.SystemClock.uptimeMillis())
-            Log.d(TAG, "Double-tap seek ${if (seconds < 0) "back" else "forward"} at $tapX")
-        }, 50)
+        // LIFECYCLE FIX: Use hideHandler and check Activity state
+        if (!isFinishing && !isDestroyed) {
+            hideHandler.postDelayed({
+                if (!isFinishing && !isDestroyed) {
+                    simulateTap(tapX, tapY, android.os.SystemClock.uptimeMillis())
+                    Log.d(TAG, "Double-tap seek ${if (seconds < 0) "back" else "forward"} at $tapX")
+                }
+            }, 50)
+        }
     }
 
     /**
@@ -447,9 +464,14 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         }
 
         // Also hide after a delay in case new elements appear
-        webView.postDelayed({
-            webView.evaluateJavascript(js) { }
-        }, 2000)
+        // LIFECYCLE FIX: Check Activity state before posting delayed work
+        if (!isFinishing && !isDestroyed) {
+            hideHandler.postDelayed({
+                if (!isFinishing && !isDestroyed) {
+                    webView.evaluateJavascript(js) { }
+                }
+            }, 2000)
+        }
     }
 
     /**
@@ -1056,9 +1078,13 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
 
         webView.evaluateJavascript(js) { result ->
             Log.d(TAG, "Play button click result: $result")
-            // Retry if not found
-            if (result?.contains("not-found") == true) {
-                webView.postDelayed({ clickPlayButton() }, 2000)
+            // Retry if not found - LIFECYCLE FIX: Check Activity state
+            if (result?.contains("not-found") == true && !isFinishing && !isDestroyed) {
+                hideHandler.postDelayed({
+                    if (!isFinishing && !isDestroyed) {
+                        clickPlayButton()
+                    }
+                }, 2000)
             }
         }
     }

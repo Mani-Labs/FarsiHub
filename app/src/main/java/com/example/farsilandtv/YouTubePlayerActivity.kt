@@ -364,9 +364,14 @@ class YouTubePlayerActivity : AppCompatActivity() {
                     loadingIndicator.visibility = View.GONE
 
                     // Check for YouTube playback errors after page loads
-                    view?.postDelayed({
-                        checkForYouTubeError(view)
-                    }, 2000) // Wait 2s for player to initialize
+                    // LIFECYCLE FIX: Use hideHandler and check Activity state
+                    if (!isFinishing && !isDestroyed) {
+                        hideHandler.postDelayed({
+                            if (!isFinishing && !isDestroyed && view != null) {
+                                checkForYouTubeError(view)
+                            }
+                        }, 2000) // Wait 2s for player to initialize
+                    }
                 }
 
                 override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
@@ -712,12 +717,21 @@ class YouTubePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        hideHandler.removeCallbacks(hideRunnable)
+        // CRITICAL FIX: Do ALL cleanup BEFORE super.onDestroy()
+        // super.onDestroy() destroys lifecycle, making lifecycleScope invalid
+
+        // Clear all handler callbacks first
+        hideHandler.removeCallbacksAndMessages(null)
+
         // Only destroy webView if it was initialized (skipEmbed skips setContentView)
         if (::webView.isInitialized) {
+            webView.stopLoading()
             webView.destroy()
         }
+
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Call super.onDestroy() LAST
+        super.onDestroy()
     }
 }
