@@ -19,7 +19,6 @@ import okhttp3.FormBody
 import okhttp3.Request
 import org.jsoup.Jsoup
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -47,7 +46,8 @@ class IMVBoxApiService @Inject constructor(
         private const val RATE_LIMIT_DELAY_MS = 500L
         private const val MAX_RESPONSE_SIZE = 5 * 1024 * 1024L // 5MB limit
 
-        private val lastRequestTime = AtomicLong(0L)
+        // Use Mutex only (no redundant AtomicLong)
+        private var lastRequestTime = 0L
         private val rateLimitMutex = Mutex()
 
         /**
@@ -57,14 +57,13 @@ class IMVBoxApiService @Inject constructor(
         private suspend fun enforceRateLimit() {
             rateLimitMutex.withLock {
                 val now = System.currentTimeMillis()
-                val last = lastRequestTime.get()
-                val timeSinceLastRequest = now - last
+                val timeSinceLastRequest = now - lastRequestTime
 
                 if (timeSinceLastRequest < RATE_LIMIT_DELAY_MS) {
                     delay(RATE_LIMIT_DELAY_MS - timeSinceLastRequest)
                 }
 
-                lastRequestTime.set(System.currentTimeMillis())
+                lastRequestTime = System.currentTimeMillis()
             }
         }
 
@@ -86,9 +85,9 @@ class IMVBoxApiService @Inject constructor(
         }
     }
 
-    // Cached CSRF token
-    private var cachedCsrfToken: String? = null
-    private var csrfTokenTime: Long = 0
+    // Cached CSRF token - @Volatile for thread-safe visibility across coroutines
+    @Volatile private var cachedCsrfToken: String? = null
+    @Volatile private var csrfTokenTime: Long = 0L
     private val csrfTokenMaxAge = 5 * 60 * 1000L // 5 minutes
 
     /**

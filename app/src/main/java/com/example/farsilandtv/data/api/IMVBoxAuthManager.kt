@@ -42,8 +42,10 @@ object IMVBoxAuthManager {
     private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-    // In-memory cookie storage
-    private val cookieStore = mutableMapOf<String, MutableList<Cookie>>()
+    // In-memory cookie storage - thread-safe for OkHttp callbacks
+    private val cookieStore = java.util.Collections.synchronizedMap(
+        mutableMapOf<String, MutableList<Cookie>>()
+    )
 
     // Custom CookieJar for OkHttp
     private val cookieJar = object : CookieJar {

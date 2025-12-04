@@ -356,7 +356,14 @@ object VideoUrlScraper {
         android.util.Log.d(TAG, "=== IMVBox Extraction ===")
 
         return try {
-            val imvboxService = IMVBoxApiService.getInstance(FarsilandApp.instance!!)
+            // Safe access to avoid crash if called before Application.onCreate()
+            val appContext = try {
+                FarsilandApp.instance.applicationContext
+            } catch (e: UninitializedPropertyAccessException) {
+                android.util.Log.e(TAG, "FarsilandApp not initialized", e)
+                return ScraperResult.ParseError("App not initialized", e)
+            }
+            val imvboxService = IMVBoxApiService.getInstance(appContext)
             val result = imvboxService.extractVideoUrl(pageUrl)
 
             when (result) {

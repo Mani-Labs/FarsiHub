@@ -16,6 +16,7 @@ import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /**
@@ -348,8 +349,15 @@ class IMVBoxVideoExtractor(private val context: Context) {
             withTimeout(TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
                 var webView: WebView? = null
-                var resumed = false
+                // Use AtomicBoolean to prevent race condition causing double-resume crash
+                val resumed = AtomicBoolean(false)
                 var foundYouTubeId: String? = null
+
+                fun cleanupWebView() {
+                    webView?.stopLoading()
+                    webView?.destroy()
+                    webView = null
+                }
 
                 try {
                     webView = WebView(context).apply {
@@ -370,7 +378,7 @@ class IMVBoxVideoExtractor(private val context: Context) {
                                 val url = request?.url?.toString() ?: return null
 
                                 // Look for YouTube embeds (skip intro media 3628)
-                                if (url.contains("youtube.com/embed") && !resumed) {
+                                if (url.contains("youtube.com/embed") && !resumed.get()) {
                                     YOUTUBE_EMBED_REGEX.find(url)?.let { match ->
                                         val videoId = match.groupValues[1]
                                         Log.d(TAG, "WebView found YouTube: $videoId")
@@ -383,9 +391,8 @@ class IMVBoxVideoExtractor(private val context: Context) {
                                 if (url.contains("m3u8")) {
                                     HLS_URL_REGEX.find(url)?.let { match ->
                                         val mediaId = match.groupValues[1]
-                                        if (!isIntroMediaId(mediaId) && !resumed) {
+                                        if (!isIntroMediaId(mediaId) && resumed.compareAndSet(false, true)) {
                                             Log.d(TAG, "WebView found HLS: $url")
-                                            resumed = true
                                             continuation.resume(VideoSource.HLS(url, mediaId))
                                         }
                                     }
@@ -412,11 +419,10 @@ class IMVBoxVideoExtractor(private val context: Context) {
                                         return null;
                                     })()
                                 """.trimIndent()) { result ->
-                                    if (result != "null" && result.isNotEmpty() && !resumed) {
+                                    if (result != "null" && result.isNotEmpty()) {
                                         val videoId = result.replace("\"", "")
-                                        if (videoId.length == 11) {
+                                        if (videoId.length == 11 && resumed.compareAndSet(false, true)) {
                                             Log.d(TAG, "JS extracted YouTube: $videoId")
-                                            resumed = true
                                             continuation.resume(VideoSource.YouTube(videoId))
                                         }
                                     }
@@ -425,18 +431,16 @@ class IMVBoxVideoExtractor(private val context: Context) {
                         }
                     }
 
-                    webView.loadUrl(playUrl)
+                    webView?.loadUrl(playUrl)
 
                     // Timeout fallback
-                    webView.postDelayed({
-                        if (!resumed) {
+                    webView?.postDelayed({
+                        if (resumed.compareAndSet(false, true)) {
                             if (foundYouTubeId != null) {
                                 Log.d(TAG, "Timeout - using found YouTube: $foundYouTubeId")
-                                resumed = true
                                 continuation.resume(VideoSource.YouTube(foundYouTubeId!!))
                             } else {
                                 Log.e(TAG, "Timeout - no video source found")
-                                resumed = true
                                 continuation.resume(VideoSource.Error("Timeout: No video source found"))
                             }
                         }
@@ -444,15 +448,14 @@ class IMVBoxVideoExtractor(private val context: Context) {
 
                 } catch (e: Exception) {
                     Log.e(TAG, "WebView error: ${e.message}", e)
-                    if (!resumed) {
-                        resumed = true
+                    if (resumed.compareAndSet(false, true)) {
                         continuation.resume(VideoSource.Error(e.message ?: "Unknown error"))
                     }
+                    cleanupWebView()
                 }
 
                 continuation.invokeOnCancellation {
-                    webView?.stopLoading()
-                    webView?.destroy()
+                    cleanupWebView()
                 }
             }
             }
