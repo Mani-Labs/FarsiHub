@@ -114,6 +114,10 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
     private val skipCheckHandler = Handler(Looper.getMainLooper())
     private val skipCheckRunnable = object : Runnable {
         override fun run() {
+            // Check lifecycle before proceeding - prevents crashes after Activity destroyed
+            if (isFinishing || isDestroyed) {
+                return
+            }
             if (!introSkipped) {
                 tryClickSkipButton()
                 skipCheckHandler.postDelayed(this, 1000) // Check every second
@@ -130,9 +134,9 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         // Fullscreen immersive mode
         hideSystemUI()
 
-        // Extract intent data
-        playUrl = intent.getStringExtra(EXTRA_PLAY_URL) ?: run {
-            Log.e(TAG, "No play URL provided")
+        // Extract intent data - check for both null AND empty string
+        playUrl = intent.getStringExtra(EXTRA_PLAY_URL)?.takeIf { it.isNotBlank() } ?: run {
+            Log.e(TAG, "No play URL provided or URL is empty")
             Toast.makeText(this, "Error: No video URL", Toast.LENGTH_SHORT).show()
             finish()
             return
@@ -782,13 +786,20 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
                         injectSkipButtonObserver()
 
                         // Auto-click play button after page loads
-                        view?.postDelayed({
-                            clickPlayButton()
+                        // Use handler instead of view.postDelayed for lifecycle safety
+                        hideHandler.postDelayed({
+                            if (!isFinishing && !isDestroyed) {
+                                clickPlayButton()
+                            }
                         }, 500)
 
                         // Fallback: Also poll for skip button in case observer misses it
                         for (delay in listOf(3000L, 6000L, 10000L, 20000L, 30000L)) {
-                            view?.postDelayed({ tryClickSkipButton() }, delay)
+                            hideHandler.postDelayed({
+                                if (!isFinishing && !isDestroyed) {
+                                    tryClickSkipButton()
+                                }
+                            }, delay)
                         }
                     }
                 }
@@ -1145,15 +1156,23 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         webView.onPause()
-        hideHandler.removeCallbacks(hideRunnable)
-        skipCheckHandler.removeCallbacks(skipCheckRunnable)
+        // Remove ALL pending callbacks (including inline lambdas)
+        hideHandler.removeCallbacksAndMessages(null)
+        skipCheckHandler.removeCallbacksAndMessages(null)
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        hideHandler.removeCallbacks(hideRunnable)
-        skipCheckHandler.removeCallbacks(skipCheckRunnable)
+        // Clear callbacks FIRST before destroying resources
+        hideHandler.removeCallbacksAndMessages(null)
+        skipCheckHandler.removeCallbacksAndMessages(null)
+
+        // Clean up WebView properly
+        webView.stopLoading()
         webView.destroy()
+
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Call super.onDestroy() LAST per Android lifecycle best practice
+        super.onDestroy()
     }
 }

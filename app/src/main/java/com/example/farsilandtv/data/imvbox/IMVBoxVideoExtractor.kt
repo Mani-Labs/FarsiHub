@@ -1,6 +1,7 @@
 package com.example.farsilandtv.data.imvbox
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
 import android.util.Log
 import android.webkit.CookieManager
@@ -342,6 +343,15 @@ class IMVBoxVideoExtractor(private val context: Context) {
     private suspend fun extractViaWebView(playUrl: String): VideoSource {
         Log.d(TAG, "Using WebView fallback extraction")
 
+        // Validate context lifecycle before creating WebView
+        // If context is a destroyed Activity, creating WebView will crash
+        (context as? Activity)?.let { activity ->
+            if (activity.isFinishing || activity.isDestroyed) {
+                Log.w(TAG, "Activity is destroyed, skipping WebView extraction")
+                return VideoSource.Error("Activity destroyed")
+            }
+        }
+
         return withContext(Dispatchers.Main) {
             injectAuthCookies()
             syncCookiesToWebView()
@@ -360,6 +370,17 @@ class IMVBoxVideoExtractor(private val context: Context) {
                 }
 
                 try {
+                    // Double-check lifecycle on Main thread
+                    (context as? Activity)?.let { activity ->
+                        if (activity.isFinishing || activity.isDestroyed) {
+                            Log.w(TAG, "Activity destroyed before WebView creation")
+                            if (resumed.compareAndSet(false, true)) {
+                                continuation.resume(VideoSource.Error("Activity destroyed"))
+                            }
+                            return@suspendCancellableCoroutine
+                        }
+                    }
+
                     webView = WebView(context).apply {
                         settings.apply {
                             javaScriptEnabled = true
