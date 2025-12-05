@@ -87,7 +87,7 @@ class SecureUrlValidatorTest {
 
     @Test
     fun `isTrustedDomain returns true for whitelisted domains`() {
-        // Arrange
+        // Arrange - using domains from DEFAULT_TRUSTED_DOMAINS in SecureUrlValidator.kt
         val trustedUrls = listOf(
             "https://farsiland.com/movie",
             "https://farsiplex.com/series",
@@ -96,8 +96,8 @@ class SecureUrlValidatorTest {
             "https://d2.flnd.buzz/video.m3u8",
             "https://namakade.com/content",
             "https://wp.farsiland.com/api",
-            "https://negahestan.com/stream",
-            "https://media.negahestan.com/video.mp4"
+            "https://farsicdn.buzz/stream",
+            "https://s1.farsicdn.buzz/video.mp4"
         )
 
         // Act & Assert

@@ -48,29 +48,29 @@ class WatchlistRepositoryTest {
     // ========== Movie Watchlist Tests ==========
 
     @Test
-    fun `test movie completion threshold is 90 percent`() = runTest {
-        // ARRANGE - WatchlistRepository uses 90% threshold (different from PlaybackRepository's 95%)
-        val position = 90000L
+    fun `test movie completion threshold is 95 percent`() = runTest {
+        // ARRANGE - WatchlistRepository uses 95% threshold (COMPLETION_THRESHOLD = 0.95f)
+        val position = 95000L
         val duration = 100000L
 
         // ACT
-        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.90f
+        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.95f
 
-        // ASSERT - verify 90% completion threshold in WatchlistRepository
-        assertTrue(isCompleted, "Movie at 90% should be marked complete in watchlist")
+        // ASSERT - verify 95% completion threshold in WatchlistRepository
+        assertTrue(isCompleted, "Movie at 95% should be marked complete in watchlist")
     }
 
     @Test
-    fun `test movie below 90 percent is not complete`() = runTest {
+    fun `test movie below 95 percent is not complete`() = runTest {
         // ARRANGE
-        val position = 89000L
+        val position = 94000L
         val duration = 100000L
 
         // ACT
-        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.90f
+        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.95f
 
         // ASSERT
-        assertFalse(isCompleted, "Movie at 89% should NOT be marked complete")
+        assertFalse(isCompleted, "Movie at 94% should NOT be marked complete")
     }
 
     @Test
@@ -80,7 +80,7 @@ class WatchlistRepositoryTest {
         val duration = 0L
 
         // ACT
-        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.90f
+        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.95f
 
         // ASSERT - should not crash with zero duration
         assertFalse(isCompleted, "Zero duration should not trigger completion")
@@ -208,16 +208,16 @@ class WatchlistRepositoryTest {
     // ========== Episode Progress Tests ==========
 
     @Test
-    fun `test episode completion threshold is 90 percent`() = runTest {
-        // ARRANGE
-        val position = 90000L
+    fun `test episode completion threshold is 95 percent`() = runTest {
+        // ARRANGE - matches COMPLETION_THRESHOLD = 0.95f in WatchlistRepository
+        val position = 95000L
         val duration = 100000L
 
         // ACT
-        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.90f
+        val isCompleted = duration > 0 && (position.toFloat() / duration) >= 0.95f
 
         // ASSERT
-        assertTrue(isCompleted, "Episode at 90% should be marked complete")
+        assertTrue(isCompleted, "Episode at 95% should be marked complete")
     }
 
     @Test
