@@ -14,6 +14,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -21,10 +27,13 @@ import androidx.compose.ui.unit.sp
 /**
  * Shared Filter Components - Extracted from MoviesScreen and ShowsScreen
  * Used for genre and sort filtering across content screens
+ *
+ * TV-L10 FIX: Added accessibility semantics for focus indicators and state
  */
 
 /**
  * Genre Chip - Selectable filter chip for content filtering
+ * TV-L10: Enhanced with accessibility semantics
  */
 @Composable
 fun GenreChip(
@@ -34,6 +43,13 @@ fun GenreChip(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
+
+    // TV-L10: Accessibility state description
+    val stateDesc = when {
+        isSelected -> "Selected"
+        isFocused -> "Focused"
+        else -> "Not selected"
+    }
     val backgroundColor by animateColorAsState(
         targetValue = when {
             isFocused -> Color(0xFFFF5722)
@@ -51,7 +67,14 @@ fun GenreChip(
 
     Surface(
         onClick = onClick,
-        modifier = modifier.onFocusChanged { isFocused = it.isFocused },
+        modifier = modifier
+            .onFocusChanged { isFocused = it.isFocused }
+            .semantics {
+                role = Role.Button
+                contentDescription = "$text genre filter"
+                selected = isSelected
+                stateDescription = stateDesc
+            },
         shape = RoundedCornerShape(20.dp),
         color = backgroundColor,
         border = BorderStroke(1.dp, borderColor)
@@ -68,6 +91,7 @@ fun GenreChip(
 
 /**
  * Sort Button - Dropdown selector for sort options
+ * TV-L10: Enhanced with accessibility semantics
  */
 @Composable
 fun SortButton(
@@ -82,7 +106,13 @@ fun SortButton(
     Box(modifier = modifier) {
         Surface(
             onClick = { expanded = true },
-            modifier = Modifier.onFocusChanged { isFocused = it.isFocused },
+            modifier = Modifier
+                .onFocusChanged { isFocused = it.isFocused }
+                .semantics {
+                    role = Role.DropdownList
+                    contentDescription = "Sort by $selected, tap to change"
+                    stateDescription = if (expanded) "Menu expanded" else "Menu collapsed"
+                },
             shape = RoundedCornerShape(8.dp),
             color = if (isFocused) Color(0xFFFF5722) else Color(0xFF1E1E1E)
         ) {
@@ -98,7 +128,7 @@ fun SortButton(
                 )
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Sort",
+                    contentDescription = "Open sort menu",
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )

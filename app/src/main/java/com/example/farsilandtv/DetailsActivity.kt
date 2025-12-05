@@ -22,7 +22,9 @@ import com.example.farsilandtv.utils.DeviceUtils
 import com.example.farsilandtv.utils.IntentExtras
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 
 /**
@@ -100,21 +102,26 @@ class DetailsActivity : ComponentActivity() {
                     // contentRepository is now Hilt-injected
                     var similarMovies by remember { mutableStateOf<List<Movie>>(emptyList()) }
 
+                    // H6 FIX: Add timeout to prevent indefinite loading
                     LaunchedEffect(movie.id) {
                         withContext(Dispatchers.IO) {
                             try {
-                                // Get movies and filter by genre match (exclude current movie)
-                                val result = contentRepository.getMovies(page = 1, perPage = 50)
-                                result.getOrNull()?.let { allMovies ->
-                                    val currentGenres = movie.genres.toSet()
-                                    similarMovies = allMovies
-                                        .filter { it.id != movie.id }
-                                        .filter { otherMovie: Movie ->
-                                            // Match if they share at least one genre
-                                            otherMovie.genres.any { genre -> genre in currentGenres }
-                                        }
-                                        .take(10) // Limit to 10 similar movies
+                                withTimeout(10_000L) { // 10 second timeout
+                                    // Get movies and filter by genre match (exclude current movie)
+                                    val result = contentRepository.getMovies(page = 1, perPage = 50)
+                                    result.getOrNull()?.let { allMovies ->
+                                        val currentGenres = movie.genres.toSet()
+                                        similarMovies = allMovies
+                                            .filter { it.id != movie.id }
+                                            .filter { otherMovie: Movie ->
+                                                // Match if they share at least one genre
+                                                otherMovie.genres.any { genre -> genre in currentGenres }
+                                            }
+                                            .take(10) // Limit to 10 similar movies
+                                    }
                                 }
+                            } catch (e: TimeoutCancellationException) {
+                                Log.w(TAG, "Similar movies load timed out after 10s")
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to load similar movies", e)
                             }

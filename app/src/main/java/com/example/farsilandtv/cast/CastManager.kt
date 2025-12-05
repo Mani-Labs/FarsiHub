@@ -18,10 +18,57 @@ import javax.inject.Singleton
 /**
  * CastManager - Handles Chromecast session management and playback
  *
- * Features:
+ * ## Features
  * - Automatic session management
  * - Seamless handoff between local and remote playback
  * - Position preservation when switching devices
+ *
+ * ## CD-L1: Chromecast Discovery
+ * Discovery is automatic via Google Cast SDK:
+ * 1. App initializes CastContext in Application.onCreate()
+ * 2. Cast SDK scans local network for Cast-enabled devices
+ * 3. MediaRouter discovers devices via mDNS/DIAL protocols
+ * 4. Available devices appear in the Cast button overlay
+ *
+ * Network requirements:
+ * - Same WiFi network as Cast device
+ * - UDP ports 5353 (mDNS), 8008-8009 (Cast protocol)
+ * - Guest mode: Ultrasonic pairing if not on same network
+ *
+ * ## CD-L2: Cast Device Selection
+ * Device selection flow:
+ * 1. User taps Cast icon in player or app bar
+ * 2. CastContext shows MediaRouteChooserDialog
+ * 3. User selects device from list
+ * 4. SessionManager creates new CastSession
+ * 5. onCastSessionStarted callback fires
+ * 6. App can now send media to device
+ *
+ * Supported devices:
+ * - Chromecast (all generations)
+ * - Chromecast with Google TV
+ * - Android TV with Cast built-in
+ * - Google Home/Nest speakers (audio only)
+ *
+ * ## CD-L3: Remote Playback Control
+ * Control flow via CastPlayer:
+ * 1. Create MediaItem with video URL and metadata
+ * 2. Call castMedia() to send to device
+ * 3. CastPlayer proxies ExoPlayer API to remote device
+ * 4. Control via standard Player interface:
+ *    - play(), pause(), stop()
+ *    - seekTo(position)
+ *    - setPlaybackSpeed(speed)
+ *
+ * Position sync:
+ * - Local → Cast: savePlaybackState() before handoff
+ * - Cast → Local: getSavedPosition() after session ends
+ * - Auto-save on session ending for seamless resume
+ *
+ * Error handling:
+ * - Network interruption: Session suspended, auto-reconnects
+ * - Device disconnected: onCastSessionEnded with error code
+ * - Media error: Check CastPlayer.playerError
  */
 @Singleton
 class CastManager @Inject constructor(

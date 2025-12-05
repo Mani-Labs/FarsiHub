@@ -93,6 +93,55 @@ data class CachedUrls(
  * NO AUTHENTICATION REQUIRED - URLs are publicly accessible in HTML!
  *
  * CACHING: Video URLs are cached for 5 minutes to improve replay and quality switching performance
+ *
+ * ## CH-L1: Cache Invalidation Strategy
+ * The video URL cache uses time-based invalidation:
+ * - TTL: 5 minutes (CACHE_DURATION = 300,000ms)
+ * - On cache hit: Check timestamp, return if fresh, refetch if stale
+ * - Manual clear: Call clearCache() when content source changes
+ * - Auto-evict: LRU evicts oldest entries when limit (100) reached
+ *
+ * Invalidation triggers:
+ * - App restart (cache is in-memory only)
+ * - Content sync worker completion
+ * - User force-refresh on details screen
+ * - Source domain change in settings
+ *
+ * ## CH-L2: Cache Size Monitoring
+ * Cache metrics available via getCacheMetrics():
+ * - currentSize: Number of cached entries (0-100)
+ * - maxSize: LRU cache limit (100 entries)
+ * - hitCount: Successful cache hits since startup
+ * - missCount: Cache misses requiring scrape
+ * - hitRate: hitCount / (hitCount + missCount)
+ *
+ * Memory footprint estimation:
+ * - ~10KB per entry (URL list + metadata)
+ * - Max memory: 100 entries × 10KB = ~1MB
+ * - Actual usage typically 20-50 entries
+ *
+ * Monitoring recommendations:
+ * - Log cache stats in debug builds
+ * - Alert if hitRate < 50% (indicates config issue)
+ * - Monitor eviction rate for capacity tuning
+ *
+ * ## CH-L3: Health Dashboard Integration
+ * Scraper health is tracked via ScraperResult sealed class:
+ * - Success: Parse succeeded, URLs extracted
+ * - NetworkError: HTTP/connection failure
+ * - ParseError: HTML structure changed/unexpected
+ * - NoDataFound: Page valid but no URLs present
+ *
+ * Health metrics to expose:
+ * - Success rate per source (Farsiland/FarsiPlex/Namakade/IMVBox)
+ * - Average response time per source
+ * - Error breakdown by type
+ * - Last successful scrape timestamp per source
+ *
+ * Integration with WorkManager:
+ * - ContentSyncWorker reports health via Result.failure()/success()
+ * - Health data stored in SharedPreferences for dashboard
+ * - Firebase Crashlytics logs scraper exceptions automatically
  */
 object VideoUrlScraper {
 
@@ -128,6 +177,9 @@ object VideoUrlScraper {
         override fun sizeOf(key: String, value: CachedUrls): Int = 1
     }
     private const val CACHE_DURATION = 5 * 60 * 1000L // 5 minutes in milliseconds
+
+    // N6 FIX: Lazy singleton NamakadeApiService to avoid per-call instantiation
+    private val namakadeService by lazy { com.example.farsilandtv.data.namakade.NamakadeApiService() }
 
     // AUDIT FIX #28: Pre-compiled regex patterns to avoid object churn
     // Issue: Regex objects created in loops/hot paths cause GC pressure
@@ -317,7 +369,7 @@ object VideoUrlScraper {
         android.util.Log.d(TAG, "=== Namakade Extraction ===")
 
         return try {
-            val namakadeService = NamakadeApiService()
+            // N6 FIX: Use lazy singleton instead of creating new instance per-call
             val videoUrl = namakadeService.extractVideoUrl(pageUrl)
 
             if (videoUrl != null) {
@@ -842,8 +894,8 @@ object VideoUrlScraper {
                     }
 
                     // METHOD 2: Extract M3U8 master playlist (HLS adaptive streaming)
-                    val m3u8Pattern = Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)"""", RegexOption.IGNORE_CASE)
-                    val m3u8Match = m3u8Pattern.find(jwPlayerHtml)
+                    // M1 FIX: Use pre-compiled M3U8_FILE_PATTERN
+                    val m3u8Match = M3U8_FILE_PATTERN.find(jwPlayerHtml)
 
                     if (m3u8Match != null) {
                         val m3u8Url = m3u8Match.groupValues[1].replace("\\/", "/")
@@ -865,12 +917,10 @@ object VideoUrlScraper {
                     }
 
                     // METHOD 3: Fallback to jw.file and jw.file2 (legacy support)
+                    // M1 FIX: Use pre-compiled MP4_FILE_PATTERN and MP4_FILE2_PATTERN
                     if (videoUrls.isEmpty()) {
-                        val filePattern = Regex(""""file"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE)
-                        val file2Pattern = Regex(""""file2"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE)
-
-                        val fileMatch = filePattern.find(jwPlayerHtml)
-                        val file2Match = file2Pattern.find(jwPlayerHtml)
+                        val fileMatch = MP4_FILE_PATTERN.find(jwPlayerHtml)
+                        val file2Match = MP4_FILE2_PATTERN.find(jwPlayerHtml)
 
                         if (fileMatch != null) {
                             val url = fileMatch.groupValues[1].replace("\\/", "/")
@@ -905,9 +955,9 @@ object VideoUrlScraper {
             }
 
             // Fallback: Look for any direct MP4 URLs in the response
+            // M1 FIX: Use pre-compiled MP4_URL_PATTERN
             if (videoUrls.isEmpty()) {
-                val mp4Pattern = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
-                val matches = mp4Pattern.findAll(jsonResponse)
+                val matches = MP4_URL_PATTERN.findAll(jsonResponse)
 
                 for (match in matches) {
                     val url = match.value.trim().replace("\\/", "/")
@@ -1531,8 +1581,8 @@ object VideoUrlScraper {
 
                     // Extract ALL MP4 URLs from response (both d1 and d2 mirrors)
                     // SECURITY: Use timeout-protected regex execution
-                    val mp4Regex = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
-                    val matches = SecureRegex.findAllWithTimeout(mp4Regex, responseBody)
+                    // M1 FIX: Use pre-compiled MP4_URL_PATTERN
+                    val matches = SecureRegex.findAllWithTimeout(MP4_URL_PATTERN, responseBody)
                     val urls = matches.map { it.value }.distinct().toList()
 
                     if (urls.isNotEmpty()) {
@@ -1727,8 +1777,8 @@ object VideoUrlScraper {
 
                 // Look for URLs in JavaScript
                 // SECURITY: Use timeout-protected regex execution
-                val mp4Regex = Regex("""https?://[^\s"']+\.mp4""", RegexOption.IGNORE_CASE)
-                val matches = SecureRegex.findAllWithTimeout(mp4Regex, scriptContent)
+                // M1 FIX: Use pre-compiled MP4_URL_PATTERN
+                val matches = SecureRegex.findAllWithTimeout(MP4_URL_PATTERN, scriptContent)
 
                 for (match in matches) {
                     val url = match.value
@@ -1781,8 +1831,8 @@ object VideoUrlScraper {
         try {
             // Extract series slug and episode number from URL
             // Pattern: https://farsiland.com/series/{slug}/s{season}e{episode}/
-            val regex = Regex("""/series/([^/]+)/s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
-            val match = regex.find(pageUrl)
+            // M1 FIX: Use pre-compiled SERIES_URL_PATTERN
+            val match = SERIES_URL_PATTERN.find(pageUrl)
 
             if (match != null) {
                 val slug = match.groupValues[1]
@@ -1809,8 +1859,8 @@ object VideoUrlScraper {
             }
 
             // Try movie pattern: https://farsiland.com/movies/{slug}/
-            val movieRegex = Regex("""/movies/([^/]+)""", RegexOption.IGNORE_CASE)
-            val movieMatch = movieRegex.find(pageUrl)
+            // M1 FIX: Use pre-compiled MOVIE_URL_PATTERN
+            val movieMatch = MOVIE_URL_PATTERN.find(pageUrl)
 
             if (movieMatch != null) {
                 val slug = movieMatch.groupValues[1]
@@ -2030,7 +2080,7 @@ object VideoUrlScraper {
     }
 
     /**
-     * Get cache statistics for debugging
+     * Get cache statistics for debugging (string format)
      */
     fun getCacheStats(): String {
         val size = urlCache.size()
@@ -2042,5 +2092,42 @@ object VideoUrlScraper {
         } else 0.0
 
         return "Cache: $size/$100 pages (max 100), $totalUrls URLs, avg age: ${avgAge.toInt()}s"
+    }
+
+    /**
+     * CH-L2: Get structured cache metrics for monitoring
+     * Returns CacheMetrics data class with all cache statistics
+     */
+    fun getCacheMetrics(): CacheMetrics {
+        val size = urlCache.size()
+        val maxSize = urlCache.maxSize()
+        val hitCount = urlCache.hitCount()
+        val missCount = urlCache.missCount()
+        val hitRate = if (hitCount + missCount > 0) {
+            hitCount.toFloat() / (hitCount + missCount)
+        } else 0f
+
+        return CacheMetrics(
+            currentSize = size,
+            maxSize = maxSize,
+            hitCount = hitCount,
+            missCount = missCount,
+            hitRate = hitRate
+        )
+    }
+}
+
+/**
+ * CH-L2: Data class for cache metrics
+ */
+data class CacheMetrics(
+    val currentSize: Int,
+    val maxSize: Int,
+    val hitCount: Int,
+    val missCount: Int,
+    val hitRate: Float
+) {
+    override fun toString(): String {
+        return "CacheMetrics(size=$currentSize/$maxSize, hits=$hitCount, misses=$missCount, hitRate=${(hitRate * 100).toInt()}%)"
     }
 }

@@ -1,12 +1,11 @@
 package com.example.farsilandtv.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -17,6 +16,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Surface
@@ -24,6 +29,7 @@ import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.utils.DeviceUtils
 import com.example.farsilandtv.utils.LocalDeviceType
+import com.example.farsilandtv.utils.TvFeedbackManager
 
 /**
  * Feature #16: Compose Component - Series Card
@@ -49,6 +55,10 @@ fun SeriesCard(
 ) {
     var isFocused by remember { mutableStateOf(false) }
     var longPressTriggered by remember { mutableStateOf(false) }
+
+    // TV-L4/L6: Context and view for sound and haptic feedback
+    val context = LocalContext.current
+    val view = LocalView.current
 
     // Check device type - use touch-friendly click for phones
     val deviceType = LocalDeviceType.current
@@ -166,9 +176,24 @@ fun SeriesCard(
         }
     } else {
         // TV/Tablet: Use TV Material 3 Surface for D-pad focus support
+        // TV-L accessibility: semantic description for screen readers
+        val seasonInfo = if (series.totalSeasons > 0) "${series.totalSeasons} seasons" else ""
+        val episodeInfo = if (series.totalEpisodes > 0) "${series.totalEpisodes} episodes" else ""
+        val accessibilityDescription = buildString {
+            append(series.title)
+            if (seasonInfo.isNotEmpty() || episodeInfo.isNotEmpty()) {
+                append(", ")
+                append(listOf(seasonInfo, episodeInfo).filter { it.isNotEmpty() }.joinToString(", "))
+            }
+            if (isFavorite) append(", favorite")
+            if (hasUnwatchedEpisodes) append(", has new episodes")
+        }
+
         Surface(
             onClick = {
                 if (!longPressTriggered) {
+                    // TV-L6: Haptic feedback on selection
+                    TvFeedbackManager.performSelectionHaptic(context)
                     onClick()
                 }
                 longPressTriggered = false
@@ -176,6 +201,8 @@ fun SeriesCard(
             onLongClick = onLongClick?.let { callback ->
                 {
                     longPressTriggered = true
+                    // TV-L6: Heavy haptic for long-press (context menu)
+                    TvFeedbackManager.performLongPressHaptic(context)
                     callback()
                 }
             },
@@ -183,7 +210,15 @@ fun SeriesCard(
                 .width(112.dp)
                 .height(168.dp)
                 .onFocusChanged { focusState ->
+                    // TV-L4: Play focus sound when gaining focus
+                    if (focusState.isFocused && !isFocused) {
+                        TvFeedbackManager.playFocusSound(view)
+                    }
                     isFocused = focusState.isFocused
+                }
+                .semantics {
+                    role = Role.Button
+                    contentDescription = accessibilityDescription
                 }
                 .then(
                     if (isFocused) {
@@ -204,20 +239,48 @@ fun SeriesCard(
 
 /**
  * Skeleton placeholder for SeriesCard during loading
+ * TV-L11 FIX: Use shimmer animation for loading skeletons
  */
 @Composable
 fun SeriesCardSkeleton(
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier
-            .width(112.dp)
-            .height(168.dp),
-        shape = RoundedCornerShape(6.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF2C2C2C)
+    Column(modifier = modifier.width(112.dp)) {
+        // Poster placeholder with shimmer
+        Box(
+            modifier = Modifier
+                .width(112.dp)
+                .height(168.dp)
+                .background(
+                    shimmerBrush(),
+                    shape = RoundedCornerShape(6.dp)
+                )
         )
-    ) {
-        Box(modifier = Modifier.fillMaxSize())
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Title placeholder
+        Box(
+            modifier = Modifier
+                .width(90.dp)
+                .height(12.dp)
+                .background(
+                    shimmerBrush(),
+                    shape = RoundedCornerShape(3.dp)
+                )
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Season info placeholder
+        Box(
+            modifier = Modifier
+                .width(50.dp)
+                .height(10.dp)
+                .background(
+                    shimmerBrush(),
+                    shape = RoundedCornerShape(3.dp)
+                )
+        )
     }
 }

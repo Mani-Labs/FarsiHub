@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.update
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -381,7 +382,8 @@ class DownloadManager @Inject constructor(
 
                                 if (progressDelta >= 1 || timeSinceLastUpdate >= PROGRESS_THROTTLE_MS || progress >= 100) {
                                     downloadDao.updateProgress(downloadId, totalBytesRead)
-                                    _downloadProgress.value = _downloadProgress.value + (downloadId to progress)
+                                    // N7 FIX: Use atomic update instead of non-atomic read-modify-write
+                                    _downloadProgress.update { it + (downloadId to progress) }
                                     lastProgressUpdateTime[downloadId] = now
                                 }
                             }

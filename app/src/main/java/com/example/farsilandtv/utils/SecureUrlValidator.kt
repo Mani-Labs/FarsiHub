@@ -31,10 +31,13 @@ object SecureUrlValidator {
      * Result: All URLs rejected on first app launch → blank screen
      * Solution: Use RemoteConfig with fallback to hardcoded defaults
      */
+    // M3 FIX: Added imvbox.com domains used throughout the app
     private val DEFAULT_TRUSTED_DOMAINS: Set<String> = setOf(
         "farsiland.com",
         "farsiplex.com",
         "namakade.com",
+        "imvbox.com",
+        "streaming.imvbox.com",
         "flnd.buzz",
         "d1.flnd.buzz",
         "d2.flnd.buzz",

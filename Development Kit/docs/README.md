@@ -484,6 +484,44 @@ PhoneNavigationHost
 
 Output: `app/build/outputs/apk/debug/app-debug.apk`
 
+**Important:** Always use `./gradlew` (Unix-style), never `.\gradlew.bat`
+
+---
+
+## Development Environment
+
+**Machine:** Windows 11 + Git Bash
+**Working Directory:** `G:\FarsiPlex`
+**Android SDK:** `C:\Users\me\AppData\Local\Android\Sdk`
+
+### Tools
+
+| Tool | Version |
+|------|---------|
+| Java | 17.0.12 LTS |
+| Gradle | 8.13 |
+| Python | 3.13.7 |
+| ADB | 36.0.0 |
+| Git | 2.51.0 |
+
+### SDK Configuration
+
+| Setting | Value |
+|---------|-------|
+| minSdk | 28 (Android 9) |
+| targetSdk | 34 (Android 14) |
+| compileSdk | 35 (Android 15) |
+
+### Emulators
+
+| Property | Pixel_9_Pro_XL (Phone) | Namakadeh.com (TV) |
+|----------|------------------------|---------------------|
+| Device ID | emulator-5554 | emulator-5556 |
+| Android Version | 16 (API 36) | 16 (API 36) |
+| Architecture | x86_64 | x86 |
+| Resolution | 1344x2992 | 3840x2160 (4K) |
+| Density | 480 dpi (xxhdpi) | 640 dpi (xxxhdpi) |
+
 ---
 
 ## Development Notes
@@ -572,4 +610,4 @@ Proprietary - Personal Use Only
 
 ---
 
-**Version:** 2.6 | **Last Updated:** 2025-12-04 | **Files:** 148 Production + 14 Tests = 162 Total
+**Version:** 2.7 | **Last Updated:** 2025-12-05 | **Files:** 148 Production + 14 Tests = 162 Total

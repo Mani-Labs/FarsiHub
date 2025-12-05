@@ -9,11 +9,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.util.Log
 import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Episode
+import com.example.farsilandtv.utils.TvFeedbackManager
 
 /**
  * Feature #16: Jetpack Compose for TV - Episode Card
@@ -35,24 +42,45 @@ fun EpisodeCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // TV-L4/L6: Context for haptic feedback
+    val context = LocalContext.current
+
+    // UC-L accessibility: semantic description for screen readers
+    val accessibilityDescription = buildString {
+        append("${episode.formattedNumber}: ${episode.title}")
+        if (episode.isWatched) append(", watched")
+        else if (episode.isInProgress) {
+            val percent = ((episode.playbackPosition.toFloat() / episode.totalDuration) * 100).toInt()
+            append(", $percent% watched")
+        }
+        episode.runtime?.let { append(", $it minutes") }
+    }
+
+    // Vertical card layout matching IMVBox website design
+    // Poster ratio ~2:3 (width:height) to match IMVBox episode thumbnails
     Card(
-        onClick = onClick,
+        onClick = {
+            // TV-L6: Haptic feedback on selection
+            TvFeedbackManager.performSelectionHaptic(context)
+            onClick()
+        },
         modifier = modifier
-            .height(84.dp)
-            .fillMaxWidth(),
+            .width(120.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = accessibilityDescription
+            },
         border = BorderStroke(2.dp, Color.Transparent),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            // Episode thumbnail (16:9 aspect ratio)
+        Column {
+            // Episode thumbnail (2:3 poster aspect ratio - matches IMVBox)
             Box(
                 modifier = Modifier
-                    .width(126.dp)
-                    .fillMaxHeight()
+                    .width(120.dp)
+                    .height(180.dp)  // 2:3 ratio (120 x 180)
             ) {
                 val imageUrl = episode.thumbnailUrl ?: episode.episodePosterUrl
                 Log.d("EpisodeCard", "Episode ${episode.id} thumbnailUrl=$imageUrl")
@@ -90,70 +118,43 @@ fun EpisodeCard(
                         )
                     }
                 }
+
+                // Progress bar overlay at bottom of thumbnail (if in progress)
+                if (episode.isInProgress && episode.totalDuration > 0) {
+                    val progressValue = episode.playbackPosition.toFloat() / episode.totalDuration.toFloat()
+                    LinearProgressIndicator(
+                        progress = { progressValue },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = Color.Black.copy(alpha = 0.5f)
+                    )
+                }
             }
 
-            // Episode info
+            // Episode info below thumbnail
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp)
             ) {
-                // Title and description
-                Column {
+                // Episode title
+                Text(
+                    text = episode.formattedNumber,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                // Duration
+                episode.runtime?.let { runtime ->
                     Text(
-                        text = "${episode.formattedNumber}: ${episode.title}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = "$runtime min",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-
-                    if (!episode.description.isNullOrBlank()) {
-                        Text(
-                            text = episode.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // Bottom row: progress bar and metadata
-                Column {
-                    // Runtime and air date
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        episode.runtime?.let { runtime ->
-                            Text(
-                                text = "${runtime}m",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        episode.quality?.let { quality ->
-                            Text(
-                                text = quality,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-
-                    // Progress bar (only show if in progress)
-                    if (episode.isInProgress && episode.totalDuration > 0) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        LinearProgressIndicator(
-                            progress = episode.playbackPosition.toFloat() / episode.totalDuration.toFloat(),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(2.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    }
                 }
             }
         }

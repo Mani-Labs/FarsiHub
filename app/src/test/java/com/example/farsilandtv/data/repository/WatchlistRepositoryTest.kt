@@ -1,18 +1,13 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
 import androidx.arch.core.executor.testing.InstantTaskExecutorRule
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.WatchlistMovie
 import com.example.farsilandtv.data.database.MonitoredSeries
 import com.example.farsilandtv.data.database.EpisodeProgress
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
-import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.mockito.Mock
-import org.mockito.MockitoAnnotations
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -21,6 +16,8 @@ import kotlin.test.assertTrue
 /**
  * Unit tests for WatchlistRepository
  * Tests watchlist operations and transaction safety (C1, C6 fixes related)
+ *
+ * L1 FIX: Removed unused mocks - tests validate business logic without DAO mocking
  *
  * Priority 1: Critical for Phase 7 testing
  *
@@ -38,12 +35,6 @@ class WatchlistRepositoryTest {
 
     @get:Rule
     val instantTaskExecutorRule = InstantTaskExecutorRule()
-
-    @Mock
-    private lateinit var mockContext: Context
-
-    @Mock
-    private lateinit var mockDatabase: AppDatabase
 
     // ========== Movie Watchlist Tests ==========
 

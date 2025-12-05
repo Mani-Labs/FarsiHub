@@ -305,7 +305,11 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         webView.dispatchTouchEvent(upEvent)
         upEvent.recycle()
 
-        Log.d(TAG, "Simulated tap at center: $centerX, $centerY")
+        // N3 FIX: Update isPlaying state and button icon
+        isPlaying = !isPlaying
+        updatePlayPauseButton()
+
+        Log.d(TAG, "Simulated tap at center: $centerX, $centerY, isPlaying=$isPlaying")
     }
 
     /**
@@ -737,9 +741,10 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
         Log.d(TAG, "YouTube loaded with spoofed imvbox.com origin")
     }
 
+    // N2 FIX: Use different icons for play/pause states
     private fun updatePlayPauseButton() {
         btnPlayPause.setImageResource(
-            if (isPlaying) R.drawable.ic_play_pause else R.drawable.ic_play_pause
+            if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
         )
     }
 
@@ -781,7 +786,8 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
                 builtInZoomControls = false
                 displayZoomControls = false
                 cacheMode = WebSettings.LOAD_DEFAULT
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                // C5 FIX: Use COMPATIBILITY_MODE instead of ALWAYS_ALLOW for better security
+                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                 // Use mobile user agent for proper layout
                 userAgentString = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
             }
@@ -839,6 +845,7 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
 
                 // Handle SSL certificate errors for streaming.imvbox.com
                 // IMVBox's streaming server has an incomplete certificate chain
+                // C2 FIX: Use proper hostname verification instead of contains()
                 @SuppressLint("WebViewClientOnReceivedSslError")
                 override fun onReceivedSslError(
                     view: WebView?,
@@ -846,8 +853,17 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
                     error: SslError?
                 ) {
                     val url = error?.url ?: ""
-                    // Only bypass SSL for IMVBox streaming domain
-                    if (url.contains("imvbox.com") || url.contains("streaming.imvbox.com")) {
+                    // Only bypass SSL for IMVBox domains using proper hostname check
+                    val isImvboxDomain = try {
+                        val host = java.net.URL(url).host.lowercase()
+                        host == "imvbox.com" ||
+                        host.endsWith(".imvbox.com") ||
+                        host == "streaming.imvbox.com"
+                    } catch (e: Exception) {
+                        false
+                    }
+
+                    if (isImvboxDomain) {
                         Log.w(TAG, "Bypassing SSL error for IMVBox: ${error?.primaryError}")
                         handler?.proceed()
                     } else {

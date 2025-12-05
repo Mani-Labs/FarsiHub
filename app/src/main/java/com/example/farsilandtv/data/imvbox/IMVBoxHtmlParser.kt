@@ -553,66 +553,115 @@ object IMVBoxHtmlParser {
      * @param season Season number
      * @return List of EpisodeItem objects
      */
+    // Pre-compiled regex for episode URL patterns (performance optimization)
+    private val EPISODE_URL_PATTERN = Regex("""episod+e-(\d+)""", RegexOption.IGNORE_CASE)
+
     fun parseEpisodeList(doc: Document, season: Int): List<EpisodeItem> {
         val episodes = mutableListOf<EpisodeItem>()
+        val episodeMap = mutableMapOf<Int, EpisodeItem>()
 
-        // IMVBox uses links with /episode- in href (forward slash before episode)
-        // Pattern: a[href*=/episode-] matches URLs like /season-1/episode-1
-        val episodeLinks = doc.select("a[href*=/episode-]")
+        // METHOD 1: Container-based parsing (faster, more reliable for thumbnails)
+        // Look for episode container divs which contain both link and image
+        val episodeContainers = doc.select("div.episode-poster-cover, div.episode-item, div.episode-card")
 
-        if (episodeLinks.isNotEmpty()) {
-            Log.d(TAG, "Found ${episodeLinks.size} episode links")
+        if (episodeContainers.isNotEmpty()) {
+            Log.d(TAG, "Found ${episodeContainers.size} episode containers (container method)")
 
-            // Use a set to track unique episode numbers (avoid duplicates from multiple links)
-            val seenEpisodes = mutableSetOf<Int>()
+            for (container in episodeContainers) {
+                // Get episode link - be flexible with URL patterns
+                val link = container.selectFirst("a[href*=episode-], a[href*=episod]") ?: continue
+                val href = link.attr("href")
 
-            for (element in episodeLinks) {
-                val href = element.attr("href")
-
-                // Extract episode number from URL pattern: /episode-{n}
-                val episodeNum = Regex("""/episode-(\d+)""").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                // Extract episode number
+                val episodeNum = EPISODE_URL_PATTERN.find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
                     ?: continue
 
-                // Skip if we already have this episode
-                if (episodeNum in seenEpisodes) continue
-                seenEpisodes.add(episodeNum)
+                // Get thumbnail - try multiple methods in order of reliability
+                val thumbnailUrl = extractThumbnailFromContainer(container)
 
-                // Find the parent container that has more info
-                val container = element.parent()
-
-                // Extract title - look for "Episode X" text in siblings
-                val title = container?.selectFirst("div:contains(Episode)")?.text()?.trim()
-                    ?: element.attr("title")?.takeIf { it.isNotBlank() }
+                // Get title from descriptions div
+                val title = container.selectFirst(".descriptions .title, .title")?.text()?.trim()
                     ?: "Episode $episodeNum"
 
-                // Extract thumbnail from the link or parent
-                val thumbnailUrl = element.selectFirst("img")?.let { img ->
-                    img.attr("data-src").takeIf { it.isNotBlank() }
-                        ?: img.attr("src").takeIf { it.isNotBlank() }
-                }
-
-                // Extract duration - look for "XX min" pattern
-                val durationText = container?.select("div")?.find {
-                    it.text().matches(Regex("""\d+\s*min"""))
-                }?.text()
+                // Get duration from descriptions div
+                val durationText = container.selectFirst(".descriptions .duration, .duration")?.text()
                 val duration = durationText?.let { extractMinutes(it) }
 
-                episodes.add(EpisodeItem(
+                // Debug log for thumbnail extraction
+                Log.d(TAG, "Episode $episodeNum thumbnail: $thumbnailUrl")
+
+                val newEpisode = EpisodeItem(
                     title = title,
                     season = season,
                     episode = episodeNum,
                     thumbnailUrl = thumbnailUrl,
                     duration = duration
-                ))
+                )
+
+                // Keep episode with thumbnail, or first occurrence if neither has one
+                val existing = episodeMap[episodeNum]
+                if (existing == null || (existing.thumbnailUrl == null && thumbnailUrl != null)) {
+                    episodeMap[episodeNum] = newEpisode
+                }
+            }
+        }
+
+        // METHOD 2: Link-based parsing (fallback for different page structures)
+        if (episodeMap.isEmpty()) {
+            // Limit to episodes-container area to avoid scanning entire page
+            val episodesArea = doc.selectFirst(".episodes-container, .tab-content[data-tab=episodes]") ?: doc
+            val episodeLinks = episodesArea.select("a[href*=episod]").filter { element ->
+                EPISODE_URL_PATTERN.containsMatchIn(element.attr("href"))
             }
 
-            // Sort by episode number
-            episodes.sortBy { it.episode }
-            Log.d(TAG, "Parsed ${episodes.size} unique episodes for season $season")
-        } else {
-            Log.w(TAG, "No episode links found with /episode- pattern")
+            if (episodeLinks.isNotEmpty()) {
+                Log.d(TAG, "Found ${episodeLinks.size} episode links (link method)")
 
-            // Fallback: try old selectors
+                for (element in episodeLinks) {
+                    val href = element.attr("href")
+
+                    // Extract episode number - handle various patterns: episode-1, episoddde-01, etc.
+                    val episodeNum = EPISODE_URL_PATTERN.find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        ?: continue
+
+                    // Find the parent container that has more info
+                    val container = element.parent()
+
+                    // Extract title - look for "Episode X" text in siblings
+                    val title = container?.selectFirst("div:contains(Episode)")?.text()?.trim()
+                        ?: element.attr("title")?.takeIf { it.isNotBlank() }
+                        ?: "Episode $episodeNum"
+
+                    // Extract thumbnail - IMVBox uses various image structures
+                    val thumbnailUrl = extractThumbnailUrl(element, container)
+
+                    // Extract duration - look for "XX min" pattern
+                    val durationText = container?.select("div")?.find {
+                        it.text().matches(Regex("""\d+\s*min"""))
+                    }?.text()
+                    val duration = durationText?.let { extractMinutes(it) }
+
+                    val newEpisode = EpisodeItem(
+                        title = title,
+                        season = season,
+                        episode = episodeNum,
+                        thumbnailUrl = thumbnailUrl,
+                        duration = duration
+                    )
+
+                    // Keep episode with thumbnail, or first occurrence if neither has one
+                    val existing = episodeMap[episodeNum]
+                    if (existing == null || (existing.thumbnailUrl == null && thumbnailUrl != null)) {
+                        episodeMap[episodeNum] = newEpisode
+                    }
+                }
+            }
+        }
+
+        // METHOD 3: Old selectors fallback
+        if (episodeMap.isEmpty()) {
+            Log.w(TAG, "No episode links found with episode pattern, trying fallback selectors")
+
             val fallbackSelectors = listOf(
                 "div.episode-item",
                 "div.episode-card",
@@ -624,14 +673,72 @@ object IMVBoxHtmlParser {
                 if (elements.isNotEmpty()) {
                     Log.d(TAG, "Found ${elements.size} episodes with fallback selector: $selector")
                     for ((index, element) in elements.withIndex()) {
-                        parseEpisodeItemFallback(element, season, index + 1)?.let { episodes.add(it) }
+                        parseEpisodeItemFallback(element, season, index + 1)?.let {
+                            episodeMap[it.episode] = it
+                        }
                     }
                     break
                 }
             }
         }
 
+        episodes.addAll(episodeMap.values)
+        // Sort by episode number
+        episodes.sortBy { it.episode }
+        Log.d(TAG, "Parsed ${episodes.size} unique episodes for season $season")
+
         return episodes
+    }
+
+    /**
+     * Extract thumbnail from episode container - optimized for IMVBox structure
+     * Handles: <picture><data-img src="..."></picture> and regular img tags
+     */
+    private fun extractThumbnailFromContainer(container: Element): String? {
+        // Method 1: Direct selector for data-img element (IMVBox custom element)
+        container.selectFirst("data-img")?.let { dataImg ->
+            dataImg.attr("src").takeIf { it.isNotBlank() }?.let {
+                Log.d(TAG, "  -> Found data-img (direct): $it")
+                return it
+            }
+        }
+
+        // Method 2: Iterate through picture children by tag name
+        container.select("picture").firstOrNull()?.children()?.forEach { child ->
+            if (child.tagName().equals("data-img", ignoreCase = true)) {
+                child.attr("src").takeIf { it.isNotBlank() }?.let {
+                    Log.d(TAG, "  -> Found data-img (iterate): $it")
+                    return it
+                }
+            }
+        }
+
+        // Method 3: <picture> with <data-src> having srcset attribute
+        container.selectFirst("data-src")?.let { dataSrc ->
+            val srcset = dataSrc.attr("srcset")
+            if (srcset.isNotBlank()) {
+                val url = srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+                if (!url.isNullOrBlank()) {
+                    Log.d(TAG, "  -> Found data-src srcset: $url")
+                    return url
+                }
+            }
+        }
+
+        // Method 4: Regular img tag with data-src (lazy loading)
+        container.selectFirst("img")?.let { img ->
+            img.attr("data-src").takeIf { it.isNotBlank() }?.let {
+                Log.d(TAG, "  -> Found img data-src: $it")
+                return it
+            }
+            img.attr("src").takeIf { it.isNotBlank() && !it.contains("placeholder") }?.let {
+                Log.d(TAG, "  -> Found img src: $it")
+                return it
+            }
+        }
+
+        Log.d(TAG, "  -> No thumbnail found in container")
+        return null
     }
 
     /**
@@ -652,11 +759,8 @@ object IMVBoxHtmlParser {
             val title = element.selectFirst(".title, h3, span.ep-title")?.text()?.trim()
                 ?: "Episode $episodeNum"
 
-            // Extract thumbnail (episode thumbnails use MD5 hash)
-            val thumbnailUrl = element.selectFirst("img")?.let { img ->
-                img.attr("data-src").takeIf { it.isNotBlank() }
-                    ?: img.attr("src").takeIf { it.isNotBlank() }
-            }
+            // Extract thumbnail using robust helper
+            val thumbnailUrl = extractThumbnailUrl(element, element.parent())
 
             // Extract duration
             val durationText = element.selectFirst(".duration, .ep-duration")?.text()
@@ -673,6 +777,63 @@ object IMVBoxHtmlParser {
             Log.e(TAG, "Error parsing episode item", e)
             null
         }
+    }
+
+    /**
+     * Extract thumbnail URL from element - handles IMVBox's various image structures:
+     * 1. Regular <img> tags with src or data-src
+     * 2. <picture> elements with <data-img> or <data-src> children
+     * 3. Lazy-loaded images with srcset attributes
+     */
+    private fun extractThumbnailUrl(element: Element, container: Element?): String? {
+        // Try multiple extraction methods in order of reliability
+
+        // Method 1: Direct data-img selector (IMVBox custom element)
+        element.selectFirst("data-img")?.let { dataImg ->
+            dataImg.attr("src").takeIf { it.isNotBlank() }?.let { return it }
+        }
+
+        // Method 2: Regular img tag inside element
+        element.selectFirst("img")?.let { img ->
+            img.attr("data-src").takeIf { it.isNotBlank() }?.let { return it }
+            img.attr("src").takeIf { it.isNotBlank() && !it.contains("placeholder") }?.let { return it }
+        }
+
+        // Method 3: <data-src> with srcset
+        element.selectFirst("data-src")?.let { dataSrc ->
+            val srcset = dataSrc.attr("srcset")
+            if (srcset.isNotBlank()) {
+                return srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+            }
+        }
+
+        // Method 4: Look in parent container
+        container?.let { parent ->
+            parent.selectFirst("data-img")?.let { dataImg ->
+                dataImg.attr("src").takeIf { it.isNotBlank() }?.let { return it }
+            }
+            parent.selectFirst("img")?.let { img ->
+                img.attr("data-src").takeIf { it.isNotBlank() }?.let { return it }
+                img.attr("src").takeIf { it.isNotBlank() && !it.contains("placeholder") }?.let { return it }
+            }
+            parent.selectFirst("data-src")?.let { dataSrc ->
+                val srcset = dataSrc.attr("srcset")
+                if (srcset.isNotBlank()) {
+                    return srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+                }
+            }
+        }
+
+        // Method 5: Any image in siblings (episode card structure)
+        element.siblingElements().forEach { sibling ->
+            sibling.selectFirst("data-img")?.attr("src")?.takeIf { it.isNotBlank() }?.let { return it }
+            sibling.selectFirst("img")?.let { img ->
+                img.attr("data-src").takeIf { it.isNotBlank() }?.let { return it }
+                img.attr("src").takeIf { it.isNotBlank() && !it.contains("placeholder") }?.let { return it }
+            }
+        }
+
+        return null
     }
 
     /**

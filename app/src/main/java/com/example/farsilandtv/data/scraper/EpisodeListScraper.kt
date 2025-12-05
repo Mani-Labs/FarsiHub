@@ -43,6 +43,12 @@ private val MARK_CLASS_PATTERN = Regex("""mark-(\d+)-(\d+)""")
 private val EPISODE_NUMBER_PATTERN = Regex("""ep(?:isode)?[-.]?(\d+)""", RegexOption.IGNORE_CASE)
 private val SEASON_EPISODE_PATTERN = Regex("""s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
 
+// N14 FIX: Pre-compiled patterns for IMVBox scraping (moved from inline)
+private val IMVBOX_SHOW_SLUG_PATTERN = Regex("""/shows/([^/?#]+)""")
+private val IMVBOX_EPISODE_NUM_PATTERN = Regex("""/episode-(\d+)""")
+private val IMVBOX_THUMBNAIL_PATTERN = Regex("""assets\.imvbox\.com/episodes/[^"'\s]+\.jpg""")
+private val IMVBOX_DURATION_PATTERN = Regex("""(\d+)\s*min""")
+
 /**
  * EXTERNAL AUDIT FIX F2: Suspendable OkHttp Call extension to prevent zombie threads
  *
@@ -82,6 +88,9 @@ object EpisodeListScraper {
     // EXTERNAL AUDIT FIX C1.2: Use shared configured client instead of creating new instance
     private val httpClient = RetrofitClient.getHttpClient()
 
+    // N6 FIX: Lazy singleton for NamakadeApiService to avoid per-call instantiation
+    private val namakadeService by lazy { NamakadeApiService() }
+
     /**
      * Scrape episode list from series page
      *
@@ -108,7 +117,7 @@ object EpisodeListScraper {
                 android.util.Log.d("EpisodeListScraper", "Series URL: $seriesPageUrl")
 
                 // Pass full URL directly to preserve /shows/ vs /series/ path
-                val namakadeService = NamakadeApiService()
+                // N6 FIX: Use lazy singleton instead of per-call instantiation
                 val episodes = namakadeService.getEpisodes(seriesPageUrl, seriesId, seriesTitle)
 
                 android.util.Log.d("EpisodeListScraper", "Namakade returned ${episodes.size} episodes")
@@ -123,8 +132,8 @@ object EpisodeListScraper {
                 android.util.Log.d("EpisodeListScraper", "Series URL: $seriesPageUrl, SeriesId: $seriesId")
 
                 // Extract show slug from URL: /shows/{slug} or /shows/{slug}/
-                val slugRegex = Regex("""/shows/([^/?#]+)""")
-                val slug = slugRegex.find(seriesPageUrl)?.groupValues?.getOrNull(1)
+                // N14 FIX: Use pre-compiled pattern
+                val slug = IMVBOX_SHOW_SLUG_PATTERN.find(seriesPageUrl)?.groupValues?.getOrNull(1)
 
                 if (slug == null) {
                     android.util.Log.e("EpisodeListScraper", "Could not extract slug from IMVBox URL: $seriesPageUrl")
@@ -171,7 +180,8 @@ object EpisodeListScraper {
                             val seenEpisodes = mutableSetOf<Int>()
                             for (element in episodeLinks) {
                                 val href = element.attr("href")
-                                val episodeNum = Regex("""/episode-(\d+)""").find(href)
+                                // N14 FIX: Use pre-compiled pattern
+                                val episodeNum = IMVBOX_EPISODE_NUM_PATTERN.find(href)
                                     ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
                                 if (episodeNum in seenEpisodes) continue
                                 seenEpisodes.add(episodeNum)
@@ -196,7 +206,8 @@ object EpisodeListScraper {
                                 val href = link.attr("href")
 
                                 // Extract episode number from URL
-                                val episodeNum = Regex("""/episode-(\d+)""").find(href)
+                                // N14 FIX: Use pre-compiled pattern
+                                val episodeNum = IMVBOX_EPISODE_NUM_PATTERN.find(href)
                                     ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
 
                                 // Extract thumbnail - try multiple approaches for IMVBox's custom elements
@@ -204,8 +215,8 @@ object EpisodeListScraper {
                                 val cardHtml = card.html()
                                 val thumbnailUrl = run {
                                     // Try 1: Regex for assets.imvbox.com/episodes/ URL (most reliable)
-                                    Regex("""assets\.imvbox\.com/episodes/[^"'\s]+\.jpg""")
-                                        .find(cardHtml)?.value?.let { "https://$it" }
+                                    // N14 FIX: Use pre-compiled pattern
+                                    IMVBOX_THUMBNAIL_PATTERN.find(cardHtml)?.value?.let { "https://$it" }
                                     // Try 2: <data-img src="...">
                                         ?: card.selectFirst("data-img")?.attr("src")?.takeIf { it.isNotEmpty() }
                                     // Try 3: <data-src type="image/jpeg"> srcset attribute
@@ -222,8 +233,9 @@ object EpisodeListScraper {
 
                                 // Extract runtime from div.duration (e.g., "45 min")
                                 val durationText = card.selectFirst("div.duration")?.text()?.trim()
+                                // N14 FIX: Use pre-compiled pattern
                                 val runtime = durationText?.let {
-                                    Regex("""(\d+)\s*min""").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                                    IMVBOX_DURATION_PATTERN.find(it)?.groupValues?.getOrNull(1)?.toIntOrNull()
                                 }
 
                                 // Generate unique ID

@@ -138,4 +138,35 @@ data class ContinueWatchingItem(
         get() = if (totalDuration > 0) {
             ((playbackPosition.toFloat() / totalDuration) * 100).toInt()
         } else 0
+
+    /**
+     * N12 FIX: Safe ID parsing helpers
+     * Extract numeric ID from composite ID string (movie-123 or episode-456)
+     * Returns null if ID format is invalid
+     */
+    val numericId: Int?
+        get() = id.substringAfter("-", "").toIntOrNull()
+
+    /**
+     * N12 FIX: Validate ID format matches expected pattern
+     */
+    val isValidId: Boolean
+        get() = when (contentType) {
+            ContentType.MOVIE -> id.startsWith("movie-") && numericId != null
+            ContentType.EPISODE -> id.startsWith("episode-") && numericId != null
+        }
+
+    companion object {
+        /**
+         * N12 FIX: Create composite ID with validation
+         */
+        fun createMovieId(movieId: Int) = "movie-$movieId"
+        fun createEpisodeId(episodeId: Int) = "episode-$episodeId"
+
+        /**
+         * N12 FIX: Parse composite ID with null safety
+         */
+        fun parseNumericId(compositeId: String): Int? =
+            compositeId.substringAfter("-", "").toIntOrNull()
+    }
 }

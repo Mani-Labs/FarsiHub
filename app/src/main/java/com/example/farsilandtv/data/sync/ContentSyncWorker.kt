@@ -53,11 +53,15 @@ class ContentSyncWorker @AssistedInject constructor(
     private val healthTracker: ScraperHealthTracker
 ) : CoroutineWorker(context, params) {
 
+    // H4 NOTE: ContentDatabase uses singleton pattern which is acceptable
+    // Hilt injection would require providing ContentDatabase in DatabaseModule
+    // Keeping singleton for now as it's thread-safe and efficient
     private val contentDb = ContentDatabase.getDatabase(context)
     private val wordPressApi = RetrofitClient.wordPressApi
     private val syncPrefs = SyncPreferences(context)
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
 
+    // H5 FIX: Cache is now cleared at start of doWork() to prevent stale data
     // Cache for genre ID to name mapping
     private var genreCache: Map<Int, String>? = null
 
@@ -108,6 +112,9 @@ class ContentSyncWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
+            // H5 FIX: Clear genre cache at start of each sync to prevent stale data
+            genreCache = null
+
             // Check if sync is enabled
             if (!syncPrefs.syncEnabled) {
                 Log.d(TAG, "Sync disabled by user preference")
@@ -345,11 +352,14 @@ class ContentSyncWorker @AssistedInject constructor(
 
         try {
             // AUDIT FIX C5: Safety check - don't cleanup if ContentDatabase appears empty/corrupted
+            // L3 FIX: Use configurable thresholds from SyncPreferences
             val movieCount = contentDb.movieDao().getMovieCount()
             val seriesCount = contentDb.seriesDao().getSeriesCount()
+            val minMovies = syncPrefs.ghostCleanupMinMovies
+            val minSeries = syncPrefs.ghostCleanupMinSeries
 
-            if (movieCount < 50 || seriesCount < 10) {
-                Log.w(TAG, "Skipping ghost cleanup: ContentDatabase appears empty or incomplete (movies=$movieCount, series=$seriesCount)")
+            if (movieCount < minMovies || seriesCount < minSeries) {
+                Log.w(TAG, "Skipping ghost cleanup: ContentDatabase appears empty or incomplete (movies=$movieCount < $minMovies, series=$seriesCount < $minSeries)")
                 return 0
             }
 
@@ -637,7 +647,8 @@ class ContentSyncWorker @AssistedInject constructor(
         return try {
             // AUDIT FIX C5: WordPress returns local time without 'Z' suffix
             // Append 'Z' if not present to treat as UTC
-            val normalizedDate = if (dateStr.matches(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"))) {
+            // M1 FIX: Use pre-compiled DATE_PATTERN from companion object
+            val normalizedDate = if (dateStr.matches(DATE_PATTERN)) {
                 "${dateStr}Z"
             } else {
                 dateStr
@@ -818,14 +829,11 @@ class ContentSyncWorker @AssistedInject constructor(
             // "Karnaval EP18 Part 2" -> series: "Karnaval", episode: 18
             val titleText = this.title.rendered
 
+            // M1 FIX: Use pre-compiled patterns from companion object
             // Pattern for "Series Name SE## EP##" or "Series Name S#E##"
-            val seasonEpisodePattern = Regex("(.+?)\\s+S[E]?(\\d+)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
             // Pattern for "Series Name EP##"
-            val episodeOnlyPattern = Regex("(.+?)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
-
-            // Use find() with null-safe let{} instead of matches() + find()!!
-            val seasonMatch = seasonEpisodePattern.find(titleText)
-            val episodeMatch = episodeOnlyPattern.find(titleText)
+            val seasonMatch = SEASON_EPISODE_PATTERN.find(titleText)
+            val episodeMatch = EPISODE_ONLY_PATTERN.find(titleText)
 
             when {
                 seasonMatch != null -> {
@@ -905,12 +913,13 @@ class ContentSyncWorker @AssistedInject constructor(
      * Normalize series title for fuzzy matching
      * Removes common variations like "سریال", "Season X", etc.
      */
+    // M1 FIX: Use pre-compiled patterns from companion object
     private fun normalizeSeriesTitle(title: String): String {
         return title
             .replace("سریال", "", ignoreCase = true)  // Remove "Series" in Persian
             .replace("فصل", "", ignoreCase = true)     // Remove "Season" in Persian
-            .replace(Regex("Season \\d+", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("\\s+"), " ")  // Normalize whitespace
+            .replace(SEASON_NUMBER_PATTERN, "")
+            .replace(WHITESPACE_PATTERN, " ")  // Normalize whitespace
             .trim()
     }
 
@@ -919,5 +928,13 @@ class ContentSyncWorker @AssistedInject constructor(
         const val WORK_NAME = "content_sync_work"
         private const val MAX_RETRY_ATTEMPTS = 5
         private const val NOTIFICATION_ID = 1001  // Unique ID for sync notification
+
+        // M1 FIX: Pre-compiled regex patterns for performance
+        // Patterns are compiled once at class load, not on every function call
+        private val DATE_PATTERN = Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}")
+        private val SEASON_EPISODE_PATTERN = Regex("(.+?)\\s+S[E]?(\\d+)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+        private val EPISODE_ONLY_PATTERN = Regex("(.+?)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+        private val SEASON_NUMBER_PATTERN = Regex("Season \\d+", RegexOption.IGNORE_CASE)
+        private val WHITESPACE_PATTERN = Regex("\\s+")
     }
 }

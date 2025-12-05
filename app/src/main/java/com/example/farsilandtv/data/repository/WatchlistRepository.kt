@@ -395,7 +395,7 @@ class WatchlistRepository @Inject constructor(
             movies.forEach { movie ->
                 items.add(
                     ContinueWatchingItem(
-                        id = "movie-${movie.id}",
+                        id = ContinueWatchingItem.createMovieId(movie.id), // N12 FIX: Use helper
                         contentType = ContinueWatchingItem.ContentType.MOVIE,
                         title = movie.title,
                         subtitle = null,
@@ -412,7 +412,7 @@ class WatchlistRepository @Inject constructor(
             episodes.forEach { episode ->
                 items.add(
                     ContinueWatchingItem(
-                        id = "episode-${episode.episodeId}",
+                        id = ContinueWatchingItem.createEpisodeId(episode.episodeId), // N12 FIX: Use helper
                         contentType = ContinueWatchingItem.ContentType.EPISODE,
                         title = episode.episodeTitle,
                         subtitle = episode.formattedNumber,

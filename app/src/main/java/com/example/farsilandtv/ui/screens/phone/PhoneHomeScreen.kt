@@ -271,8 +271,8 @@ fun PhoneHomeScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 items(continueWatching.take(10)) { item ->
-                                    // Extract numeric ID from item.id (e.g., "movie-123" -> 123)
-                                    val numericId = item.id.substringAfter("-").toIntOrNull() ?: 0
+                                    // N12 FIX: Use helper property for safe ID parsing
+                                    val numericId = item.numericId ?: 0
                                     PhoneContinueWatchingItemCard(
                                         item = item,
                                         onClick = {

@@ -125,13 +125,18 @@ class MainViewModel @Inject constructor(
     private var moviesPage = 1
     private var seriesPage = 1
     private var episodesPage = 1
-    private var isLoadingMoreMovies = false
-    private var isLoadingMoreSeries = false
-    private var isLoadingMoreEpisodes = false
+    // H1 FIX: Use @Volatile for thread-safe access from multiple coroutines
+    @Volatile private var isLoadingMoreMovies = false
+    @Volatile private var isLoadingMoreSeries = false
+    @Volatile private var isLoadingMoreEpisodes = false
 
     // LiveData for genres
     private val _genres = MutableLiveData<List<Genre>>()
     val genres: LiveData<List<Genre>> = _genres
+
+    // H2 FIX: Cache LiveData per genre to avoid recreation on each call
+    private val moviesByGenreCache = mutableMapOf<Int, MutableLiveData<List<Movie>>>()
+    private val seriesByGenreCache = mutableMapOf<Int, MutableLiveData<List<Series>>>()
 
     // LiveData for featured content carousel
     private val _featuredContent = MutableLiveData<List<FeaturedContent>>()
@@ -472,22 +477,25 @@ class MainViewModel @Inject constructor(
             moviesPage++
             Log.d("MainViewModel", "Loading movies page $moviesPage...")
 
-            val result = repository.getMovies(page = moviesPage, perPage = 30)
-            result.onSuccess { newMovies ->
-                if (newMovies.isNotEmpty()) {
-                    val currentMovies = _recentMovies.value ?: emptyList()
-                    _recentMovies.postValue(currentMovies + newMovies)
-                    Log.d("MainViewModel", "Loaded ${newMovies.size} more movies (total: ${currentMovies.size + newMovies.size})")
-                } else {
-                    Log.d("MainViewModel", "No more movies to load")
-                    moviesPage-- // No more items, revert page
+            // N15 FIX: Use try-finally to ensure loading flag is always reset
+            try {
+                val result = repository.getMovies(page = moviesPage, perPage = 30)
+                result.onSuccess { newMovies ->
+                    if (newMovies.isNotEmpty()) {
+                        val currentMovies = _recentMovies.value ?: emptyList()
+                        _recentMovies.postValue(currentMovies + newMovies)
+                        Log.d("MainViewModel", "Loaded ${newMovies.size} more movies (total: ${currentMovies.size + newMovies.size})")
+                    } else {
+                        Log.d("MainViewModel", "No more movies to load")
+                        moviesPage-- // No more items, revert page
+                    }
+                }.onFailure { e ->
+                    moviesPage-- // Revert page on failure
+                    Log.e("MainViewModel", "Failed to load more movies: ${e.message}")
                 }
-            }.onFailure { e ->
-                moviesPage-- // Revert page on failure
-                Log.e("MainViewModel", "Failed to load more movies: ${e.message}")
+            } finally {
+                isLoadingMoreMovies = false
             }
-
-            isLoadingMoreMovies = false
         }
     }
 
@@ -524,22 +532,25 @@ class MainViewModel @Inject constructor(
             seriesPage++
             Log.d("MainViewModel", "Loading series page $seriesPage...")
 
-            val result = repository.getTvShows(page = seriesPage, perPage = 30)
-            result.onSuccess { newSeries ->
-                if (newSeries.isNotEmpty()) {
-                    val currentSeries = _recentSeries.value ?: emptyList()
-                    _recentSeries.postValue(currentSeries + newSeries)
-                    Log.d("MainViewModel", "Loaded ${newSeries.size} more series (total: ${currentSeries.size + newSeries.size})")
-                } else {
-                    Log.d("MainViewModel", "No more series to load")
-                    seriesPage-- // No more items, revert page
+            // N15 FIX: Use try-finally to ensure loading flag is always reset
+            try {
+                val result = repository.getTvShows(page = seriesPage, perPage = 30)
+                result.onSuccess { newSeries ->
+                    if (newSeries.isNotEmpty()) {
+                        val currentSeries = _recentSeries.value ?: emptyList()
+                        _recentSeries.postValue(currentSeries + newSeries)
+                        Log.d("MainViewModel", "Loaded ${newSeries.size} more series (total: ${currentSeries.size + newSeries.size})")
+                    } else {
+                        Log.d("MainViewModel", "No more series to load")
+                        seriesPage-- // No more items, revert page
+                    }
+                }.onFailure { e ->
+                    seriesPage-- // Revert page on failure
+                    Log.e("MainViewModel", "Failed to load more series: ${e.message}")
                 }
-            }.onFailure { e ->
-                seriesPage-- // Revert page on failure
-                Log.e("MainViewModel", "Failed to load more series: ${e.message}")
+            } finally {
+                isLoadingMoreSeries = false
             }
-
-            isLoadingMoreSeries = false
         }
     }
 
@@ -576,22 +587,25 @@ class MainViewModel @Inject constructor(
             episodesPage++
             Log.d("MainViewModel", "Loading episodes page $episodesPage...")
 
-            val result = repository.getRecentEpisodes(page = episodesPage, perPage = 30)
-            result.onSuccess { newEpisodes ->
-                if (newEpisodes.isNotEmpty()) {
-                    val currentEpisodes = _recentEpisodes.value ?: emptyList()
-                    _recentEpisodes.postValue(currentEpisodes + newEpisodes)
-                    Log.d("MainViewModel", "Loaded ${newEpisodes.size} more episodes (total: ${currentEpisodes.size + newEpisodes.size})")
-                } else {
-                    Log.d("MainViewModel", "No more episodes to load")
-                    episodesPage-- // No more items, revert page
+            // N15 FIX: Use try-finally to ensure loading flag is always reset
+            try {
+                val result = repository.getRecentEpisodes(page = episodesPage, perPage = 30)
+                result.onSuccess { newEpisodes ->
+                    if (newEpisodes.isNotEmpty()) {
+                        val currentEpisodes = _recentEpisodes.value ?: emptyList()
+                        _recentEpisodes.postValue(currentEpisodes + newEpisodes)
+                        Log.d("MainViewModel", "Loaded ${newEpisodes.size} more episodes (total: ${currentEpisodes.size + newEpisodes.size})")
+                    } else {
+                        Log.d("MainViewModel", "No more episodes to load")
+                        episodesPage-- // No more items, revert page
+                    }
+                }.onFailure { e ->
+                    episodesPage-- // Revert page on failure
+                    Log.e("MainViewModel", "Failed to load more episodes: ${e.message}")
                 }
-            }.onFailure { e ->
-                episodesPage-- // Revert page on failure
-                Log.e("MainViewModel", "Failed to load more episodes: ${e.message}")
+            } finally {
+                isLoadingMoreEpisodes = false
             }
-
-            isLoadingMoreEpisodes = false
         }
     }
 
@@ -621,9 +635,14 @@ class MainViewModel @Inject constructor(
 
     /**
      * Load movies by genre
+     * H2 FIX: Cache LiveData per genre to avoid recreation on each call
      */
     fun loadMoviesByGenre(genreId: Int): LiveData<List<Movie>> {
+        // Return cached LiveData if available
+        moviesByGenreCache[genreId]?.let { return it }
+
         val liveData = MutableLiveData<List<Movie>>()
+        moviesByGenreCache[genreId] = liveData
 
         viewModelScope.launch {
             val result = repository.getMoviesByGenre(genreId, page = 1)
@@ -639,9 +658,14 @@ class MainViewModel @Inject constructor(
 
     /**
      * Load TV shows by genre
+     * H2 FIX: Cache LiveData per genre to avoid recreation on each call
      */
     fun loadSeriesByGenre(genreId: Int): LiveData<List<Series>> {
+        // Return cached LiveData if available
+        seriesByGenreCache[genreId]?.let { return it }
+
         val liveData = MutableLiveData<List<Series>>()
+        seriesByGenreCache[genreId] = liveData
 
         viewModelScope.launch {
             val result = repository.getTvShowsByGenre(genreId, page = 1)

@@ -87,6 +87,8 @@ class HomeComposeFragment : Fragment() {
                 return try {
                     super.dispatchKeyEvent(event)
                 } catch (e: IllegalStateException) {
+                    // N5 FIX: Add logging for observability
+                    Log.w("HomeComposeFragment", "Key event dropped: Compose detached", e)
                     // Compose focus system tried to access detached view
                     // Consume the event to prevent crash
                     true

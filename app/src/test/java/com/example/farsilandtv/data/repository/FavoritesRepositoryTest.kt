@@ -18,6 +18,7 @@ import org.junit.Test
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.any
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -156,6 +157,8 @@ class FavoritesRepositoryTest {
 
         // ASSERT
         assertTrue(result, "Toggle should return true when adding new favorite")
+        // L1 FIX: Verify DAO interaction occurred
+        verify(mockFavoriteDao).getFavorite(contentId)
     }
 
     @Test
@@ -182,6 +185,8 @@ class FavoritesRepositoryTest {
 
         // ASSERT
         assertFalse(result, "Toggle should return false when removing existing favorite")
+        // L1 FIX: Verify DAO interaction occurred
+        verify(mockFavoriteDao).getFavorite(contentId)
     }
 
     // ========== Query Favorites ==========

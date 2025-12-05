@@ -16,6 +16,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -24,6 +30,7 @@ import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.utils.DeviceUtils
 import com.example.farsilandtv.utils.LocalDeviceType
+import com.example.farsilandtv.utils.TvFeedbackManager
 
 /**
  * Feature #16: Compose Component - Movie Card
@@ -57,6 +64,10 @@ fun MovieCard(
 ) {
     var isFocused by remember { mutableStateOf(false) }
     var longPressTriggered by remember(movie.id) { mutableStateOf(false) }
+
+    // TV-L4/L6: Context and view for sound and haptic feedback
+    val context = LocalContext.current
+    val view = LocalView.current
 
     // Check device type - use touch-friendly click for phones
     val deviceType = LocalDeviceType.current
@@ -160,9 +171,24 @@ fun MovieCard(
         }
     } else {
         // TV/Tablet: Use TV Material 3 Surface for D-pad focus support
+        // TV-L accessibility: semantic description for screen readers
+        val accessibilityDescription = buildString {
+            append(movie.title)
+            if (movie.genres.isNotEmpty()) {
+                append(", ${movie.genres.first()}")
+            }
+            if (isFavorite) append(", favorite")
+            if (isWatched) append(", watched")
+            if (progressPercent != null && progressPercent > 0f) {
+                append(", ${(progressPercent * 100).toInt()}% watched")
+            }
+        }
+
         Surface(
             onClick = {
                 if (!longPressTriggered) {
+                    // TV-L6: Haptic feedback on selection
+                    TvFeedbackManager.performSelectionHaptic(context)
                     onClick()
                 }
                 longPressTriggered = false
@@ -170,6 +196,8 @@ fun MovieCard(
             onLongClick = onLongClick?.let { callback ->
                 {
                     longPressTriggered = true
+                    // TV-L6: Heavy haptic for long-press (context menu)
+                    TvFeedbackManager.performLongPressHaptic(context)
                     callback()
                 }
             },
@@ -177,7 +205,15 @@ fun MovieCard(
                 .width(112.dp)
                 .height(168.dp)
                 .onFocusChanged { focusState ->
+                    // TV-L4: Play focus sound when gaining focus
+                    if (focusState.isFocused && !isFocused) {
+                        TvFeedbackManager.playFocusSound(view)
+                    }
                     isFocused = focusState.isFocused
+                }
+                .semantics {
+                    role = Role.Button
+                    contentDescription = accessibilityDescription
                 }
                 .then(
                     if (isFocused) {

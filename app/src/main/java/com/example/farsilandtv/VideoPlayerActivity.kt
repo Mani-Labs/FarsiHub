@@ -717,18 +717,24 @@ class VideoPlayerActivity : AppCompatActivity() {
                         val statusCode = cause.responseCode
                         Log.e(TAG, "HTTP error detected: $statusCode for URL: $currentVideoUrl")
 
-                        // Clear cache for this video to prevent repeated errors from cached bad response
-                        // Clear cached data for this URL on HTTP errors
+                        // C6 FIX: Only clear cache for the specific failing URL, not entire cache
+                        // This prevents user from losing all downloaded content on single error
                         FarsilandApp.videoCache?.let { appCache ->
                             try {
-                                // Remove all cache keys - ExoPlayer will rebuild cache on next load
-                                val keys = appCache.keys.toList() // Copy to avoid ConcurrentModification
-                                for (key in keys) {
-                                    appCache.removeResource(key)
+                                // Only remove cache keys that match the failing URL
+                                val failingUrl = currentVideoUrl
+                                if (failingUrl.isNotEmpty()) {
+                                    val keysToRemove = appCache.keys.filter { key ->
+                                        key.contains(failingUrl) ||
+                                        failingUrl.contains(key.substringBefore("?"))
+                                    }
+                                    for (key in keysToRemove) {
+                                        appCache.removeResource(key)
+                                    }
+                                    Log.d(TAG, "Cleared ${keysToRemove.size} cache entries for failing URL after HTTP $statusCode")
                                 }
-                                Log.d(TAG, "Cache cleared after HTTP error $statusCode")
                             } catch (e: Exception) {
-                                Log.e(TAG, "Failed to clear cache after HTTP error", e)
+                                Log.e(TAG, "Failed to clear cache for failing URL", e)
                             }
                         }
 
