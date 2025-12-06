@@ -145,7 +145,9 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     // CDN mirror fallback - track which URLs have been tried
     private var currentVideoUrl: String = ""
-    private var triedUrls: MutableSet<String> = mutableSetOf()
+    // N24 FIX: Use thread-safe set to prevent ConcurrentModificationException
+    // Accessed from player error callback (background) and UI thread
+    private val triedUrls: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
 
     // Playback position tracking (C1: Removed FarsilandDatabase, now using AppDatabase via PlaybackRepository)
     private val positionSaveLock = Any()
@@ -384,6 +386,11 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         // Save current position before switching videos
         saveCurrentPosition(forceSync = true)
+
+        // EXTERNAL AUDIT FIX 1.3: Clear savedPlaybackState to prevent race condition
+        // Issue: If onStart() runs after onNewIntent(), it could restore stale state from previous video
+        // Solution: Nullify saved state so onStart() won't attempt restoration of old video position
+        savedPlaybackState = null
 
         // Stop current playback
         player?.stop()
@@ -1863,6 +1870,12 @@ class VideoPlayerActivity : AppCompatActivity() {
         // Save position to database immediately
         saveCurrentPosition()
 
+        // EXTERNAL AUDIT FIX 3.1: Disable AFR in onStop instead of onDestroy
+        // Issue: When user presses Home during 24fps video, activity backgrounds (onStop) but doesn't destroy
+        // Result: TV stays locked at 24Hz, causing Android TV launcher (60Hz) to stutter
+        // Solution: Restore default display mode when activity loses foreground, re-enable in onStart if needed
+        AutoFrameRateHelper.disableAFR(this)
+
         // Release player (cache is managed by FarsilandApp singleton)
         player?.release()
         player = null
@@ -1945,28 +1958,33 @@ class VideoPlayerActivity : AppCompatActivity() {
             // This handles the case when user returns after pressing Home button
 
             if (player == null && savedPlaybackState != null) {
-            Log.d(TAG, "Re-initializing player after onStop(), restoring state")
+                Log.d(TAG, "Re-initializing player after onStop(), restoring state")
 
-            // Re-initialize player and cache
-            initializePlayer()
+                // Re-initialize player and cache
+                initializePlayer()
 
-            // Restore playback from saved state
-            val state = savedPlaybackState!!
-            val mediaItem = MediaItem.fromUri(state.videoUrl)
-            player?.apply {
-                setMediaItem(mediaItem)
-                seekTo(state.position)
-                prepare()
-                playWhenReady = state.wasPlaying
+                // N26 FIX: Safe null check instead of force unwrap to prevent race condition
+                // Between the null check above and here, another thread could set savedPlaybackState to null
+                val state = savedPlaybackState ?: run {
+                    Log.w(TAG, "savedPlaybackState became null during restore - skipping")
+                    return
+                }
+
+                val mediaItem = MediaItem.fromUri(state.videoUrl)
+                player?.apply {
+                    setMediaItem(mediaItem)
+                    seekTo(state.position)
+                    prepare()
+                    playWhenReady = state.wasPlaying
+                }
+
+                // Restart position tracking
+                if (state.wasPlaying) {
+                    startPositionTracking()
+                }
+
+                Log.d(TAG, "Player restored: position=${state.position}ms, playing=${state.wasPlaying}")
             }
-
-            // Restart position tracking
-            if (state.wasPlaying) {
-                startPositionTracking()
-            }
-
-            Log.d(TAG, "Player restored: position=${state.position}ms, playing=${state.wasPlaying}")
-        }
 
             // Execute pending video fetch if it was deferred from onCreate/onNewIntent
             if (pendingVideoFetch) {
@@ -2017,8 +2035,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         player?.release()
         player = null
 
-        // AFR: Restore default display mode before destroying activity
-        AutoFrameRateHelper.disableAFR(this)
+        // Note: AFR is now disabled in onStop() (EXTERNAL AUDIT FIX 3.1)
+        // No need to call disableAFR here - already handled when activity backgrounded
 
         // Clear cast callbacks to prevent leaks
         if (::castManager.isInitialized) {
