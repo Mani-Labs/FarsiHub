@@ -259,7 +259,7 @@ fun ShowsScreen(
                     .padding(bottom = 16.dp)
             ) {
                 CircularProgressIndicator(
-                    color = Color(0xFFFF5722),
+                    color = Color(0xFFF59E0B), // FarsilandAmber
                     modifier = Modifier.size(32.dp)
                 )
             }
@@ -425,9 +425,9 @@ private fun HeroButton(
     )
     val backgroundColor by animateColorAsState(
         targetValue = when {
-            isFocused -> Color(0xFFFF5722)
+            isFocused -> Color(0xFFF59E0B) // FarsilandAmber
             isPrimary -> Color.White
-            else -> Color(0xFF333333)
+            else -> Color(0xFF1A1A24) // SurfaceDark
         },
         animationSpec = tween(150),
         label = "bg"
@@ -537,7 +537,7 @@ private fun ErrorState(
                 onClick = onRetry,
                 modifier = Modifier.onFocusChanged { isFocused = it.isFocused },
                 shape = RoundedCornerShape(8.dp),
-                color = if (isFocused) Color(0xFFFF5722) else Color(0xFF333333)
+                color = if (isFocused) Color(0xFFF59E0B) else Color(0xFF1A1A24) // Amber / SurfaceDark
             ) {
                 Text(
                     text = "Retry",

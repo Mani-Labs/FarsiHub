@@ -119,7 +119,7 @@ fun OptionsScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
+            .background(Color(0xFF0A0A0F)) // BackgroundDark
             .onPreviewKeyEvent { event ->
                 if (event.key == Key.Back && event.type == KeyEventType.KeyUp) {
                     onBackClick()
@@ -482,7 +482,7 @@ private fun OptionItem(
                 .height(72.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .clickable(enabled = enabled) { onClick() },
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A24)), // SurfaceDark
             shape = RoundedCornerShape(8.dp)
         ) {
             Row(
@@ -528,7 +528,7 @@ private fun OptionItem(
                 .fillMaxWidth()
                 .height(72.dp),
             colors = ClickableSurfaceDefaults.colors(
-                containerColor = Color(0xFF1E1E1E),
+                containerColor = Color(0xFF1A1A24), // SurfaceDark
                 focusedContainerColor = Color(0xFF2E7D32)
             ),
             shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp))
@@ -583,7 +583,7 @@ private fun OptionToggleItem(
                 .height(72.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .clickable { onCheckedChange(!checked) },
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A24)), // SurfaceDark
             shape = RoundedCornerShape(8.dp)
         ) {
             Row(
@@ -626,7 +626,7 @@ private fun OptionToggleItem(
                 .fillMaxWidth()
                 .height(72.dp),
             colors = ClickableSurfaceDefaults.colors(
-                containerColor = Color(0xFF1E1E1E),
+                containerColor = Color(0xFF1A1A24), // SurfaceDark
                 focusedContainerColor = Color(0xFF2E7D32)
             ),
             shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp))

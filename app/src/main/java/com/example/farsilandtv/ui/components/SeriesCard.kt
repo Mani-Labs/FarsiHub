@@ -27,6 +27,8 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Surface
 import coil.compose.AsyncImage
 import com.example.farsilandtv.data.models.Series
+import com.example.farsilandtv.ui.theme.FarsilandAmber
+import com.example.farsilandtv.ui.theme.focusGlow
 import com.example.farsilandtv.utils.DeviceUtils
 import com.example.farsilandtv.utils.LocalDeviceType
 import com.example.farsilandtv.utils.TvFeedbackManager
@@ -144,7 +146,7 @@ fun SeriesCard(
                 // New episodes indicator
                 if (hasUnwatchedEpisodes) {
                     androidx.compose.material3.Surface(
-                        color = Color(0xFFFF5722),
+                        color = FarsilandAmber,
                         shape = RoundedCornerShape(3.dp)
                     ) {
                         Text(
@@ -220,11 +222,7 @@ fun SeriesCard(
                     role = Role.Button
                     contentDescription = accessibilityDescription
                 }
-                .then(
-                    if (isFocused) {
-                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
-                    } else Modifier
-                ),
+                .focusGlow(isFocused = isFocused, shape = RoundedCornerShape(6.dp)),
             shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(6.dp)),
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = Color.Transparent,

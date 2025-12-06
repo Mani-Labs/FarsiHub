@@ -195,9 +195,9 @@ private fun OptionButton(
             .onFocusChanged { isFocused = it.isFocused },
         shape = RoundedCornerShape(8.dp),
         color = when {
-            isFocused -> Color(0xFFFF5722)
-            isActive -> Color(0xFF3A3A3A)
-            else -> Color(0xFF333333)
+            isFocused -> Color(0xFFF59E0B) // FarsilandAmber
+            isActive -> Color(0xFF2A2A35) // SurfaceLight
+            else -> Color(0xFF1A1A24) // SurfaceDark
         }
     ) {
         Box(

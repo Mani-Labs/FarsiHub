@@ -6,28 +6,28 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * Feature #16: Jetpack Compose for TV - Theme
- * Dark theme optimized for TV viewing from 10-foot distance
+ * Minimal Dark Theme - Deep Slate with Warm Amber
+ * Atmospheric dark mode optimized for TV viewing from 10-foot distance
  */
 
 private val FarsilandDarkColorScheme = darkColorScheme(
-    // Primary colors (Pink accent)
-    primary = FarsilandPink,
+    // Primary colors (Warm Amber accent)
+    primary = FarsilandAmber,
     onPrimary = OnPrimary,
-    primaryContainer = FarsilandPinkDark,
+    primaryContainer = FarsilandAmberDark,
     onPrimaryContainer = Color.White,
 
     // Secondary colors
-    secondary = FarsilandPinkLight,
+    secondary = FarsilandAmberLight,
     onSecondary = Color.Black,
-    secondaryContainer = FarsilandPinkDark,
+    secondaryContainer = FarsilandAmberDark,
     onSecondaryContainer = Color.White,
 
-    // Background colors
+    // Background colors (Deep slate)
     background = BackgroundDark,
     onBackground = OnBackground,
 
-    // Surface colors
+    // Surface colors (Slate family)
     surface = SurfaceDark,
     onSurface = OnSurface,
     surfaceVariant = SurfaceLight,

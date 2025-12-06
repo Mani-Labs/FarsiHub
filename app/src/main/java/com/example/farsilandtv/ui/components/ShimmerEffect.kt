@@ -36,9 +36,9 @@ import androidx.compose.ui.unit.dp
  * Shimmer effect components for skeleton loading screens
  */
 
-// Shimmer color palette for dark TV theme
-private val ShimmerBaseColor = Color(0xFF1A1A1A)
-private val ShimmerHighlightColor = Color(0xFF2D2D2D)
+// Shimmer color palette - Minimal Dark theme
+private val ShimmerBaseColor = Color(0xFF1A1A24)      // SurfaceDark (card/muted)
+private val ShimmerHighlightColor = Color(0xFF2A2A35) // SurfaceLight (selection)
 
 /**
  * Creates animated shimmer brush for loading effects

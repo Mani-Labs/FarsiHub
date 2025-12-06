@@ -79,7 +79,7 @@ fun FavoritesScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
+            .background(Color(0xFF0A0A0F)) // BackgroundDark
     ) {
         Column(
             modifier = Modifier
@@ -94,7 +94,7 @@ fun FavoritesScreen(
                 Icon(
                     imageVector = Icons.Default.Favorite,
                     contentDescription = null,
-                    tint = Color(0xFFE91E63),
+                    tint = Color(0xFFF59E0B), // FarsilandAmber
                     modifier = Modifier.size(36.dp)
                 )
                 Spacer(modifier = Modifier.width(16.dp))
@@ -333,7 +333,7 @@ private fun FavoriteCard(
             .width(150.dp)
             .aspectRatio(2f / 3f),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = Color(0xFF1E1E1E),
+            containerColor = Color(0xFF1E293B),
             focusedContainerColor = Color(0xFF2E7D32)
         ),
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),

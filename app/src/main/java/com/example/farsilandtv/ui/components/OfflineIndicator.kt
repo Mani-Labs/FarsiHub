@@ -59,7 +59,7 @@ fun OfflineIndicator(
         exit = slideOutVertically(tween(300)) + fadeOut(),
         modifier = modifier
     ) {
-        val backgroundColor = if (showRestored) Color(0xFF4CAF50) else Color(0xFFFF5722)
+        val backgroundColor = if (showRestored) Color(0xFF4CAF50) else Color(0xFFF59E0B) // FarsilandAmber
         val icon = if (showRestored) Icons.Filled.Check else Icons.Filled.Warning
         val message = if (showRestored) "Back online" else "No internet connection"
 
@@ -122,7 +122,7 @@ fun OfflineDownloadWarning(
             Icon(
                 imageVector = Icons.Filled.Warning,
                 contentDescription = null,
-                tint = Color(0xFFFF5722)
+                tint = Color(0xFFF59E0B) // FarsilandAmber
             )
         },
         title = { Text("No Internet Connection") },

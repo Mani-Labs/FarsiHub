@@ -359,7 +359,7 @@ fun HomeScreenWithSidebar(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF121212)) // Opaque background to prevent ghosting during transitions
+            .background(Color(0xFF0A0A0F)) // BackgroundDark // Opaque background to prevent ghosting during transitions
     ) {
         Row(modifier = Modifier.fillMaxSize()) {
             // Sidebar navigation - always in composition, animated visibility
@@ -394,7 +394,7 @@ fun HomeScreenWithSidebar(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .background(Color(0xFF121212))
+                    .background(Color(0xFF0A0A0F)) // BackgroundDark
             ) {
                 // Render different screens based on currentDestination
                 when (currentDestination) {
@@ -768,8 +768,8 @@ private fun NavigationSidebar(
                             .background(
                                 Brush.horizontalGradient(
                                     colors = listOf(
-                                        Color(0xFFFF5722),
-                                        Color(0xFFFF8A65)
+                                        Color(0xFFF59E0B),
+                                        Color(0xFFFBBF24)
                                     )
                                 ),
                                 shape = RoundedCornerShape(1.dp)
@@ -803,7 +803,7 @@ private fun NavigationSidebar(
                     // Animated values
                     val backgroundColor by animateColorAsState(
                         targetValue = when {
-                            isFocused -> Color(0xFFFF5722)
+                            isFocused -> Color(0xFFF59E0B)
                             isSelected -> Color.White.copy(alpha = 0.1f)
                             else -> Color.Transparent
                         },
@@ -813,8 +813,8 @@ private fun NavigationSidebar(
                     val iconColor by animateColorAsState(
                         targetValue = when {
                             isFocused -> Color.White
-                            isSelected -> Color(0xFFFF5722)
-                            else -> Color(0xFF6B8E6B)
+                            isSelected -> Color(0xFFF59E0B)
+                            else -> Color(0xFF94A3B8)
                         },
                         animationSpec = tween(200),
                         label = "iconColor"
@@ -892,7 +892,7 @@ private fun NavigationSidebar(
                                         .width(3.dp)
                                         .height(14.dp)
                                         .background(
-                                            Color(0xFFFF5722),
+                                            Color(0xFFF59E0B),
                                             shape = RoundedCornerShape(1.5.dp)
                                         )
                                 )

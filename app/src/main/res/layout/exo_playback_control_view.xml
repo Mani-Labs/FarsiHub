@@ -74,8 +74,8 @@
             android:layout_width="0dp"
             android:layout_height="32dp"
             android:layout_weight="1"
-            app:played_color="#FF5722"
-            app:scrubber_color="#FF5722"
+            app:played_color="#F59E0B"
+            app:scrubber_color="#F59E0B"
             app:buffered_color="#80FFFFFF"
             app:unplayed_color="#40FFFFFF" />
 

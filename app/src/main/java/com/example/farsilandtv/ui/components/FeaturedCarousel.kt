@@ -224,7 +224,7 @@ fun FeaturedCarousel(
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        Color(0xFF121212),
+                                        Color(0xFF0A0A0F), // BackgroundDark
                                         Color.Transparent
                                     )
                                 )
@@ -544,7 +544,7 @@ fun FeaturedCarouselSkeleton() {
         modifier = Modifier
             .fillMaxWidth()
             .height(280.dp)
-            .background(Color(0xFF121212))
+            .background(Color(0xFF0A0A0F)) // BackgroundDark
     ) {
         Row(
             modifier = Modifier

@@ -52,17 +52,17 @@ fun GenreChip(
     }
     val backgroundColor by animateColorAsState(
         targetValue = when {
-            isFocused -> Color(0xFFFF5722)
-            isSelected -> Color(0xFF333333)
+            isFocused -> Color(0xFFF59E0B)  // FarsilandAmber
+            isSelected -> Color(0xFF2A2A35) // SurfaceLight
             else -> Color.Transparent
         },
         animationSpec = tween(150),
         label = "chip_bg"
     )
     val borderColor = when {
-        isFocused -> Color(0xFFFF5722)
-        isSelected -> Color(0xFF333333)
-        else -> Color(0xFF444444)
+        isFocused -> Color(0xFFF59E0B)      // FarsilandAmber
+        isSelected -> Color(0xFF2A2A35)     // SurfaceLight
+        else -> Color(0x26FFFFFF)           // BorderHover (15% white)
     }
 
     Surface(
@@ -82,7 +82,7 @@ fun GenreChip(
         Text(
             text = text,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            color = if (isFocused || isSelected) Color.White else Color(0xFFAAAAAA),
+            color = if (isFocused || isSelected) Color.White else Color(0xFF71717A), // OnSurfaceVariant
             fontSize = 13.sp,
             fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
         )
@@ -114,7 +114,7 @@ fun SortButton(
                     stateDescription = if (expanded) "Menu expanded" else "Menu collapsed"
                 },
             shape = RoundedCornerShape(8.dp),
-            color = if (isFocused) Color(0xFFFF5722) else Color(0xFF1E1E1E)
+            color = if (isFocused) Color(0xFFF59E0B) else Color(0xFF1A1A24) // Amber / SurfaceDark
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -138,14 +138,14 @@ fun SortButton(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.background(Color(0xFF2A2A2A))
+            modifier = Modifier.background(Color(0xFF1A1A24)) // SurfaceDark
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             text = option,
-                            color = if (option == selected) Color(0xFFFF5722) else Color.White
+                            color = if (option == selected) Color(0xFFF59E0B) else Color.White // FarsilandAmber
                         )
                     },
                     onClick = {

@@ -65,7 +65,7 @@ fun DownloadsScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
+            .background(Color(0xFF0A0A0F)) // BackgroundDark
             .onPreviewKeyEvent { event ->
                 if (event.key == Key.Back && event.type == KeyEventType.KeyUp) {
                     onBackClick()
@@ -368,7 +368,7 @@ private fun DownloadItemRow(
             .fillMaxWidth()
             .height(100.dp),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = Color(0xFF1E1E1E),
+            containerColor = Color(0xFF1E293B),
             focusedContainerColor = Color(0xFF2196F3)
         ),
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp))
