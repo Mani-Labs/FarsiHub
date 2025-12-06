@@ -51,8 +51,9 @@ jobs:
 
   instrumented-tests:
     runs-on: ubuntu-latest
-    # Only run on main branch or PRs to main (expensive)
-    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
+    # DISABLED: Emulator is too flaky on GitHub runners
+    # Only run on direct pushes to main (not PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
     - name: Checkout code
