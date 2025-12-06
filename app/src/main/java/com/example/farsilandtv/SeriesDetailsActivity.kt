@@ -154,37 +154,41 @@ class SeriesDetailsActivity : ComponentActivity() {
                             finish()
                         }
                     }
-                    episodesBySeason != null -> {
-                        // Show series details based on device type
-                        when (deviceType) {
-                            DeviceUtils.DeviceType.TV,
-                            DeviceUtils.DeviceType.TABLET -> {
-                                // TV/Tablet: Use D-pad optimized screen
-                                SeriesDetailsScreen(
-                                    series = series,
-                                    episodesBySeason = episodesBySeason!!,
-                                    favoritesRepo = favoritesRepository,
-                                    watchlistRepo = watchlistRepository,
-                                    downloadManager = downloadManager,
-                                    onBackClick = { finish() },
-                                    onPlayEpisode = { episode -> playEpisode(episode) },
-                                    onSeriesClick = { navigateToSeries(it) },
-                                    similarSeries = similarSeries
-                                )
-                            }
-                            DeviceUtils.DeviceType.PHONE -> {
-                                // Phone: Use touch-optimized screen
-                                PhoneSeriesDetailsScreen(
-                                    series = series,
-                                    episodesBySeason = episodesBySeason!!,
-                                    favoritesRepo = favoritesRepository,
-                                    watchlistRepo = watchlistRepository,
-                                    downloadManager = downloadManager,
-                                    onBackClick = { finish() },
-                                    onPlayEpisode = { episode -> playEpisode(episode) },
-                                    onSeriesClick = { navigateToSeries(it) },
-                                    similarSeries = similarSeries
-                                )
+                    else -> {
+                        // BUG FIX: Use .let{} for safe smart-cast instead of force unwrap
+                        // episodesBySeason is guaranteed non-null here since other conditions failed
+                        episodesBySeason?.let { episodes ->
+                            // Show series details based on device type
+                            when (deviceType) {
+                                DeviceUtils.DeviceType.TV,
+                                DeviceUtils.DeviceType.TABLET -> {
+                                    // TV/Tablet: Use D-pad optimized screen
+                                    SeriesDetailsScreen(
+                                        series = series,
+                                        episodesBySeason = episodes,
+                                        favoritesRepo = favoritesRepository,
+                                        watchlistRepo = watchlistRepository,
+                                        downloadManager = downloadManager,
+                                        onBackClick = { finish() },
+                                        onPlayEpisode = { episode -> playEpisode(episode) },
+                                        onSeriesClick = { navigateToSeries(it) },
+                                        similarSeries = similarSeries
+                                    )
+                                }
+                                DeviceUtils.DeviceType.PHONE -> {
+                                    // Phone: Use touch-optimized screen
+                                    PhoneSeriesDetailsScreen(
+                                        series = series,
+                                        episodesBySeason = episodes,
+                                        favoritesRepo = favoritesRepository,
+                                        watchlistRepo = watchlistRepository,
+                                        downloadManager = downloadManager,
+                                        onBackClick = { finish() },
+                                        onPlayEpisode = { episode -> playEpisode(episode) },
+                                        onSeriesClick = { navigateToSeries(it) },
+                                        similarSeries = similarSeries
+                                    )
+                                }
                             }
                         }
                     }

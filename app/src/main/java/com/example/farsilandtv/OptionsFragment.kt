@@ -50,6 +50,9 @@ class OptionsFragment : GuidedStepSupportFragment() {
 
     private var isToggling = false
 
+    // BUG FIX: Track pending runnable to prevent handler leak on fragment destruction
+    private var pendingActionsRefresh: Runnable? = null
+
     override fun onCreateGuidance(savedInstanceState: Bundle?): GuidanceStylist.Guidance {
         return GuidanceStylist.Guidance(
             "Options",
@@ -221,12 +224,24 @@ class OptionsFragment : GuidedStepSupportFragment() {
             WorkManager.getInstance(requireContext()).cancelUniqueWork(ContentSyncWorker.WORK_NAME)
         }
 
-        view?.postDelayed({
+        // BUG FIX: Use tracked runnable to prevent handler leak
+        pendingActionsRefresh = Runnable {
             actions.clear()
             onCreateActions(actions, null)
             setActions(actions)
             isToggling = false
-        }, 100)
+            pendingActionsRefresh = null
+        }
+        view?.postDelayed(pendingActionsRefresh!!, 100)
+    }
+
+    override fun onDestroyView() {
+        // BUG FIX: Cancel pending runnable to prevent handler leak and crash
+        pendingActionsRefresh?.let { runnable ->
+            view?.removeCallbacks(runnable)
+            pendingActionsRefresh = null
+        }
+        super.onDestroyView()
     }
 
     private fun showFrequencyPicker() {

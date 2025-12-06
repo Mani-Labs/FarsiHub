@@ -761,7 +761,8 @@ class ContentRepository @Inject constructor(
 
                 // 2. Launch background refresh (don't block UI)
                 // This ensures episodes are always fresh without sacrificing UX
-                launch {
+                // N28 FIX: Explicit Dispatchers.IO to prevent ANR if caller is on Main thread
+                launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         refreshEpisodesFromWeb(seriesId, seriesUrl)
                     } catch (e: Exception) {
@@ -826,19 +827,30 @@ class ContentRepository @Inject constructor(
 
             val cachedEpisodes = allEpisodes.map { episode ->
                 // Check if episode already exists to preserve its dateAdded
-                val existingEpisode = getContentDb().episodeDao().getEpisodeByUrl(episode.farsilandUrl)
+                // FIX: Use composite key (seriesId + season + episode) instead of URL for reliable matching
+                // URL matching fails if HTML hrefs differ slightly (trailing slash, query params, etc.)
+                val existingEpisode = getContentDb().episodeDao().getSpecificEpisode(seriesId, episode.season, episode.episode)
+
+                if (existingEpisode != null) {
+                    android.util.Log.d(TAG, "Episode S${episode.season}E${episode.episode} found, preserving id=${existingEpisode.id}, dateAdded=${existingEpisode.dateAdded}")
+                } else {
+                    android.util.Log.d(TAG, "Episode S${episode.season}E${episode.episode} is NEW")
+                }
 
                 // For new episodes, try to use airDate if available (more accurate than scrape time)
-                // Fallback chain: airDate → series dateAdded → current time
+                // FIX: For sources without air dates (IMVBox), use a default OLD date instead of current time
+                // This prevents newly-scraped episodes from polluting "Latest Episodes" section
+                // Fallback chain: airDate → series dateAdded → default old date (NOT current time)
+                val defaultOldDate = currentTime - (365L * 24 * 60 * 60 * 1000) // 1 year ago
                 val newEpisodeDateAdded = episode.airDate?.let { airDate ->
                     try {
                         // Parse airDate (format: "YYYY-MM-DD") to timestamp
                         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                            .parse(airDate)?.time ?: seriesDateAdded ?: currentTime
+                            .parse(airDate)?.time ?: seriesDateAdded ?: defaultOldDate
                     } catch (e: Exception) {
-                        seriesDateAdded ?: currentTime
+                        seriesDateAdded ?: defaultOldDate
                     }
-                } ?: seriesDateAdded ?: currentTime
+                } ?: seriesDateAdded ?: defaultOldDate
 
                 CachedEpisode(
                     // Use existing ID if available to ensure proper REPLACE behavior
@@ -1130,16 +1142,13 @@ class ContentRepository @Inject constructor(
                     val normalizedTitle = normalizeTitle(title)
                     val source = getSource(result)
 
-                    // Initialize set for this source if not exists
-                    if (!seenPerSource.containsKey(source)) {
-                        seenPerSource[source] = mutableSetOf()
-                    }
-
-                    val seenTitles = seenPerSource[source]!!
+                    // BUG FIX: Use getOrPut for atomic initialization instead of containsKey + force unwrap
+                    val seenTitles = seenPerSource.getOrPut(source) { mutableSetOf() }
 
                     // Check if we've seen this exact URL - keep version with more metadata
                     if (url != null && url in seenUrlIndex) {
-                        val existingIndex = seenUrlIndex[url]!!
+                        // BUG FIX: Use safe access with continue fallback instead of force unwrap
+                        val existingIndex = seenUrlIndex[url] ?: continue
                         val existingScore = metadataScore(deduplicated[existingIndex])
                         val newScore = metadataScore(result)
                         if (newScore > existingScore) {

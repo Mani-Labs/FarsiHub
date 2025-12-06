@@ -175,8 +175,9 @@ fun MovieCard(
         // TV-L accessibility: semantic description for screen readers
         val accessibilityDescription = buildString {
             append(movie.title)
-            if (movie.genres.isNotEmpty()) {
-                append(", ${movie.genres.first()}")
+            // BUG FIX: Use firstOrNull() for defensive coding
+            movie.genres.firstOrNull()?.let { genre ->
+                append(", $genre")
             }
             if (isFavorite) append(", favorite")
             if (isWatched) append(", watched")

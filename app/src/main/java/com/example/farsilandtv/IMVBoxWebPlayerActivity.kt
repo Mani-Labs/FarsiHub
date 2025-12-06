@@ -177,9 +177,11 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
 
         // If we have pre-extracted YouTube ID, use loadDataWithBaseURL to spoof origin
         // This skips loading IMVBox page entirely while pretending to be imvbox.com
-        if (!preExtractedYouTubeId.isNullOrEmpty()) {
+        // BUG FIX: Use local val for smart cast instead of force unwrap
+        val youtubeId = preExtractedYouTubeId
+        if (!youtubeId.isNullOrEmpty()) {
             Log.d(TAG, "Using loadDataWithBaseURL trick to spoof imvbox.com origin")
-            loadYouTubeWithSpoofedOrigin(preExtractedYouTubeId!!)
+            loadYouTubeWithSpoofedOrigin(youtubeId)
             introSkipped = true
         } else {
             // No pre-extracted ID - load actual IMVBox page
@@ -805,9 +807,11 @@ class IMVBoxWebPlayerActivity : AppCompatActivity() {
                     injectFullscreenCSS()
 
                     // If we have pre-extracted YouTube ID, inject it directly (skip intro entirely!)
-                    if (!preExtractedYouTubeId.isNullOrEmpty()) {
-                        Log.d(TAG, "Injecting pre-extracted YouTube: $preExtractedYouTubeId")
-                        injectYouTubeDirectly(preExtractedYouTubeId!!)
+                    // BUG FIX: Use local val for smart cast instead of force unwrap
+                    val ytId = preExtractedYouTubeId
+                    if (!ytId.isNullOrEmpty()) {
+                        Log.d(TAG, "Injecting pre-extracted YouTube: $ytId")
+                        injectYouTubeDirectly(ytId)
                         introSkipped = true
                     } else {
                         // No pre-extracted ID - use normal skip button detection

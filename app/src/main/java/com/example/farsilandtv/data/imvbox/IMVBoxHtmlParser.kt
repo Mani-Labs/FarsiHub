@@ -396,14 +396,13 @@ object IMVBoxHtmlParser {
             true
         }
 
-        // If all URLs were trailers, return null
-        if (validUrls.isEmpty()) {
+        // BUG FIX: Use firstOrNull() for defensive coding
+        // Return the FIRST valid URL (main movie content is usually first)
+        val mainUrl = validUrls.firstOrNull()
+        if (mainUrl == null) {
             Log.w(TAG, "All URLs are trailers - no full movie available")
             return null
         }
-
-        // Return the FIRST valid URL (main movie content is usually first)
-        val mainUrl = validUrls.first()
         Log.d(TAG, "Selected main HLS URL: $mainUrl (from ${validUrls.size} valid URLs)")
         return mainUrl
     }
