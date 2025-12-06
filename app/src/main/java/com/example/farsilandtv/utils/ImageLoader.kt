@@ -32,14 +32,36 @@ object ImageLoader {
 
     /**
      * Shared Coil ImageLoader instance with optimized caching
+     * FIX: Using @Volatile and synchronized block for thread-safe singleton initialization
+     * Previous implementation had a race condition where multiple ImageLoaders could be created
      */
-    private var imageLoader: ImageLoader? = null
+    @Volatile
+    private var imageLoader: coil.ImageLoader? = null
+    private val lock = Any()
 
-    private fun getImageLoader(context: Context): ImageLoader {
-        if (imageLoader == null) {
-            imageLoader = createOptimizedImageLoader(context.applicationContext)
+    private fun getImageLoader(context: Context): coil.ImageLoader {
+        // Double-checked locking for thread-safe lazy initialization
+        val loader = imageLoader
+        if (loader != null) return loader
+
+        return synchronized(lock) {
+            // Check again inside synchronized block
+            imageLoader ?: createOptimizedImageLoader(context.applicationContext).also {
+                imageLoader = it
+            }
         }
-        return imageLoader!!
+    }
+
+    /**
+     * EXTERNAL AUDIT FIX CH-L1: Public accessor for shared ImageLoader instance
+     * Allows other components (PrefetchManager) to reuse the same cached instance
+     * instead of creating separate ImageLoaders with separate caches.
+     *
+     * @param context Android context (automatically uses applicationContext)
+     * @return Shared, thread-safe ImageLoader singleton
+     */
+    fun getSharedInstance(context: Context): coil.ImageLoader {
+        return getImageLoader(context)
     }
 
     /**

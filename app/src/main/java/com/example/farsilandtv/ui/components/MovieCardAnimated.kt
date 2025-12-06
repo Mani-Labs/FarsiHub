@@ -115,6 +115,15 @@ fun MovieCardAnimated(
                     FavoriteBadge()
                 }
             }
+
+            // Source badge at top-left
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+            ) {
+                SourceBadge(sourceUrl = movie.farsilandUrl)
+            }
         }
     }
 }

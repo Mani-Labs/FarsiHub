@@ -8,16 +8,24 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.example.farsilandtv.data.cache.PrefetchManager
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.models.Genre
 import com.example.farsilandtv.data.models.FeaturedContent
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.ErrorHandler
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
+import javax.inject.Inject
 
 /**
  * ViewModel for main browse screen
@@ -29,22 +37,79 @@ import kotlinx.coroutines.async
  * - MIGRATION_9_10 runs heavy DELETE with GROUP BY on main thread
  * - Lazy init defers until first use in viewModelScope (background thread)
  */
-class MainViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val repository by lazy {
-        ContentRepository.getInstance(application.applicationContext)
-    }
+@HiltViewModel
+class MainViewModel @Inject constructor(
+    application: Application,
+    private val repository: ContentRepository,
+    private val prefetchManager: PrefetchManager
+) : AndroidViewModel(application) {
 
     // Feature #18: Paging 3 - Unlimited scrolling (replaces 300-item caps)
     // These flows are database-backed and can handle unlimited items efficiently
-    val movies: Flow<PagingData<Movie>> = repository.getMoviesPaged()
+    // Lazy initialization to match repository's lazy pattern
+    val movies: Flow<PagingData<Movie>> by lazy {
+        repository.getMoviesPaged().cachedIn(viewModelScope)
+    }
+
+    val series: Flow<PagingData<Series>> by lazy {
+        repository.getSeriesPaged().cachedIn(viewModelScope)
+    }
+
+    val episodes: Flow<PagingData<com.example.farsilandtv.data.models.Episode>> by lazy {
+        repository.getEpisodesPaged().cachedIn(viewModelScope)
+    }
+
+    // Genre/Sort filter state for MoviesScreen
+    private val _movieGenreFilter = MutableStateFlow<String?>(null)
+    val movieGenreFilter: StateFlow<String?> = _movieGenreFilter.asStateFlow()
+
+    private val _movieSortOption = MutableStateFlow("Recent")
+    val movieSortOption: StateFlow<String> = _movieSortOption.asStateFlow()
+
+    // Filtered movies flow - reacts to genre/sort changes
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val filteredMovies: Flow<PagingData<Movie>> = combine(
+        _movieGenreFilter,
+        _movieSortOption
+    ) { genre, sort -> Pair(genre, sort) }
+        .flatMapLatest { (genre, sort) ->
+            repository.getMoviesPagedWithFilter(genre, sort)
+        }
         .cachedIn(viewModelScope)
 
-    val series: Flow<PagingData<Series>> = repository.getSeriesPaged()
+    fun setMovieGenreFilter(genre: String?) {
+        _movieGenreFilter.value = genre
+    }
+
+    fun setMovieSortOption(sort: String) {
+        _movieSortOption.value = sort
+    }
+
+    // Genre/Sort filter state for ShowsScreen
+    private val _seriesGenreFilter = MutableStateFlow<String?>(null)
+    val seriesGenreFilter: StateFlow<String?> = _seriesGenreFilter.asStateFlow()
+
+    private val _seriesSortOption = MutableStateFlow("Recent")
+    val seriesSortOption: StateFlow<String> = _seriesSortOption.asStateFlow()
+
+    // Filtered series flow - reacts to genre/sort changes
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val filteredSeries: Flow<PagingData<Series>> = combine(
+        _seriesGenreFilter,
+        _seriesSortOption
+    ) { genre, sort -> Pair(genre, sort) }
+        .flatMapLatest { (genre, sort) ->
+            repository.getSeriesPagedWithFilter(genre, sort)
+        }
         .cachedIn(viewModelScope)
 
-    val episodes: Flow<PagingData<com.example.farsilandtv.data.models.Episode>> = repository.getEpisodesPaged()
-        .cachedIn(viewModelScope)
+    fun setSeriesGenreFilter(genre: String?) {
+        _seriesGenreFilter.value = genre
+    }
+
+    fun setSeriesSortOption(sort: String) {
+        _seriesSortOption.value = sort
+    }
 
     // Legacy LiveData for compatibility (used by existing code)
     private val _recentMovies = MutableLiveData<List<Movie>>()
@@ -60,13 +125,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var moviesPage = 1
     private var seriesPage = 1
     private var episodesPage = 1
-    private var isLoadingMoreMovies = false
-    private var isLoadingMoreSeries = false
-    private var isLoadingMoreEpisodes = false
+    // H1 FIX: Use @Volatile for thread-safe access from multiple coroutines
+    @Volatile private var isLoadingMoreMovies = false
+    @Volatile private var isLoadingMoreSeries = false
+    @Volatile private var isLoadingMoreEpisodes = false
 
     // LiveData for genres
     private val _genres = MutableLiveData<List<Genre>>()
     val genres: LiveData<List<Genre>> = _genres
+
+    // H2 FIX: Cache LiveData per genre to avoid recreation on each call
+    private val moviesByGenreCache = mutableMapOf<Int, MutableLiveData<List<Movie>>>()
+    private val seriesByGenreCache = mutableMapOf<Int, MutableLiveData<List<Series>>>()
 
     // LiveData for featured content carousel
     private val _featuredContent = MutableLiveData<List<FeaturedContent>>()
@@ -167,6 +237,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     moviesDeferred.await()
                     seriesDeferred.await()
                     episodesDeferred.await()
+
+                    // Phase 4: Background prefetch images after content loads
+                    prefetchLoadedContent()
                 }
 
             } catch (e: Exception) {
@@ -175,6 +248,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 _isLoading.value = false
             }
+        }
+    }
+
+    /**
+     * Phase 4: Prefetch images for loaded content
+     */
+    private fun prefetchLoadedContent() {
+        try {
+            // Prefetch featured content images (highest priority)
+            _featuredContent.value?.let { featured ->
+                // Convert FeaturedContent sealed class to Movie/Series for prefetch
+                val featuredMovies = featured.filterIsInstance<FeaturedContent.FeaturedMovie>()
+                    .map { Movie(
+                        id = it.id,
+                        title = it.title,
+                        posterUrl = it.posterUrl,
+                        backdropUrl = it.backdropUrl,
+                        farsilandUrl = it.farsilandUrl,
+                        description = it.description
+                    ) }
+                val featuredSeries = featured.filterIsInstance<FeaturedContent.FeaturedSeries>()
+                    .map { Series(
+                        id = it.id,
+                        title = it.title,
+                        posterUrl = it.posterUrl,
+                        backdropUrl = it.backdropUrl,
+                        farsilandUrl = it.farsilandUrl,
+                        description = it.description
+                    ) }
+                prefetchManager.prefetchFeaturedContent(featuredMovies, featuredSeries)
+            }
+
+            // Prefetch recent movies and series posters
+            _recentMovies.value?.let { movies ->
+                prefetchManager.prefetchMoviePosters(movies)
+            }
+            _recentSeries.value?.let { seriesList ->
+                prefetchManager.prefetchSeriesPosters(seriesList)
+            }
+
+            // Prefetch recent episode thumbnails
+            _recentEpisodes.value?.let { episodes ->
+                prefetchManager.prefetchEpisodeThumbnails(episodes)
+            }
+
+            Log.d(TAG, "Phase 4: Background prefetch initiated for loaded content")
+        } catch (e: Exception) {
+            Log.w(TAG, "Prefetch failed (non-critical): ${e.message}")
         }
     }
 
@@ -328,7 +449,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun loadMovies() {
         moviesPage = 1
-        val result = repository.getMovies(page = 1, perPage = 30)
+        val result = repository.getMovies(page = 1, perPage = 50)
         result.onSuccess { movies ->
             _recentMovies.postValue(movies)
         }.onFailure { e ->
@@ -356,22 +477,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             moviesPage++
             Log.d("MainViewModel", "Loading movies page $moviesPage...")
 
-            val result = repository.getMovies(page = moviesPage, perPage = 30)
-            result.onSuccess { newMovies ->
-                if (newMovies.isNotEmpty()) {
-                    val currentMovies = _recentMovies.value ?: emptyList()
-                    _recentMovies.postValue(currentMovies + newMovies)
-                    Log.d("MainViewModel", "Loaded ${newMovies.size} more movies (total: ${currentMovies.size + newMovies.size})")
-                } else {
-                    Log.d("MainViewModel", "No more movies to load")
-                    moviesPage-- // No more items, revert page
+            // N15 FIX: Use try-finally to ensure loading flag is always reset
+            try {
+                val result = repository.getMovies(page = moviesPage, perPage = 30)
+                result.onSuccess { newMovies ->
+                    if (newMovies.isNotEmpty()) {
+                        val currentMovies = _recentMovies.value ?: emptyList()
+                        _recentMovies.postValue(currentMovies + newMovies)
+                        Log.d("MainViewModel", "Loaded ${newMovies.size} more movies (total: ${currentMovies.size + newMovies.size})")
+                    } else {
+                        Log.d("MainViewModel", "No more movies to load")
+                        moviesPage-- // No more items, revert page
+                    }
+                }.onFailure { e ->
+                    moviesPage-- // Revert page on failure
+                    Log.e("MainViewModel", "Failed to load more movies: ${e.message}")
                 }
-            }.onFailure { e ->
-                moviesPage-- // Revert page on failure
-                Log.e("MainViewModel", "Failed to load more movies: ${e.message}")
+            } finally {
+                isLoadingMoreMovies = false
             }
-
-            isLoadingMoreMovies = false
         }
     }
 
@@ -380,7 +504,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun loadSeries() {
         seriesPage = 1
-        val result = repository.getTvShows(page = 1, perPage = 30)
+        val result = repository.getTvShows(page = 1, perPage = 50)
         result.onSuccess { series ->
             _recentSeries.postValue(series)
         }.onFailure { e ->
@@ -408,22 +532,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             seriesPage++
             Log.d("MainViewModel", "Loading series page $seriesPage...")
 
-            val result = repository.getTvShows(page = seriesPage, perPage = 30)
-            result.onSuccess { newSeries ->
-                if (newSeries.isNotEmpty()) {
-                    val currentSeries = _recentSeries.value ?: emptyList()
-                    _recentSeries.postValue(currentSeries + newSeries)
-                    Log.d("MainViewModel", "Loaded ${newSeries.size} more series (total: ${currentSeries.size + newSeries.size})")
-                } else {
-                    Log.d("MainViewModel", "No more series to load")
-                    seriesPage-- // No more items, revert page
+            // N15 FIX: Use try-finally to ensure loading flag is always reset
+            try {
+                val result = repository.getTvShows(page = seriesPage, perPage = 30)
+                result.onSuccess { newSeries ->
+                    if (newSeries.isNotEmpty()) {
+                        val currentSeries = _recentSeries.value ?: emptyList()
+                        _recentSeries.postValue(currentSeries + newSeries)
+                        Log.d("MainViewModel", "Loaded ${newSeries.size} more series (total: ${currentSeries.size + newSeries.size})")
+                    } else {
+                        Log.d("MainViewModel", "No more series to load")
+                        seriesPage-- // No more items, revert page
+                    }
+                }.onFailure { e ->
+                    seriesPage-- // Revert page on failure
+                    Log.e("MainViewModel", "Failed to load more series: ${e.message}")
                 }
-            }.onFailure { e ->
-                seriesPage-- // Revert page on failure
-                Log.e("MainViewModel", "Failed to load more series: ${e.message}")
+            } finally {
+                isLoadingMoreSeries = false
             }
-
-            isLoadingMoreSeries = false
         }
     }
 
@@ -432,7 +559,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun loadEpisodes() {
         episodesPage = 1
-        val result = repository.getRecentEpisodes(page = 1, perPage = 30)
+        val result = repository.getRecentEpisodes(page = 1, perPage = 50)
         result.onSuccess { episodes ->
             _recentEpisodes.postValue(episodes)
         }.onFailure { e ->
@@ -460,22 +587,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             episodesPage++
             Log.d("MainViewModel", "Loading episodes page $episodesPage...")
 
-            val result = repository.getRecentEpisodes(page = episodesPage, perPage = 30)
-            result.onSuccess { newEpisodes ->
-                if (newEpisodes.isNotEmpty()) {
-                    val currentEpisodes = _recentEpisodes.value ?: emptyList()
-                    _recentEpisodes.postValue(currentEpisodes + newEpisodes)
-                    Log.d("MainViewModel", "Loaded ${newEpisodes.size} more episodes (total: ${currentEpisodes.size + newEpisodes.size})")
-                } else {
-                    Log.d("MainViewModel", "No more episodes to load")
-                    episodesPage-- // No more items, revert page
+            // N15 FIX: Use try-finally to ensure loading flag is always reset
+            try {
+                val result = repository.getRecentEpisodes(page = episodesPage, perPage = 30)
+                result.onSuccess { newEpisodes ->
+                    if (newEpisodes.isNotEmpty()) {
+                        val currentEpisodes = _recentEpisodes.value ?: emptyList()
+                        _recentEpisodes.postValue(currentEpisodes + newEpisodes)
+                        Log.d("MainViewModel", "Loaded ${newEpisodes.size} more episodes (total: ${currentEpisodes.size + newEpisodes.size})")
+                    } else {
+                        Log.d("MainViewModel", "No more episodes to load")
+                        episodesPage-- // No more items, revert page
+                    }
+                }.onFailure { e ->
+                    episodesPage-- // Revert page on failure
+                    Log.e("MainViewModel", "Failed to load more episodes: ${e.message}")
                 }
-            }.onFailure { e ->
-                episodesPage-- // Revert page on failure
-                Log.e("MainViewModel", "Failed to load more episodes: ${e.message}")
+            } finally {
+                isLoadingMoreEpisodes = false
             }
-
-            isLoadingMoreEpisodes = false
         }
     }
 
@@ -505,9 +635,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Load movies by genre
+     * H2 FIX: Cache LiveData per genre to avoid recreation on each call
      */
     fun loadMoviesByGenre(genreId: Int): LiveData<List<Movie>> {
+        // Return cached LiveData if available
+        moviesByGenreCache[genreId]?.let { return it }
+
         val liveData = MutableLiveData<List<Movie>>()
+        moviesByGenreCache[genreId] = liveData
 
         viewModelScope.launch {
             val result = repository.getMoviesByGenre(genreId, page = 1)
@@ -523,9 +658,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Load TV shows by genre
+     * H2 FIX: Cache LiveData per genre to avoid recreation on each call
      */
     fun loadSeriesByGenre(genreId: Int): LiveData<List<Series>> {
+        // Return cached LiveData if available
+        seriesByGenreCache[genreId]?.let { return it }
+
         val liveData = MutableLiveData<List<Series>>()
+        seriesByGenreCache[genreId] = liveData
 
         viewModelScope.launch {
             val result = repository.getTvShowsByGenre(genreId, page = 1)

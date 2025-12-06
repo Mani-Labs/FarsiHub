@@ -95,8 +95,13 @@ object SqlSanitizer {
 
     /**
      * Test sanitization with common attack patterns
+     *
+     * EXTERNAL AUDIT FIX UT-L4: Annotated as test-only function
+     * This should ideally be moved to androidTest directory, but annotated
+     * as VisibleForTesting to indicate it's for testing purposes only.
      */
-    fun testSanitization(): Map<String, String> {
+    @androidx.annotation.VisibleForTesting
+    internal fun testSanitization(): Map<String, String> {
         val testCases = mapOf(
             "%" to "\\%",                    // Full wildcard attack
             "%%" to "\\%\\%",                // Double wildcard

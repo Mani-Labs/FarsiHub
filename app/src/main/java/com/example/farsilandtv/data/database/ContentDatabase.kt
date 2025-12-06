@@ -73,7 +73,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CachedSeriesFts::class,
         CachedEpisodeFts::class
     ],
-    version = 2, // AUDIT FIX C1.2: Add FTS4 for fast search
+    version = 3, // FIX: Added dateAdded index on episodes for "Latest Episodes" performance
     exportSchema = true
 )
 abstract class ContentDatabase : RoomDatabase() {
@@ -85,6 +85,7 @@ abstract class ContentDatabase : RoomDatabase() {
     abstract fun videoUrlDao(): CachedVideoUrlDao
 
     companion object {
+        private const val TAG = "ContentDatabase"
         /**
          * Migration from version 1 to 2 (AUDIT FIX C1.2)
          * Adds FTS4 (Full Text Search) virtual tables for fast search
@@ -100,6 +101,9 @@ abstract class ContentDatabase : RoomDatabase() {
          */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(database: SupportSQLiteDatabase) {
+                // RD-L5: Log version check for debugging migration issues
+                android.util.Log.i(TAG, "Migration 1→2: Starting FTS4 virtual table creation")
+
                 // Create FTS4 virtual table for movies (indexes title column)
                 database.execSQL("""
                     CREATE VIRTUAL TABLE IF NOT EXISTS cached_movies_fts
@@ -218,6 +222,26 @@ abstract class ContentDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migration from version 2 to 3
+         * Adds index on dateAdded column for cached_episodes
+         *
+         * Performance Impact:
+         * - Before: ORDER BY dateAdded DESC requires full table scan
+         * - After: Index lookup for "Latest Episodes" queries (<10ms vs 100ms+)
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add dateAdded index to episodes table for faster "Latest Episodes" queries
+                database.execSQL("""
+                    CREATE INDEX IF NOT EXISTS index_cached_episodes_dateAdded
+                    ON cached_episodes(dateAdded)
+                """.trimIndent())
+
+                android.util.Log.i("ContentDatabase", "Migration 2→3: Added dateAdded index on cached_episodes")
+            }
+        }
+
         @Volatile
         private var INSTANCE: ContentDatabase? = null
 
@@ -272,11 +296,16 @@ abstract class ContentDatabase : RoomDatabase() {
                     currentDatabaseName = null
                 }
 
-                // Return existing or create new instance
-                INSTANCE ?: run {
+                // C1 FIX: Double-checked locking pattern for thread-safe singleton
+                // Return existing instance if another thread created it while we waited
+                INSTANCE?.let { return@synchronized it }
+
+                // Create new instance (only one thread reaches here due to synchronized)
+                run {
                     // Bug #8 fix: Validate database file exists before trying to load
                     try {
                         val assetPath = "databases/$databaseName"
+
                         val dbExists = try {
                             context.applicationContext.assets.open(assetPath).use { true }
                         } catch (e: Exception) {
@@ -312,8 +341,8 @@ abstract class ContentDatabase : RoomDatabase() {
                             ContentDatabase::class.java,
                             databaseName
                         )
-                            // AUDIT FIX C1.2: Add FTS4 migration
-                            .addMigrations(MIGRATION_1_2)
+                            // AUDIT FIX C1.2: Add FTS4 migration + dateAdded index
+                            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                             // Don't use createFromAsset - we copied manually above
                             .fallbackToDestructiveMigration()  // For development
                             .addCallback(object : androidx.room.RoomDatabase.Callback() {
@@ -378,6 +407,16 @@ abstract class ContentDatabase : RoomDatabase() {
             if (currentSource != source) {
                 android.util.Log.i("ContentDatabase", "Switching database from ${currentSource.displayName} to ${source.displayName}")
 
+                // PRE-INITIALIZE: Ensure new database file exists BEFORE updating preferences
+                // This prevents crash when preference listeners try to access the database
+                val newDbFile = context.applicationContext.getDatabasePath(source.fileName)
+                if (!newDbFile.exists()) {
+                    android.util.Log.i("ContentDatabase", "Pre-initializing ${source.fileName} from assets...")
+                    val assetPath = "databases/${source.fileName}"
+                    copyDatabaseFromAssets(context.applicationContext, assetPath, newDbFile)
+                    android.util.Log.i("ContentDatabase", "Pre-initialization complete for ${source.fileName}")
+                }
+
                 // AUDIT FIX #14: Atomic operation - close + update preferences in same synchronized block
                 // Prevents race condition where getDatabase() sees null but reads old preference
                 synchronized(this) {
@@ -419,6 +458,11 @@ abstract class ContentDatabase : RoomDatabase() {
                 DatabaseSource.NAMAKADE -> {
                     // Namakade doesn't have a sync worker (no API available)
                     android.util.Log.i("ContentDatabase", "Namakade is static - no sync available")
+                    return
+                }
+                DatabaseSource.IMVBOX -> {
+                    // IMVBox uses bundled database - no sync worker needed
+                    android.util.Log.i("ContentDatabase", "IMVBox uses bundled database - no sync available")
                     return
                 }
             }

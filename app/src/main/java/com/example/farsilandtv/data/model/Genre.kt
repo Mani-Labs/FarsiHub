@@ -31,26 +31,27 @@ enum class Genre(
     HISTORICAL("تاریخی", "#607D8B");    // Blue Gray (classic)
 
     /**
-     * Get English name in lowercase (matches genre field format)
+     * Get English name in Title Case (matches database genre field format)
+     * Database stores: "Action, Comedy, Drama" not "action, comedy, drama"
      */
     val englishName: String
         get() = when (this) {
-            ACTION -> "action"
-            COMEDY -> "comedy"
-            DRAMA -> "drama"
-            ROMANCE -> "romance"
-            THRILLER -> "thriller"
-            HORROR -> "horror"
-            SCIFI -> "sci-fi"
-            DOCUMENTARY -> "documentary"
-            ANIMATION -> "animation"
-            FAMILY -> "family"
-            FANTASY -> "fantasy"
-            CRIME -> "crime"
-            ADVENTURE -> "adventure"
-            MYSTERY -> "mystery"
-            WAR -> "war"
-            HISTORICAL -> "historical"
+            ACTION -> "Action"
+            COMEDY -> "Comedy"
+            DRAMA -> "Drama"
+            ROMANCE -> "Romance"
+            THRILLER -> "Thriller"
+            HORROR -> "Horror"
+            SCIFI -> "Sci-Fi"
+            DOCUMENTARY -> "Documentary"
+            ANIMATION -> "Animation"
+            FAMILY -> "Family"
+            FANTASY -> "Fantasy"
+            CRIME -> "Crime"
+            ADVENTURE -> "Adventure"
+            MYSTERY -> "Mystery"
+            WAR -> "War"
+            HISTORICAL -> "Historical"
         }
 
     companion object {
@@ -60,8 +61,8 @@ enum class Genre(
          * @return Matching Genre or null if not found
          */
         fun fromEnglishName(name: String): Genre? {
-            val normalized = name.lowercase().trim()
-            return values().find { it.englishName == normalized }
+            val normalized = name.trim()
+            return values().find { it.englishName.equals(normalized, ignoreCase = true) }
         }
 
         /**

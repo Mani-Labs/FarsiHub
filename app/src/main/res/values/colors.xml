@@ -1,19 +1,20 @@
 <resources>
-    <!-- Dark Red/Maroon Theme (FarsiHub Rebrand) -->
-    <color name="background_gradient_start">#1A1A1A</color>
-    <color name="background_gradient_end">#3D3D3D</color>
-    <color name="fastlane_background">#8B1538</color>          <!-- Deep maroon -->
-    <color name="search_opaque">#B71C4C</color>                <!-- Lighter maroon for search -->
-    <color name="selected_background">#B71C4C</color>          <!-- Lighter maroon for selection -->
-    <color name="default_background">#2B2B2B</color>           <!-- Dark charcoal -->
-    <color name="splash_background">#8B1538</color>            <!-- Deep maroon splash -->
+    <!-- Minimal Dark Theme - Deep Slate with Warm Amber -->
+    <color name="background_gradient_start">#0F172A</color>     <!-- Deep navy slate -->
+    <color name="background_gradient_end">#1E293B</color>       <!-- Slate surface -->
+    <color name="fastlane_background">#D97706</color>           <!-- Amber dark -->
+    <color name="search_opaque">#F59E0B</color>                 <!-- Warm amber for search -->
+    <color name="selected_background">#334155</color>           <!-- Slate light for selection -->
+    <color name="default_background">#1E293B</color>            <!-- Slate surface -->
+    <color name="splash_background">#0F172A</color>             <!-- Deep slate splash -->
 
-    <!-- Notification colors (Feature #9) -->
-    <color name="notification_color">#8B1538</color>           <!-- Maroon notification -->
+    <!-- Notification colors -->
+    <color name="notification_color">#F59E0B</color>            <!-- Warm amber notification -->
 
-    <!-- Source badge colors -->
+    <!-- Source badge colors (keep distinct) -->
     <color name="source_farsiland">#FF5252</color>      <!-- Red for Farsiland -->
     <color name="source_farsiplex">#448AFF</color>      <!-- Blue for FarsiPlex -->
     <color name="source_namakade">#69F0AE</color>       <!-- Green for Namakade -->
+    <color name="source_imvbox">#FFD700</color>         <!-- Gold for IMVBox -->
     <color name="source_unknown">#9E9E9E</color>        <!-- Gray for unknown -->
 </resources>

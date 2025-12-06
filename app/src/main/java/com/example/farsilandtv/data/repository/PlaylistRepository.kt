@@ -1,20 +1,23 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
 import com.example.farsilandtv.data.database.*
 import com.example.farsilandtv.data.models.Movie
 import com.example.farsilandtv.data.models.Series
 import kotlinx.coroutines.flow.Flow
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for playlist management
  * Handles playlists and their content with business logic
+ *
+ * Hilt-managed singleton - injected via constructor
  */
-class PlaylistRepository(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context)
-    private val playlistDao: PlaylistDao = database.playlistDao()
-    private val playlistItemDao: PlaylistItemDao = database.playlistItemDao()
+@Singleton
+class PlaylistRepository @Inject constructor(
+    private val playlistDao: PlaylistDao,
+    private val playlistItemDao: PlaylistItemDao
+) {
 
     // ========== Playlist Management ==========
 

@@ -27,6 +27,7 @@ object SourceBadgeHelper {
         FARSILAND("F", R.color.source_farsiland, "Farsiland"),
         FARSIPLEX("F", R.color.source_farsiplex, "FarsiPlex"),
         NAMAKADE("N", R.color.source_namakade, "Namakade"),
+        IMVBOX("I", R.color.source_imvbox, "IMVBox"),
         UNKNOWN("?", R.color.source_unknown, "Unknown")
     }
 
@@ -39,6 +40,7 @@ object SourceBadgeHelper {
             url.contains("farsiplex.com", ignoreCase = true) -> ContentSource.FARSIPLEX
             url.contains("namakade.com", ignoreCase = true) ||
             url.contains("namakadeh.com", ignoreCase = true) -> ContentSource.NAMAKADE
+            url.contains("imvbox.com", ignoreCase = true) -> ContentSource.IMVBOX
             else -> ContentSource.UNKNOWN
         }
     }

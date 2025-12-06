@@ -10,7 +10,8 @@ enum class DatabaseSource(
 ) {
     FARSILAND("Farsiland.com", "farsiland_content.db", "%farsiland.com%"),
     FARSIPLEX("FarsiPlex.com", "farsiplex_content.db", "%farsiplex.com%"),
-    NAMAKADE("Namakade.com", "namakade.db", "%namakade%");
+    NAMAKADE("Namakade.com", "namakade.db", "%namakade%"),
+    IMVBOX("IMVBox.com", "imvbox_content.db", "%imvbox%");
 
     companion object {
         fun fromFileName(fileName: String): DatabaseSource {

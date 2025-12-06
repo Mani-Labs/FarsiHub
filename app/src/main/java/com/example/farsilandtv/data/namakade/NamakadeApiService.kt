@@ -7,13 +7,42 @@ import com.example.farsilandtv.data.models.Series
 import com.example.farsilandtv.data.models.VideoUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.jsoup.Jsoup
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * N23 FIX: Suspendable OkHttp Call extension to prevent thread blocking
+ * Uses enqueue() instead of blocking execute()
+ */
+private suspend fun Call.await(): Response {
+    return suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation {
+            cancel()
+        }
+        enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response)
+            }
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(e)
+                }
+            }
+        })
+    }
+}
 
 /**
  * API Service for Namakade.com content scraping
@@ -312,7 +341,8 @@ class NamakadeApiService {
                 .head()
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
+            // N23 FIX: Use await() instead of blocking execute()
+            httpClient.newCall(request).await().use { response ->
                 response.isSuccessful
             }
         } catch (e: Exception) {
@@ -400,12 +430,23 @@ class NamakadeApiService {
             .get()
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
+        // N23 FIX: Use await() instead of blocking execute()
+        httpClient.newCall(request).await().use { response ->
             if (!response.isSuccessful) {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }
 
-            response.body?.string() ?: throw Exception("Empty response body")
+            val body = response.body ?: throw Exception("Empty response body")
+
+            // EXTERNAL AUDIT FIX SN-M2: Add response size limit to prevent OOM
+            // Issue: No limit on response size → OOM risk on large malicious responses
+            // Fix: Check Content-Length header before reading, reject responses > 5MB
+            val contentLength = response.header("Content-Length")?.toLongOrNull() ?: 0
+            if (contentLength > 5 * 1024 * 1024) { // 5MB limit
+                throw IOException("Response too large: $contentLength bytes (max 5MB)")
+            }
+
+            body.string()
         }
     }
 
@@ -422,7 +463,8 @@ class NamakadeApiService {
             .post(emptyBody)
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
+        // N23 FIX: Use await() instead of blocking execute()
+        httpClient.newCall(request).await().use { response ->
             if (!response.isSuccessful) {
                 throw Exception("HTTP ${response.code}: ${response.message}")
             }

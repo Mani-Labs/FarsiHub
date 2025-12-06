@@ -1,24 +1,27 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
 import android.util.Log
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.NotificationPreferences
+import com.example.farsilandtv.data.database.NotificationPreferencesDao
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for managing notification preferences
  * Feature #9 - Push Notifications
+ *
+ * Hilt-managed singleton - injected via constructor
  */
-class NotificationPreferencesRepository(context: Context) {
+@Singleton
+class NotificationPreferencesRepository @Inject constructor(
+    private val dao: NotificationPreferencesDao
+) {
 
     companion object {
         private const val TAG = "NotificationPrefsRepo"
     }
-
-    private val database = AppDatabase.getDatabase(context)
-    private val dao = database.notificationPreferencesDao()
 
     /**
      * Get notification preferences as Flow (reactive updates)

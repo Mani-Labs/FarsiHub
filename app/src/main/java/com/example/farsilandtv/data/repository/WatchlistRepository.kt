@@ -1,6 +1,5 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
 import com.example.farsilandtv.data.database.*
@@ -10,17 +9,22 @@ import com.example.farsilandtv.data.models.Series
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for watchlist and progress tracking
  * Handles all watchlist operations and playback progress
+ *
+ * Hilt-managed singleton - injected via constructor
  */
-class WatchlistRepository(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context)
-    private val movieDao = database.watchlistMovieDao()
-    private val seriesDao = database.monitoredSeriesDao()
-    private val episodeDao = database.episodeProgressDao()
+@Singleton
+class WatchlistRepository @Inject constructor(
+    private val database: AppDatabase,
+    private val movieDao: WatchlistMovieDao,
+    private val seriesDao: MonitoredSeriesDao,
+    private val episodeDao: EpisodeProgressDao
+) {
 
     companion object {
         private const val TAG = "WatchlistRepository"
@@ -391,7 +395,7 @@ class WatchlistRepository(context: Context) {
             movies.forEach { movie ->
                 items.add(
                     ContinueWatchingItem(
-                        id = "movie-${movie.id}",
+                        id = ContinueWatchingItem.createMovieId(movie.id), // N12 FIX: Use helper
                         contentType = ContinueWatchingItem.ContentType.MOVIE,
                         title = movie.title,
                         subtitle = null,
@@ -408,7 +412,7 @@ class WatchlistRepository(context: Context) {
             episodes.forEach { episode ->
                 items.add(
                     ContinueWatchingItem(
-                        id = "episode-${episode.episodeId}",
+                        id = ContinueWatchingItem.createEpisodeId(episode.episodeId), // N12 FIX: Use helper
                         contentType = ContinueWatchingItem.ContentType.EPISODE,
                         title = episode.episodeTitle,
                         subtitle = episode.formattedNumber,

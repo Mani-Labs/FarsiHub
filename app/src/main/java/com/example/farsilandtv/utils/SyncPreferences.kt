@@ -124,6 +124,24 @@ class SyncPreferences(context: Context) {
     }
 
     /**
+     * L3 FIX: Configurable ghost record cleanup threshold (movies)
+     * Default: 50 (skip cleanup if fewer movies in ContentDatabase)
+     * Prevents accidental watchlist wipe on corrupt/empty database
+     */
+    var ghostCleanupMinMovies: Int
+        get() = prefs.getInt("ghost_cleanup_min_movies", 50)
+        set(value) = prefs.edit().putInt("ghost_cleanup_min_movies", value).apply()
+
+    /**
+     * L3 FIX: Configurable ghost record cleanup threshold (series)
+     * Default: 10 (skip cleanup if fewer series in ContentDatabase)
+     * Prevents accidental watchlist wipe on corrupt/empty database
+     */
+    var ghostCleanupMinSeries: Int
+        get() = prefs.getInt("ghost_cleanup_min_series", 10)
+        set(value) = prefs.edit().putInt("ghost_cleanup_min_series", value).apply()
+
+    /**
      * Reset all preferences to defaults
      */
     fun resetToDefaults() {

@@ -3,32 +3,52 @@ package com.example.farsilandtv.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Feature #16: Jetpack Compose for TV - Color Scheme
- * Matches existing Leanback theme colors for consistency
+ * Minimal Dark Theme - Atmospheric depth with warm amber
+ * Based on designprompts.dev/minimal-dark design system
+ *
+ * Philosophy: Layered darkness with warm amber accents that glow like embers.
+ * At least 3 distinct dark tones (#0A0A0F → #12121A → #1A1A24)
  */
 
-// Primary colors (Pink accent from current theme)
-val FarsilandPink = Color(0xFFE91E63)
-val FarsilandPinkLight = Color(0xFFF48FB1)
-val FarsilandPinkDark = Color(0xFFC2185B)
+// Primary colors (Warm Amber accent - "glowing embers")
+val FarsilandAmber = Color(0xFFF59E0B)        // Main accent - amber-500
+val FarsilandAmberLight = Color(0xFFFBBF24)  // Light variant - amber-400
+val FarsilandAmberDark = Color(0xFFD97706)   // Dark variant - amber-600
+val FarsilandAmberGlow = Color(0x26F59E0B)   // 15% alpha for glow backgrounds (accentMuted)
+val FarsilandAmberBorderGlow = Color(0x4DF59E0B) // 30% alpha for border glows
 
-// Background colors (Dark theme for TV)
-val BackgroundDark = Color(0xFF121212)
-val SurfaceDark = Color(0xFF1E1E1E)
-val SurfaceLight = Color(0xFF2C2C2C)
+// Legacy aliases for compatibility
+val FarsilandPink = FarsilandAmber
+val FarsilandPinkLight = FarsilandAmberLight
+val FarsilandPinkDark = FarsilandAmberDark
+
+// Background colors (Layered darkness - NOT pure black)
+val BackgroundDark = Color(0xFF0A0A0F)       // Deepest - almost black but warmer
+val BackgroundAlt = Color(0xFF12121A)        // Slightly elevated surfaces
+val SurfaceDark = Color(0xFF1A1A24)          // Card backgrounds, muted surfaces
+val SurfaceLight = Color(0xFF2A2A35)         // Lighter surface for selection/hover
+
+// Glass-effect card backgrounds (semi-transparent)
+val CardBackground = Color(0x991A1A24)       // 60% opacity for glass effect
+val CardBackgroundSolid = Color(0xFF1A1A24)  // Solid card background
 
 // Text colors
-val OnPrimary = Color.White
-val OnBackground = Color.White
-val OnSurface = Color.White
-val OnSurfaceVariant = Color(0xFFB0B0B0)
+val OnPrimary = Color(0xFF0A0A0F)            // Dark text on amber
+val OnBackground = Color(0xFFFAFAFA)         // Near-white text (foreground)
+val OnSurface = Color(0xFFFAFAFA)            // Same as foreground
+val OnSurfaceVariant = Color(0xFF71717A)     // Muted text (zinc-500)
+
+// Border colors (very subtle)
+val BorderDefault = Color(0x14FFFFFF)        // 8% white opacity
+val BorderHover = Color(0x26FFFFFF)          // 15% white opacity
 
 // Focus/Selection colors
-val FocusHighlight = Color(0xFFFFFFFF)
-val SelectedBackground = Color(0xFF2C2C2C)
-val DefaultBackground = Color(0xFF1E1E1E)
+val FocusHighlight = FarsilandAmber          // Amber focus ring
+val FocusGlow = Color(0x66F59E0B)            // 40% alpha for button hover glow
+val SelectedBackground = Color(0xFF2A2A35)   // Elevated surface
+val DefaultBackground = Color(0xFF1A1A24)    // Card level
 
-// Genre badge colors (from existing genre system)
+// Genre badge colors (keep unchanged - work well)
 val GenreAction = Color(0xFFE53935)
 val GenreComedy = Color(0xFFFFA726)
 val GenreDrama = Color(0xFF5E35B1)

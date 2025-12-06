@@ -1,19 +1,23 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.SearchHistory
+import com.example.farsilandtv.data.database.SearchHistoryDao
+import com.example.farsilandtv.utils.SqlSanitizer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for search history and auto-complete suggestions
  * Implements deduplication and limit management
+ *
+ * Hilt-managed singleton - injected via constructor
  */
-class SearchRepository(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context)
-    private val searchHistoryDao = database.searchHistoryDao()
+@Singleton
+class SearchRepository @Inject constructor(
+    private val searchHistoryDao: SearchHistoryDao
+) {
 
     companion object {
         private const val MAX_HISTORY_SIZE = 50 // Keep only 50 most recent searches
@@ -59,6 +63,9 @@ class SearchRepository(context: Context) {
     /**
      * Get auto-complete suggestions based on prefix
      * Returns suggestions sorted by recency
+     *
+     * SECURITY: Sanitizes input to prevent SQL injection via LIKE wildcards
+     *
      * @param prefix The text prefix to match (case-insensitive)
      */
     fun getSuggestions(prefix: String): Flow<List<String>> {
@@ -69,8 +76,11 @@ class SearchRepository(context: Context) {
             return kotlinx.coroutines.flow.flowOf(emptyList())
         }
 
+        // SECURITY: Sanitize input to prevent SQL wildcard injection
+        val sanitizedPrefix = SqlSanitizer.sanitizeLikePattern(trimmedPrefix)
+
         // Return suggestions matching prefix
-        return searchHistoryDao.searchSuggestions(trimmedPrefix, DEFAULT_SUGGESTION_LIMIT)
+        return searchHistoryDao.searchSuggestions(sanitizedPrefix, DEFAULT_SUGGESTION_LIMIT)
     }
 
     /**

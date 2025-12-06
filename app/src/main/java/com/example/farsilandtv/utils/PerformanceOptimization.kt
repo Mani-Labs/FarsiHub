@@ -27,6 +27,7 @@ private const val TAG = "Performance"
  * - Automatic retry on failure
  */
 fun createOptimizedImageLoader(context: Context): ImageLoader {
+    // UT-M6 FIX: Correct cache policy builder pattern
     return ImageLoader.Builder(context)
         .memoryCache {
             MemoryCache.Builder(context)
@@ -40,12 +41,10 @@ fun createOptimizedImageLoader(context: Context): ImageLoader {
                 .build()
         }
         .respectCacheHeaders(false) // Ignore server cache headers
-        .apply {
-            // Enable all cache policies
-            memoryCachePolicy(CachePolicy.ENABLED)
-            diskCachePolicy(CachePolicy.ENABLED)
-            networkCachePolicy(CachePolicy.ENABLED)
-        }
+        // UT-M6 FIX: Cache policies are set on builder, not in apply block
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .networkCachePolicy(CachePolicy.ENABLED)
         .build()
 }
 
@@ -83,11 +82,19 @@ inline fun <T, R> T.rememberCalculation(
 
 /**
  * Performance monitoring for Compose screens
+ * UT-M7 FIX: Added max size limit to prevent unbounded growth
  */
 object ComposePerformanceMonitor {
     private val recompositionCounts = mutableMapOf<String, Int>()
+    private const val MAX_TRACKED_SCREENS = 50 // UT-M7 FIX: Limit map size
 
     fun recordRecomposition(screenName: String) {
+        // UT-M7 FIX: Check map size before adding new entries
+        if (recompositionCounts.size >= MAX_TRACKED_SCREENS && !recompositionCounts.containsKey(screenName)) {
+            Log.w(TAG, "Max tracked screens reached ($MAX_TRACKED_SCREENS), not tracking: $screenName")
+            return
+        }
+
         val count = recompositionCounts.getOrDefault(screenName, 0) + 1
         recompositionCounts[screenName] = count
 

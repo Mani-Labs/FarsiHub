@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.farsilandtv.data.download.DownloadDao
+import com.example.farsilandtv.data.download.DownloadItem
 
 /**
  * Room Database for FarsilandTV
@@ -70,9 +72,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Playlist::class,
         PlaylistItem::class,
         NotificationPreferences::class,
-        PlaybackPosition::class
+        PlaybackPosition::class,
+        DownloadItem::class  // Phase 6: Offline Downloads
     ],
-    version = 10, // FarsilandDatabase fully removed (H1 fix)
+    version = 11, // Phase 6: Added downloads table
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -86,6 +89,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun playlistItemDao(): PlaylistItemDao
     abstract fun notificationPreferencesDao(): NotificationPreferencesDao
     abstract fun playbackPositionDao(): PlaybackPositionDao
+    abstract fun downloadDao(): DownloadDao  // Phase 6: Offline Downloads
 
     companion object {
         @Volatile
@@ -421,6 +425,41 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migration from version 10 to 11 (Phase 6: Offline Downloads)
+         * Adds downloads table for offline content storage
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Create downloads table
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS downloads (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        contentType TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        subtitle TEXT,
+                        posterUrl TEXT,
+                        videoUrl TEXT NOT NULL,
+                        localFilePath TEXT,
+                        fileSize INTEGER NOT NULL DEFAULT 0,
+                        downloadedBytes INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'PENDING',
+                        createdAt INTEGER NOT NULL,
+                        completedAt INTEGER,
+                        errorMessage TEXT
+                    )
+                """.trimIndent())
+
+                // Create index for status queries (active downloads, completed)
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_downloads_status ON downloads(status)")
+
+                // Create index for sorting by creation date
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_downloads_createdAt ON downloads(createdAt)")
+
+                android.util.Log.i("AppDatabase", "MIGRATION 10→11: Created downloads table for offline mode")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -429,7 +468,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "farsiland_watchlist_database"
                 )
                     // Add all migration paths first (data-preserving)
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
 
                     // AUDIT FIX C4: Add onCreate callback for fresh installs
                     // Ensures default data exists for users who install latest version directly

@@ -2,64 +2,88 @@
 
 ## Section 1: Project Overview
 
-**Name:** FarsiPlex Android TV Application (rebranding to FarsiHub)
+**Name:** FarsiPlex Android TV & Phone Application (rebranding to FarsiHub)
 
-**Purpose:** Android TV streaming app for Farsi content with phone & cast support planned
+**Purpose:** Cross-platform streaming app for Farsi content (TV, Tablet, Phone) with Chromecast support
 
-**Target Platform:** Nvidia Shield TV (API 28-36), expanding to phones
+**Target Platforms:**
+- Nvidia Shield TV (primary)
+- Android TV devices (API 28-36)
+- Android Tablets (API 28+)
+- Android Phones (API 28+)
 
-**Architecture:** Monolithic app with manual DI, migrating to modular Hilt-based architecture
+**Architecture:** Full Hilt Dependency Injection
+- Hilt annotations on Activities/Fragments/Workers/ViewModels/Repositories
+- All repositories migrated to `@Singleton` + `@Inject constructor`
+- Full Hilt injection COMPLETE (no more `getInstance()` pattern)
 
-**Audit Status:** 23/27 issues fixed (85% - Production Ready) - Updated 2025-11-22
-**Critical Issues:** 9/9 fixed (100%) - All blocking issues resolved
-
-**Modernization Plan:** See docs/Farsihub-Modernization-Plan.md
+**Audit Status:** 136 issues fixed - Production Ready (2025-12-04)
 
 ---
 
 ## Section 2: Technology Stack
 
-**Language:** Kotlin 1.9+
+**Language:** Kotlin 2.0.0
 
 **Dependency Injection:**
-- Current: Manual singleton pattern with getInstance()
-- Target: Hilt 2.48+
+- Hilt 2.51.1 (Activities, Fragments, Workers, ViewModels, Repositories)
+- All repositories now use `@Singleton` + `@Inject constructor` (migration COMPLETE)
+- Pattern: Full Hilt injection throughout
+- 3 Hilt Modules: DatabaseModule, NetworkModule, RepositoryModule (RepositoryModule now empty - all auto-discovered)
 
 **UI Framework:**
-- Android Leanback (~85% of screens - primary)
-- Jetpack Compose (~15% - emerging, ContentRow, EpisodeCard, ErrorBoundary)
-- Compose TV Material 3 (added, partially used)
+- Jetpack Compose TV (~95% - All TV screens)
+- Jetpack Compose Material 3 (~95% - All Phone screens)
+- Legacy (~5% - Deprecated activities only)
+- Device-adaptive layouts via DeviceUtils + LocalDeviceType
 
-**Database Architecture (DUAL BY DESIGN - DO NOT MERGE):**
-- AppDatabase v10 (permanent user data: watchlist, favorites, playback positions)
-- ContentDatabase v2 (replaceable content catalog with FTS4 search)
-- Storage: Room 2.5+ with SQLite
-- Pattern: Atomic content refresh via database replacement
-- **CRITICAL:** This dual pattern is intentional and audit-approved - never consolidate!
+**Database Architecture (DUAL BY DESIGN):**
+- **AppDatabase v11** - User data (PERMANENT):
+  - PlaybackPosition, Favorite, WatchlistMovie, MonitoredSeries, EpisodeProgress
+  - Playlist, PlaylistItem, SearchHistory, NotificationPreferences
+  - DownloadItem (offline downloads with progress)
+  - 8 migrations (3→11)
+- **ContentDatabase v3** - Content catalog (REPLACEABLE):
+  - CachedMovie, CachedSeries, CachedEpisode, CachedGenre
+  - CachedVideoUrl (scraped URLs with expiry)
+  - FTS4 virtual tables: CachedMovieFts, CachedSeriesFts, CachedEpisodeFts (full-text search)
+- **CRITICAL:** Never merge these databases - intentional separation!
 
 **Video Player:**
-- Libraries: Media3 (androidx.media3:media3-exoplayer)
-- Implementation: Still using ExoPlayer v2 imports (migration 80% complete)
-- Cache: 100MB SimpleCache for video
+- Media3 ExoPlayer (androidx.media3:media3-exoplayer:1.3.1)
+- Media3 UI, Common, DataSource modules
+- Media3 Cast integration (media3-cast:1.3.1)
+- Custom ExoPlayer control overlay (exo_playback_control_view.xml)
+- Auto Frame Rate (AFR) matching via AutoFrameRateHelper
 
-**Image Loading:** Coil 2.x
+**Chromecast:**
+- Google Cast SDK (play-services-cast-framework:21.4.0)
+- CastManager singleton with session lifecycle handling
+- Default Media Receiver (no custom receiver app)
+- Position-preserving handoff between local/remote playback
+
+**Image Loading:** Coil 2.x with lifecycle-aware coroutine scopes
 
 **Networking:**
-- HTTP: OkHttp + Retrofit with Moshi
-- Caching: 10MB HTTP cache + 50-entry in-memory LRU
-- Scraping: JSoup for HTML parsing
+- OkHttp 4.x with custom interceptors
+- Retrofit 2.x + Moshi for WordPress API
+- JSoup for HTML scraping
+- 10MB HTTP cache + 100-entry video URL LRU cache (5 min TTL)
 
 **Async Patterns:**
-- Kotlin Coroutines (IO dispatcher, viewModelScope, lifecycleScope)
-- LiveData (legacy screens)
-- StateFlow (new screens only)
-- Paging 3 for content lists
+- Kotlin Coroutines (Dispatchers.IO, Main)
+- LiveData (MainViewModel for home screen data)
+- StateFlow (newer components, repository flows)
+- Paging 3 (content lists with infinite scroll)
 
 **Background Processing:**
-- WorkManager for periodic sync (30-min intervals)
-- Workers: ContentSyncWorker, FarsiPlexSyncWorker
+- WorkManager with CoroutineWorker
+- ContentSyncWorker: WordPress API sync (Farsiland)
+- FarsiPlexSyncWorker: Sitemap scraping (FarsiPlex)
+- DownloadWorker: Offline file downloads
+- Sync interval: 30 minutes default (configurable, min 15 min due to WorkManager) with exponential backoff
 
-**Build System:** Gradle 8.x with Kotlin DSL
+**Build System:** Gradle 8.13 with Kotlin DSL, Version Catalogs
 
 ---
 
@@ -78,412 +102,273 @@
 # Clean and rebuild
 ./gradlew clean assembleDebug
 
-# Build with tests
-./gradlew build
-
 # Install on connected device
 ./gradlew installDebug
 ```
 
 ---
 
-## Section 4: Architecture Notes
+## Section 4: Architecture Deep Dive
 
-**Current Architecture (Monolithic):**
-- Single app module
-- Manual dependency injection via companion object singletons
-- No feature modules or layer separation
+### Application Entry Point
 
-**Navigation Pattern:**
-- Fragment-based navigation with Leanback BrowseFragment as main entry point
-- Activity-based details screens (DetailsActivity, SeriesDetailsActivity)
-- Modal dialogs for user actions (AddToPlaylistDialogFragment)
-- ViewModels: Only 2 exist (GenreFilterViewModel, MainViewModel)
+**FarsilandApp.kt** (`Application` class):
+- Initializes Hilt via `@HiltAndroidApp`
+- Sets up SimpleCache for video (100MB)
+- Initializes CastManager for Chromecast
+- Configures Firebase Crashlytics (if enabled)
+- Schedules background sync workers via WorkManager
 
-**Data Access Pattern:**
-- Repository pattern with manual singletons
-- Source-aware (Farsiland/FarsiPlex/Namakade)
-- Database-first with API fallback
-- 30-second TTL cache per repository
-- Direct DAO access (no abstraction layer)
+**MainActivity.kt** (`FragmentActivity`):
+- Single-Activity architecture
+- Detects device type via DeviceUtils (TV/Tablet/Phone)
+- Sets orientation: Landscape for TV/Tablet, Portrait for Phone
+- Loads HomeComposeFragment
+- Double-back-to-exit on home screen
 
-**State Management:**
-- LiveData for most screens
-- StateFlow in newer components only
-- No SavedStateHandle implementation yet
+### Navigation Architecture
 
-**Database Architecture (CRITICAL - DO NOT MODIFY):**
-- AppDatabase v10: User data (permanent)
-  - PlaybackPosition (migrated from FarsilandDatabase)
-  - Favorites, Watchlist, Playlists
-  - SearchHistory, NotificationPreferences
-- ContentDatabase v2: Content catalog (replaceable)
-  - CachedMovie, CachedSeries, CachedEpisode
-  - FTS4 virtual tables for search
-  - Atomically replaced during sync
-
-**Video Playback:**
-- Media3 libraries with ExoPlayer v2 imports
-- SimpleCache for video (100MB)
-- Playback position tracking in AppDatabase
-- Custom controls overlay for Android TV
-
-**API & Data Sources:**
-- Primary: WordPress REST API (Farsiland)
-- Scraping: Farsiland, FarsiPlex, Namakade
-- Video URLs always scraped (not stored)
-- Universal dedup logic across sources
-
----
-
-## Section 5: Audit Remediation Status
-
-**External Audit Date:** 2025-11-21
-**Final Verification:** 2025-11-22
-
-**Total Issues Found:** 30 verified issues
-
-**Issue Breakdown by Severity:**
-- Critical Issues: 9 (C1-C9) - ✅ 9/9 FIXED (100%)
-- High Priority: 9 (H10-H17) - ✅ 9/9 FIXED (100%)
-- Medium Priority: 9 (M18-M27) - ✅ 9/9 FIXED (100%)
-- Low Priority: 3 (L28-L30) - ✅ 3/3 ADDRESSED (100%)
-
-**Overall Completion:** 30/30 fixes complete (100%) - PRODUCTION-READY ✅
-
-**Remediation Timeline:**
-- Phase 1-8: Initial fixes (2025-11-21)
-- Phase 9: Final verification (2025-11-22)
-- Status: ALL ISSUES RESOLVED
-
-**Key Fixes Completed (2025-11-22):**
-1. **Issue 12:** Pagination memory leak - OFFSET/LIMIT queries
-2. **Issue 13:** JavaScript truncation - 10KB → 100KB limit
-3. **Issue 14:** Content loading - supervisorScope pattern
-4. **Issue 15:** Date parsing - 3 format fallback
-5. **Issue 16:** Python DB thrashing - connection reuse
-6. **Issue 17:** Python metadata extraction - proper parsing
-7. **Issue 18:** User-Agent sync - consistent headers
-8. **Issue 19:** Race condition - WorkManager constraints
-9. **Issue 20:** HTML stripping - entity decoding
-10. **Issue 21:** Hash collision IDs - composite keys
-11. **Issue 22:** Quality detection - regex patterns
-12. **Issue 25:** Image scaling - FIT mode
-13. **Issue 26:** Asset copy - IO dispatcher
-14. **Issue 27:** Context leak - applicationContext
-15. **Issue 28:** Regex churn - companion object precompilation
-16. **Issue 29:** Source constants - sealed classes
-17. **Issue 30:** Localized strings - string resources
-
-**Previously Fixed (verified 2025-11-22):**
-- **Issue 9:** Database swap - safe replacement pattern
-- **Issue 11:** FTS search - SqlSanitizer implementation
-- **Issue 24:** Migration path - absolute paths
-
-**Final Status:** 30/30 fixes verified (100%) - Production-approved ✅
-
----
-
-## Section 6: Key Directories
-
+**TV/Tablet Flow (Sidebar Navigation):**
 ```
-G:\FarsiPlex\
-├── app/ (monolithic module)
-│   ├── src/
-│   │   └── main/
-│   │       ├── java/com/example/farsilandtv/
-│   │       │   ├── FarsilandApp.kt (application class, cache init)
-│   │       │   ├── MainActivity.kt (entry point)
-│   │       │   ├── DetailsActivity.kt (movie/series details)
-│   │       │   ├── SeriesDetailsActivity.kt (series detail view)
-│   │       │   ├── SearchActivity.kt (search interface)
-│   │       │   ├── VideoPlayerActivity.kt (playback screen)
-│   │       │   ├── data/
-│   │       │   │   ├── database/
-│   │       │   │   │   ├── AppDatabase.kt (user data - DO NOT MERGE)
-│   │       │   │   │   └── ContentDatabase.kt (content - replaceable)
-│   │       │   │   ├── repository/ (manual singletons)
-│   │       │   │   │   ├── ContentRepository.kt (main, with cache)
-│   │       │   │   │   ├── PlaybackRepository.kt
-│   │       │   │   │   ├── WatchlistRepository.kt
-│   │       │   │   │   └── ... (7+ repositories)
-│   │       │   │   ├── api/
-│   │       │   │   │   ├── WordPressApiService.kt
-│   │       │   │   │   ├── FarsiPlexApiService.kt
-│   │       │   │   │   └── NamakadeApiService.kt
-│   │       │   │   └── scraper/
-│   │       │   │       ├── VideoUrlScraper.kt
-│   │       │   │       └── WebSearchScraper.kt
-│   │       │   └── ui/
-│   │       │       ├── fragment/ (Leanback-based)
-│   │       │       │   ├── HomeFragment.kt (main browse)
-│   │       │       │   ├── MoviesFragment.kt
-│   │       │       │   ├── ShowsFragment.kt
-│   │       │       │   └── PlaybackVideoFragment.kt
-│   │       │       └── compose/ (emerging - 15%)
-│   │       │           ├── ContentRow.kt
-│   │       │           ├── EpisodeCard.kt
-│   │       │           └── ErrorBoundary.kt
-│   │       └── AndroidManifest.xml
-│   ├── build.gradle.kts (all dependencies here)
-│   └── libs.versions.toml
-├── docs/
-│   ├── Farsihub-Modernization-Plan.md (UPDATED)
-│   └── REMEDIATION_PROGRESS.md
-└── settings.gradle.kts
+MainActivity
+  └── HomeComposeFragment (@AndroidEntryPoint)
+        └── HomeScreenWithSidebar (Compose TV)
+              ├── NavigationSidebar (6 items: Home, Movies, TV Shows, Search, Downloads, Settings)
+              └── Content Area (switches via Compose state)
+                    ├── "home" → HomeContent (Featured, Continue Watching, Recent)
+                    ├── "movies" → MoviesScreen (Grid + Filters)
+                    ├── "shows" → ShowsScreen (Grid + Filters)
+                    ├── "search" → SearchScreen (FTS4 search)
+                    ├── "favorites" → FavoritesScreen
+                    ├── "playlists" → PlaylistsScreen
+                    ├── "downloads" → DownloadsScreen
+                    └── "options" → OptionsScreen
 ```
 
-**No Feature Modules Yet** - completely monolithic
-
----
-
-## Section 7: Development Workflow
-
-**Before Committing:**
-1. Run `./gradlew compileDebugKotlin` to check syntax
-2. Run `./gradlew test` to verify tests pass
-3. Verify no console warnings/errors
-4. Reference modernization phase if applicable
-
-**Testing Strategy:**
-- Current: 97 tests (75% coverage) - database-focused
-- Missing: Repository unit tests, ViewModel tests
-- Target: 80% coverage across all layers
-
-**Test Suite Information:**
-- Total Tests: 97 automated tests
-- Unit Tests: Minimal (placeholder only)
-- Integration Tests: 45 tests (DAO tests)
-- UI Tests: 14 tests (Fragment tests)
-- Coverage: 75% (database layer only)
-- Documentation: See docs/PHASE_7_TEST_SUITE_SUMMARY.md
-
-**Test Execution:**
-```bash
-# Run all unit tests (no device required)
-./gradlew testDebugUnitTest
-
-# Run integration tests (requires emulator/device)
-./gradlew connectedDebugAndroidTest
-
-# Run specific test class
-./gradlew test --tests "*PlaybackRepositoryTest"
+**Phone Flow (Bottom Navigation):**
+```
+MainActivity
+  └── HomeComposeFragment (@AndroidEntryPoint)
+        └── PhoneNavigationHost (Compose Material 3)
+              ├── Bottom Navigation (5 tabs)
+              │   ├── Home → PhoneHomeScreen (featured, continue watching)
+              │   ├── Movies → PhoneMoviesScreen (2-col grid, filters)
+              │   ├── Shows → PhoneShowsScreen (2-col grid, filters)
+              │   ├── Search → SearchScreen (reused, voice search)
+              │   └── Library → PhoneLibraryScreen
+              │         ├── Favorites tab (movies, series)
+              │         ├── Downloads tab (offline content)
+              │         ├── Playlists tab (user collections)
+              │         └── Settings gear → OptionsScreen
+              └── Detail Screens (via Activity)
+                    ├── Movie → DetailsActivity → PhoneMovieDetailsScreen
+                    └── Series → SeriesDetailsActivity → PhoneSeriesDetailsScreen
 ```
 
-**Code Quality Standards:**
-- Follow Kotlin naming conventions
-- Use safe null handling (?.let, ?:, avoid !!)
-- Prefer immutable data structures
-- Document complex logic
-- Use lifecycleScope/viewModelScope (not GlobalScope)
-- Maintain thread-safe singletons until Hilt migration
+**External Navigation (Activity-based):**
+- Movie details: `DetailsActivity` → MovieDetailsScreen (TV) / PhoneMovieDetailsScreen (Phone)
+- Series details: `SeriesDetailsActivity` → SeriesDetailsScreen (TV) / PhoneSeriesDetailsScreen (Phone)
+- Video playback: `VideoPlayerActivity`
+- Legacy (deprecated): SearchActivity, FavoritesActivity, PlaylistsActivity, PlaylistDetailActivity
 
-**Current Gaps:**
-- No dependency injection framework
-- No modularization
-- Limited ViewModel usage (only 2)
-- Partial Media3 migration
-- No CI/CD pipeline
-- No monitoring/analytics
+### Data Flow Architecture
+
+```
+UI Layer (Compose Screens)
+     ↓ observeAsState() / collectAsState()
+ViewModel (MainViewModel, DownloadViewModel, Phone*ViewModel)
+     ↓ LiveData/StateFlow
+Repository (ContentRepository, WatchlistRepository, etc.)
+     ↓ Flow/suspend
+Database (AppDatabase v11, ContentDatabase v3)
+     ↑
+API/Scraper (RetrofitClient, VideoUrlScraper, Namakade)
+```
+
+### Repository Pattern (Hilt Singleton)
+
+```kotlin
+// Pattern used throughout codebase - Full Hilt injection
+@Singleton
+class ContentRepository @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val wordPressApi: WordPressApiService
+) {
+    private val videoScraper = VideoUrlScraper
+    private val episodeScraper = EpisodeListScraper
+
+    // 30-second in-memory cache per content type
+    private val _syncCompletionTrigger = MutableStateFlow(System.currentTimeMillis())
+
+    companion object {
+        private const val TAG = "ContentRepository"
+        private const val CACHE_TTL_MS = 30_000L // 30 seconds
+    }
+
+    // Paging-backed flows for unlimited scrolling
+    val movies: Flow<PagingData<Movie>> = repository.getMoviesPaged()
+    val series: Flow<PagingData<Series>> = repository.getSeriesPaged()
+}
+```
 
 ---
 
-## Section 8: Critical Implementation Rules
+## Section 5: Key Components Detail
+
+### MainViewModel
+
+**Location:** `ui/viewmodel/MainViewModel.kt`
+
+**Responsibilities:**
+- Exposes LiveData for featured content, recent movies, series, episodes
+- Manages genre/sort filtering via StateFlow
+- Provides Paging 3 flows for infinite scroll
+- Auto-refresh on sync completion
+
+**Key Properties:**
+```kotlin
+val featuredContent: LiveData<List<FeaturedContent>>
+val recentMovies: LiveData<List<Movie>>
+val recentSeries: LiveData<List<Series>>
+val recentEpisodes: LiveData<List<Episode>>
+val isLoading: LiveData<Boolean>
+val selectedGenre: StateFlow<Genre?>
+val selectedSort: StateFlow<SortOption>
+```
+
+### Phone ViewModels
+
+**PhoneHomeViewModel** - Phone-specific home screen state
+**PhoneMovieDetailsViewModel** - Movie details + similar movies for phone layout
+**PhoneSeriesDetailsViewModel** - Series episodes grouped by season for phone
+
+### DownloadViewModel
+
+**Location:** `ui/viewmodel/DownloadViewModel.kt`
+
+**Responsibilities:**
+- Tracks download state, progress, completion
+- Queue/cancel downloads
+- Observes downloaded items from DownloadDao
+
+### VideoPlayerActivity
+
+**Location:** `VideoPlayerActivity.kt`
+
+**Features:**
+- ExoPlayer with adaptive bitrate streaming
+- Quality selection dialog (1080p, 720p, 480p)
+- Playback position persistence (auto-save every 10s)
+- Resume playback from saved position
+- Chromecast handoff via CastManager
+- Skip controls (10s tap, 30s long-press)
+- Speed control (0.5x to 2x)
+- Network monitoring with auto-pause on disconnect
+- Auto Frame Rate (AFR) matching
+
+### IMVBoxWebPlayerActivity
+
+**Location:** `IMVBoxWebPlayerActivity.kt`
+
+**Purpose:** Play IMVBox content with YouTube embeds using origin spoofing
+
+**Features:**
+- **Origin Spoofing:** Uses `loadDataWithBaseURL()` with imvbox.com origin
+- **YouTube Bypass:** IMVBox is whitelisted by YouTube video owners
+- **Auto-skip Intro:** MutationObserver detects and clicks skip button
+- **D-pad Control:** Touch simulation for play/pause and seek
+- **Fullscreen Support:** WebChromeClient custom view handling
+- **Auth Cookies:** Injects IMVBox login cookies for full movie access
+
+**Key Technique:**
+```kotlin
+// Spoof origin to bypass YouTube embed restrictions
+webView.loadDataWithBaseURL(
+    "https://www.imvbox.com/movies/play",  // Fake origin
+    embedHtml,
+    "text/html", "UTF-8", null
+)
+```
+
+**D-pad Controls (Touch Simulation):**
+- Center/Enter: Tap center to toggle play/pause
+- Left/Right: Double-tap edges for ±10s seek
+- Uses `MotionEvent.dispatchTouchEvent()` for real touch events
+
+### YouTubePlayerActivity
+
+**Location:** `YouTubePlayerActivity.kt`
+
+**Purpose:** Standalone YouTube player for non-IMVBox YouTube content
+
+**Features:**
+- YouTube IFrame API with JavaScript bridge
+- D-pad control overlay with auto-hide
+- Chromecast support via Cast SDK
+
+### VideoUrlScraper
+
+**Location:** `data/scraper/VideoUrlScraper.kt`
+
+**Supports:**
+- **Farsiland:** DooPlay REST API + microdata fallback
+- **FarsiPlex:** DooPlay REST API with parallel server queries
+- **Namakade:** NamakadeApiService HTML scraping
+
+**Caching:**
+- LRU cache with 100 entries max (prevents OOM)
+- 5-minute TTL per URL
+- Thread-safe via `android.util.LruCache`
+
+**Security:**
+- HTTPS-only via SecureUrlValidator
+- ReDoS protection via input size limits
+- Pre-compiled regex patterns (performance)
+
+### Background Workers
+
+**ContentSyncWorker** (Farsiland WordPress API):
+- Syncs movies, series, episodes via REST API
+- Incremental sync using `modifiedAfter` filter
+- Ghost record cleanup
+- Health tracking via ScraperHealthTracker
+
+**FarsiPlexSyncWorker** (FarsiPlex sitemap):
+- Parses sitemap XML for new content
+- Scrapes full metadata using FarsiPlexMetadataScraper
+- Incremental sync
+
+**DownloadWorker** (Offline downloads):
+- Handles HTTP streaming downloads
+- Progress updates, pause/resume
+- Disk space validation
+
+---
+
+## Section 6: Critical Implementation Rules
 
 **DO NOT:**
-- Merge AppDatabase and ContentDatabase (intentionally separate)
-- Change applicationId from "com.example.farsilandtv"
-- Use WebViews in background workers without Looper
-- Remove getInstance() until Hilt is fully implemented
-- Force Media3/Compose adoption all at once
+- Merge AppDatabase and ContentDatabase (intentional separation)
+- Change applicationId from `com.example.farsilandtv`
+- Skip HTTPS validation in scrapers
+- Use blocking calls on Main thread
 
 **ALWAYS:**
-- Preserve existing user data during migrations
-- Test on real Shield TV after changes
-- Maintain backwards compatibility
-- Keep dual database pattern
-- Follow gradual migration approach
+- Use `@Inject constructor` for new classes (Hilt migration complete)
+- Use `@ApplicationContext` for context injection
+- Validate URLs with `SecureUrlValidator` before use
+- Use `lifecycleScope`/`viewModelScope` for coroutines
+- Handle all scraper results via sealed `ScraperResult` class
+- Test on real Shield TV device after significant changes
+- Use DeviceUtils to check device type before UI decisions
 
 ---
 
-## Section 9: Modernization Roadmap
+## Section 7: Roadmap (Pending)
 
-**Phase Priority (2-3 weeks minimum viable):**
-1. Complete audit fixes (5 remaining) - IMMEDIATE
-2. Add Hilt DI framework - HIGH
-3. Complete Media3 migration - EASY WIN
-4. Modularize architecture - LONG TERM
-5. Add resilience/monitoring - OPERATIONAL
-6. Migrate to Compose TV - GRADUAL
-7. Add mobile/cast support - NEW FEATURES
-8. Setup CI/CD pipeline - FINAL
-
-**See:** docs/Farsihub-Modernization-Plan.md for detailed plan
+- ⏳ Modularize architecture
+- ⏳ Setup CI/CD pipeline
 
 ---
 
-## Section 10: Resources
-
-**Project:** FarsiPlex → FarsiHub (rebranding)
-**Repository:** G:\FarsiPlex
-**Build:** Gradle (use `./gradlew` in Git Bash)
-**Target Devices:**
-- Current: Nvidia Shield TV (API 28-36)
-- Future: Android phones (API 28+)
-
-**Key Dependencies:**
-- Kotlin 1.9+
-- Android API: min 28, target 35, compile 35
-- Room 2.5+ (dual databases)
-- Media3 (partial migration)
-- Jetpack Compose (15% adoption)
-- OkHttp + Retrofit + Moshi
-- Coil for images
-- WorkManager for sync
-- Paging 3 for lists
-
-**Data Sources:**
-- Farsiland WordPress API
-- FarsiPlex scraper
-- Namakade scraper
-
----
-
-## Section 11: Development Environment - Command Reference
-
-### Machine Setup (Windows 11 + Git Bash)
-
-**Working Directory:** `G:\FarsiPlex`
-
-**Shell:** Git Bash (Unix commands work)
-
-**Android SDK:** `C:\Users\me\AppData\Local\Android\Sdk`
-
-**Installed Tools:**
-- Java 17.0.12 LTS
-- Gradle 8.13
-- Python 3.13.7
-- Node.js v22.19.0
-- ADB 36.0.0
-- Git 2.51.0
-
-**Android Platforms:** API 34, 35, 36
-
-**Build Tools:** 33.0.1, 34.0.0, 35.0.0, 36.1.0
-
-**Active Emulator:** AOSP TV on x86 (API 36) - `emulator-5554`
-
----
-
-### ✅ ALWAYS Use These Commands:
-
-```bash
-# Build commands (from G:\FarsiPlex)
-./gradlew compileDebugKotlin      # Fast compile check (~30 sec)
-./gradlew assembleDebug            # Build debug APK (~2-3 min)
-./gradlew assembleRelease          # Build optimized release APK
-./gradlew test                     # Run unit tests
-./gradlew clean assembleDebug      # Clean and rebuild
-
-# ADB (emulator/device interaction)
-adb devices                        # Check connected devices
-adb install -r app/build/outputs/apk/debug/app-debug.apk  # Install APK
-adb uninstall com.example.farsilandtv                     # Uninstall app
-adb logcat | grep -i farsi         # View app logs (filtered)
-adb shell getprop ro.build.version.sdk  # Check device API level
-adb shell screencap -p /sdcard/screen.png && adb pull /sdcard/screen.png  # Screenshot
-
-# Emulator (start if needed)
-/c/Users/me/AppData/Local/Android/Sdk/emulator/emulator -avd "Namakadeh.com" &
-```
-
----
-
-### ❌ NEVER Use These (Wrong for Git Bash):
-
-```bash
-# WRONG - These are for CMD/PowerShell, not Bash
-.\gradlew.bat compileDebugKotlin   # ❌ Don't use .bat in Bash
-gradlew.bat assembleDebug           # ❌ Don't use .bat in Bash
-cmd /c "gradlew.bat ..."           # ❌ Unnecessary wrapper
-```
-
----
-
-### Quick Reference Table
-
-| Task | Command |
-|------|---------|
-| **Compile check** | `./gradlew compileDebugKotlin` |
-| **Build debug APK** | `./gradlew assembleDebug` |
-| **Build release APK** | `./gradlew assembleRelease` |
-| **Install to device** | `adb install -r app/build/outputs/apk/debug/app-debug.apk` |
-| **Run unit tests** | `./gradlew test` |
-| **Run instrumented tests** | `./gradlew connectedDebugAndroidTest` |
-| **Check devices** | `adb devices` |
-| **View logs** | `adb logcat \| grep -i farsi` |
-| **Uninstall app** | `adb uninstall com.example.farsilandtv` |
-| **Clean build** | `./gradlew clean` |
-
----
-
-### Standard Development Workflow
-
-```bash
-# 1. Make code changes in your editor
-
-# 2. Quick compile check (30 sec)
-./gradlew compileDebugKotlin
-
-# 3. If compile passes, build APK (2-3 min)
-./gradlew assembleDebug
-
-# 4. Install to connected device/emulator
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-
-# 5. Monitor logs during testing
-adb logcat | grep -i farsi
-
-# 6. Run tests before committing
-./gradlew test
-```
-
----
-
-### APK Output Locations
-
-- **Debug APK:** `app/build/outputs/apk/debug/app-debug.apk` (~48 MB)
-- **Release APK:** `app/build/outputs/apk/release/app-release.apk` (~24 MB, optimized)
-
----
-
-### Important Environment Notes
-
-1. **Shell Type:** Git Bash on Windows 11
-   - Use Unix-style commands (`./gradlew`, not `.bat`)
-   - Windows paths work with forward slashes: `/c/Users/...`
-
-2. **Environment Variables:**
-   - `ANDROID_HOME` not set (but ADB works via PATH)
-   - `JAVA_HOME` not set (but Java 17 works)
-
-3. **Emulator Path:**
-   - Command not in PATH
-   - Full path: `/c/Users/me/AppData/Local/Android/Sdk/emulator/emulator`
-
-4. **Project SDK Configuration:**
-   - minSdk: 28 (Android 9)
-   - targetSdk: 34
-   - compileSdk: 35
-
----
-
-### Memory Aid for Claude
-
-**When working on this project:**
-- ✅ Use `./gradlew` (Unix-style)
-- ❌ Never use `.\gradlew.bat` or `cmd` wrappers
-- ✅ Use `adb` commands directly (already in PATH)
-- ✅ APK location: `app/build/outputs/apk/debug/app-debug.apk`
-- ✅ Package name: `com.example.farsilandtv`
-- ✅ Working dir: `G:\FarsiPlex`
+**Full documentation:** See `Development Kit/docs/README.md`

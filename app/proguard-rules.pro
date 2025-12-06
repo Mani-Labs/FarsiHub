@@ -25,8 +25,9 @@
 # and better performance. Added as part of performance optimization initiative.
 
 # Perform multiple optimization passes (vs default 1 pass)
+# BC-M5: Reduced from 5 to 3 passes for faster builds while maintaining optimization
 # More passes = better optimization but slower build time
--optimizationpasses 5
+-optimizationpasses 3
 
 # Allow ProGuard to modify access modifiers for better optimization
 # Makes private/protected fields public when safe for better inlining
@@ -115,6 +116,17 @@
 -keep class com.squareup.moshi.** { *; }
 -keep interface com.squareup.moshi.** { *; }
 -dontwarn com.squareup.moshi.**
+# BC-M2: Keep Moshi.Adapter inner classes (prevents reflection issues)
+-keepclassmembers class ** {
+    @com.squareup.moshi.FromJson *;
+    @com.squareup.moshi.ToJson *;
+}
+-keep @com.squareup.moshi.JsonQualifier interface *
+-keep class **${"$"}JsonAdapter {
+    <init>(...);
+    <fields>;
+}
+-keepnames @com.squareup.moshi.JsonClass class *
 
 # ==================== ROOM DATABASE ====================
 # Preserve Room database classes
@@ -126,23 +138,28 @@
     public *;
 }
 
-# ==================== GLIDE IMAGE LOADING ====================
-# Preserve Glide classes
+# ==================== COIL IMAGE LOADING ====================
+# Preserve Coil classes (replaced Glide for smaller APK size)
+# CRITICAL FIX: These rules prevent images from failing to load in release builds
 
--keep public class * implements com.bumptech.glide.module.GlideModule
--keep class * extends com.bumptech.glide.module.AppGlideModule {
- <init>(...);
-}
--keep public enum com.bumptech.glide.load.ImageHeaderParser$** {
-  **[] $VALUES;
-  public *;
-}
--keep class com.bumptech.glide.load.data.ParcelFileDescriptorRewinder$InternalRewinder {
-  *** rewind();
-}
+-keep class coil.** { *; }
+-keep interface coil.** { *; }
+-dontwarn coil.**
 
-# Glide Transformations (for blur effects)
--keep class jp.wasabeef.glide.transformations.** { *; }
+# Coil's internal fetchers and decoders
+-keep class coil.decode.** { *; }
+-keep class coil.fetch.** { *; }
+-keep class coil.memory.** { *; }
+-keep class coil.disk.** { *; }
+
+# Coil's Compose integration
+-keep class coil.compose.** { *; }
+
+# Coil SVG support (if used)
+-keep class coil.svg.** { *; }
+
+# Keep Coil's network layer (OkHttp integration)
+-keep class coil.network.** { *; }
 
 # ==================== EXOPLAYER (MEDIA3) ====================
 # Preserve ExoPlayer classes for video playback

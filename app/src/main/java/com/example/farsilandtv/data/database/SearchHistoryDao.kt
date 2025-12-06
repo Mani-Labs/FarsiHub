@@ -28,13 +28,17 @@ interface SearchHistoryDao {
     /**
      * Get auto-complete suggestions based on prefix
      * Case-insensitive prefix matching, sorted by recency
-     * @param prefix Search prefix to match
+     *
+     * SECURITY: Uses ESCAPE clause to prevent SQL injection via LIKE wildcards.
+     * Caller MUST sanitize prefix using SqlSanitizer.sanitizeLikePattern() before calling.
+     *
+     * @param prefix Search prefix to match (must be sanitized)
      * @param limit Maximum number of suggestions (default 5)
      */
     @Query("""
         SELECT DISTINCT query
         FROM search_history
-        WHERE query LIKE :prefix || '%'
+        WHERE query LIKE :prefix || '%' ESCAPE '\'
         ORDER BY timestamp DESC
         LIMIT :limit
     """)

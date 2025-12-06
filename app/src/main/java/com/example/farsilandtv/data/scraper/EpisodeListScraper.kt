@@ -43,6 +43,12 @@ private val MARK_CLASS_PATTERN = Regex("""mark-(\d+)-(\d+)""")
 private val EPISODE_NUMBER_PATTERN = Regex("""ep(?:isode)?[-.]?(\d+)""", RegexOption.IGNORE_CASE)
 private val SEASON_EPISODE_PATTERN = Regex("""s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
 
+// N14 FIX: Pre-compiled patterns for IMVBox scraping (moved from inline)
+private val IMVBOX_SHOW_SLUG_PATTERN = Regex("""/shows/([^/?#]+)""")
+private val IMVBOX_EPISODE_NUM_PATTERN = Regex("""/episode-(\d+)""")
+private val IMVBOX_THUMBNAIL_PATTERN = Regex("""assets\.imvbox\.com/episodes/[^"'\s]+\.jpg""")
+private val IMVBOX_DURATION_PATTERN = Regex("""(\d+)\s*min""")
+
 /**
  * EXTERNAL AUDIT FIX F2: Suspendable OkHttp Call extension to prevent zombie threads
  *
@@ -82,6 +88,9 @@ object EpisodeListScraper {
     // EXTERNAL AUDIT FIX C1.2: Use shared configured client instead of creating new instance
     private val httpClient = RetrofitClient.getHttpClient()
 
+    // N6 FIX: Lazy singleton for NamakadeApiService to avoid per-call instantiation
+    private val namakadeService by lazy { NamakadeApiService() }
+
     /**
      * Scrape episode list from series page
      *
@@ -108,7 +117,7 @@ object EpisodeListScraper {
                 android.util.Log.d("EpisodeListScraper", "Series URL: $seriesPageUrl")
 
                 // Pass full URL directly to preserve /shows/ vs /series/ path
-                val namakadeService = NamakadeApiService()
+                // N6 FIX: Use lazy singleton instead of per-call instantiation
                 val episodes = namakadeService.getEpisodes(seriesPageUrl, seriesId, seriesTitle)
 
                 android.util.Log.d("EpisodeListScraper", "Namakade returned ${episodes.size} episodes")
@@ -116,7 +125,153 @@ object EpisodeListScraper {
                 // Group by season and return
                 return@withContext episodes.groupBy { it.season }
             }
-            
+
+            // IMVBOX DETECTION: Scrape episodes directly from IMVBox
+            if (seriesPageUrl.contains("imvbox.com", ignoreCase = true)) {
+                android.util.Log.d("EpisodeListScraper", "✓ IMVBOX DETECTED - Scraping episodes")
+                android.util.Log.d("EpisodeListScraper", "Series URL: $seriesPageUrl, SeriesId: $seriesId")
+
+                // Extract show slug from URL: /shows/{slug} or /shows/{slug}/
+                // N14 FIX: Use pre-compiled pattern
+                val slug = IMVBOX_SHOW_SLUG_PATTERN.find(seriesPageUrl)?.groupValues?.getOrNull(1)
+
+                if (slug == null) {
+                    android.util.Log.e("EpisodeListScraper", "Could not extract slug from IMVBox URL: $seriesPageUrl")
+                    return@withContext emptyMap()
+                }
+
+                android.util.Log.d("EpisodeListScraper", "Extracted slug: $slug")
+
+                val allEpisodes = mutableListOf<Episode>()
+
+                for (seasonNum in 1..5) { // Try up to 5 seasons
+                    val seasonUrl = "https://www.imvbox.com/en/shows/$slug/season-$seasonNum"
+                    android.util.Log.d("EpisodeListScraper", "Fetching season $seasonNum: $seasonUrl")
+
+                    try {
+                        val html = fetchHtml(seasonUrl)
+                        val doc = Jsoup.parse(html)
+
+                        // Check for 404 or empty page (no more seasons)
+                        if (html.contains("Page Not Found", ignoreCase = true) ||
+                            html.contains("404", ignoreCase = true)) {
+                            android.util.Log.d("EpisodeListScraper", "Season $seasonNum not found, stopping")
+                            break
+                        }
+
+                        // Parse episode cards from .episode-poster-cover elements
+                        // Structure: .episode-poster-cover > .episode > a.image-container + div.descriptions
+                        val episodeCards = doc.select(".episode-poster-cover")
+                        android.util.Log.d("EpisodeListScraper", "Found ${episodeCards.size} episode cards for season $seasonNum")
+
+                        if (episodeCards.isEmpty()) {
+                            // Fallback: try parsing episode links
+                            val episodeLinks = doc.select("a[href*=/episode-]")
+                            android.util.Log.d("EpisodeListScraper", "Fallback: Found ${episodeLinks.size} episode links")
+
+                            if (episodeLinks.isEmpty()) {
+                                if (seasonNum == 1) {
+                                    android.util.Log.w("EpisodeListScraper", "No episodes found for season 1")
+                                }
+                                break
+                            }
+
+                            // Simple fallback parsing
+                            val seenEpisodes = mutableSetOf<Int>()
+                            for (element in episodeLinks) {
+                                val href = element.attr("href")
+                                // N14 FIX: Use pre-compiled pattern
+                                val episodeNum = IMVBOX_EPISODE_NUM_PATTERN.find(href)
+                                    ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+                                if (episodeNum in seenEpisodes) continue
+                                seenEpisodes.add(episodeNum)
+
+                                val uniqueId = (seriesId shl 16) or (seasonNum shl 8) or episodeNum
+                                allEpisodes.add(Episode(
+                                    id = uniqueId,
+                                    seriesId = seriesId,
+                                    seriesTitle = seriesTitle,
+                                    title = "Episode $episodeNum",
+                                    description = "",
+                                    thumbnailUrl = null,
+                                    farsilandUrl = if (href.startsWith("http")) href else "https://www.imvbox.com$href",
+                                    season = seasonNum,
+                                    episode = episodeNum
+                                ))
+                            }
+                        } else {
+                            // Parse full episode cards with thumbnails and runtime
+                            for (card in episodeCards) {
+                                val link = card.selectFirst("a.image-container") ?: continue
+                                val href = link.attr("href")
+
+                                // Extract episode number from URL
+                                // N14 FIX: Use pre-compiled pattern
+                                val episodeNum = IMVBOX_EPISODE_NUM_PATTERN.find(href)
+                                    ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+
+                                // Extract thumbnail - try multiple approaches for IMVBox's custom elements
+                                // Structure: <picture><data-src srcset="..."><data-img src="..."></picture>
+                                val cardHtml = card.html()
+                                val thumbnailUrl = run {
+                                    // Try 1: Regex for assets.imvbox.com/episodes/ URL (most reliable)
+                                    // N14 FIX: Use pre-compiled pattern
+                                    IMVBOX_THUMBNAIL_PATTERN.find(cardHtml)?.value?.let { "https://$it" }
+                                    // Try 2: <data-img src="...">
+                                        ?: card.selectFirst("data-img")?.attr("src")?.takeIf { it.isNotEmpty() }
+                                    // Try 3: <data-src type="image/jpeg"> srcset attribute
+                                        ?: card.selectFirst("data-src[type=image/jpeg]")?.attr("srcset")?.takeIf { it.isNotEmpty() }
+                                    // Try 4: Any <data-src> srcset
+                                        ?: card.selectFirst("data-src")?.attr("srcset")?.takeIf { it.isNotEmpty() }
+                                    // Try 5: Regular <img> tag
+                                        ?: card.selectFirst("img")?.attr("src")?.takeIf { it.isNotEmpty() }
+                                }
+
+                                // Extract title from div.title
+                                val title = card.selectFirst("div.title")?.text()?.trim()
+                                    ?: "Episode $episodeNum"
+
+                                // Extract runtime from div.duration (e.g., "45 min")
+                                val durationText = card.selectFirst("div.duration")?.text()?.trim()
+                                // N14 FIX: Use pre-compiled pattern
+                                val runtime = durationText?.let {
+                                    IMVBOX_DURATION_PATTERN.find(it)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                                }
+
+                                // Generate unique ID
+                                val uniqueId = (seriesId shl 16) or (seasonNum shl 8) or episodeNum
+
+                                val episode = Episode(
+                                    id = uniqueId,
+                                    seriesId = seriesId,
+                                    seriesTitle = seriesTitle,
+                                    title = title,
+                                    description = "",
+                                    thumbnailUrl = thumbnailUrl,
+                                    farsilandUrl = if (href.startsWith("http")) href else "https://www.imvbox.com$href",
+                                    season = seasonNum,
+                                    episode = episodeNum,
+                                    runtime = runtime
+                                )
+                                allEpisodes.add(episode)
+
+                                android.util.Log.d("EpisodeListScraper", "Parsed: S${seasonNum}E${episodeNum} - $title (${runtime ?: "?"}min) thumb=$thumbnailUrl")
+                            }
+                        }
+
+                        delay(300) // Rate limit between season requests
+                    } catch (e: Exception) {
+                        android.util.Log.e("EpisodeListScraper", "Error fetching season $seasonNum: ${e.message}")
+                        if (seasonNum == 1) {
+                            break
+                        }
+                    }
+                }
+
+                android.util.Log.d("EpisodeListScraper", "Total IMVBox episodes scraped: ${allEpisodes.size}")
+                return@withContext allEpisodes.groupBy { it.season }
+            }
+
             // STANDARD SCRAPING: For Farsiland/FarsiPlex URLs
             val html = fetchHtml(seriesPageUrl)
             val doc = Jsoup.parse(html)

@@ -93,8 +93,8 @@ object FarsiPlexMetadataScraper {
                 director = director,
                 cast = cast,
                 genres = genres,
-                dateAdded = parseDate(lastmod),
-                lastUpdated = parseDate(lastmod)  // Use sitemap publish date, not scrape time
+                dateAdded = parseDate(lastmod) ?: System.currentTimeMillis(),
+                lastUpdated = parseDate(lastmod) ?: System.currentTimeMillis()
             )
 
         } catch (e: Exception) {
@@ -172,8 +172,8 @@ object FarsiPlexMetadataScraper {
                 totalEpisodes = totalEpisodes,
                 cast = cast,
                 genres = genres,
-                dateAdded = parseDate(lastmod),
-                lastUpdated = parseDate(lastmod)  // Use sitemap publish date, not scrape time
+                dateAdded = parseDate(lastmod) ?: System.currentTimeMillis(),
+                lastUpdated = parseDate(lastmod) ?: System.currentTimeMillis()
             )
 
         } catch (e: Exception) {
@@ -261,8 +261,8 @@ object FarsiPlexMetadataScraper {
                 farsilandUrl = url,
                 airDate = airDate,
                 runtime = null,
-                dateAdded = parseDate(lastmod),
-                lastUpdated = parseDate(lastmod)  // Use sitemap publish date, not scrape time
+                dateAdded = parseDate(lastmod) ?: System.currentTimeMillis(),
+                lastUpdated = parseDate(lastmod) ?: System.currentTimeMillis()
             )
 
             Pair(cachedEpisode, cachedVideoUrls)
@@ -416,8 +416,12 @@ object FarsiPlexMetadataScraper {
 
     /**
      * Parse ISO date to timestamp
+     *
+     * EXTERNAL AUDIT FIX SN-L3: Return null on parse failure instead of currentTimeMillis()
+     * Issue: Using currentTimeMillis() as default masks parsing failures
+     * Fix: Return null to let caller decide default behavior
      */
-    private fun parseDate(dateStr: String?): Long {
+    private fun parseDate(dateStr: String?): Long? {
         return try {
             if (dateStr != null) {
                 // Try ISO 8601 with timezone first (e.g., "2024-05-29T10:30:00+00:00")
@@ -456,15 +460,15 @@ object FarsiPlexMetadataScraper {
                     android.util.Log.d(TAG, "Failed to parse date-only: $dateStr (${e.message})")
                 }
 
-                android.util.Log.w(TAG, "All date parsing failed for: $dateStr, using current time")
-                System.currentTimeMillis()
+                android.util.Log.w(TAG, "All date parsing failed for: $dateStr, returning null")
+                null
             } else {
-                android.util.Log.d(TAG, "Date string is null, using current time")
-                System.currentTimeMillis()
+                android.util.Log.d(TAG, "Date string is null, returning null")
+                null
             }
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Exception in parseDate: $dateStr", e)
-            System.currentTimeMillis()
+            null
         }
     }
 

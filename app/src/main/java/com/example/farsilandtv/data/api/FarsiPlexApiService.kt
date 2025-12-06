@@ -1,8 +1,37 @@
 package com.example.farsilandtv.data.api
 
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
+import java.io.IOException
 import java.io.StringReader
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * N18 FIX: Suspendable OkHttp Call extension to prevent thread blocking
+ * Uses enqueue() instead of blocking execute()
+ */
+private suspend fun Call.await(): Response {
+    return suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation {
+            cancel()
+        }
+        enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response)
+            }
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(e)
+                }
+            }
+        })
+    }
+}
 
 /**
  * API service for FarsiPlex.com
@@ -30,19 +59,25 @@ class FarsiPlexApiService(private val httpClient: okhttp3.OkHttpClient) {
      * Fetch and parse sitemap XML
      * Returns list of URLs with last modified dates
      */
+    // N18 FIX: Use await() instead of blocking execute()
     suspend fun fetchSitemap(sitemapUrl: String): List<SitemapUrl> {
         return try {
             val request = okhttp3.Request.Builder()
                 .url(sitemapUrl)
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            val response = httpClient.newCall(request).await()
             if (!response.isSuccessful) {
                 android.util.Log.e("FarsiPlexApi", "Sitemap fetch failed: ${response.code}")
+                response.close()
                 return emptyList()
             }
 
-            val xmlContent = response.body?.string() ?: return emptyList()
+            val xmlContent = response.body?.string() ?: run {
+                response.close()
+                return emptyList()
+            }
+            response.close()
             parseSitemap(xmlContent)
         } catch (e: Exception) {
             android.util.Log.e("FarsiPlexApi", "Error fetching sitemap: ${e.message}", e)

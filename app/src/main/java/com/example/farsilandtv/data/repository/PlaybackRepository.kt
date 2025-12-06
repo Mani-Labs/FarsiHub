@@ -1,25 +1,27 @@
 package com.example.farsilandtv.data.repository
 
-import android.content.Context
-import com.example.farsilandtv.data.database.AppDatabase
 import com.example.farsilandtv.data.database.PlaybackPosition
+import com.example.farsilandtv.data.database.PlaybackPositionDao
 import kotlinx.coroutines.flow.Flow
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for playback position and watched status tracking
  * Implements Feature #2: Watched Status Tracking
  *
- * C1 Consolidation: Now uses single AppDatabase instance instead of FarsilandDatabase
- * to eliminate dual database pattern and prevent data consistency issues.
+ * Hilt-managed singleton - injected via constructor
  */
-class PlaybackRepository(context: Context) {
-
-    private val database = AppDatabase.getDatabase(context)
-    private val dao = database.playbackPositionDao()
+@Singleton
+class PlaybackRepository @Inject constructor(
+    private val dao: PlaybackPositionDao
+) {
 
     companion object {
         // Threshold for auto-marking content as completed (95%)
         private const val COMPLETION_THRESHOLD = 0.95f
+        // Threshold for episodes (90% - typically skip credits)
+        private const val COMPLETION_THRESHOLD_EPISODE = 0.90f
     }
 
     /**
@@ -45,15 +47,16 @@ class PlaybackRepository(context: Context) {
     ) {
         val currentTime = System.currentTimeMillis()
 
-        // Calculate watch percentage
+        // Calculate watch percentage with bounds checking
         val watchPercentage = if (duration > 0) {
-            position.toFloat() / duration.toFloat()
+            (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
         } else {
-            0f
+            0f // Unknown duration → always incomplete
         }
 
-        // Auto-detect completion (95% threshold)
-        val isCompleted = watchPercentage >= COMPLETION_THRESHOLD
+        // Auto-detect completion (use 90% for episodes, 95% for movies)
+        val threshold = if (contentType == "episode") COMPLETION_THRESHOLD_EPISODE else COMPLETION_THRESHOLD
+        val isCompleted = watchPercentage >= threshold
         val completedAt = if (isCompleted) currentTime else null
 
         val playbackPosition = PlaybackPosition(

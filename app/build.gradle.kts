@@ -1,7 +1,11 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
     alias(libs.plugins.kotlin.compose) // Feature #16: Compose compiler plugin for Kotlin 2.0+
     // Firebase - requires google-services.json file (see README_FIREBASE_SETUP.md)
     // id("com.google.gms.google-services")  // DISABLED: Placeholder Firebase config
@@ -11,6 +15,34 @@ plugins {
 android {
     namespace = "com.example.farsilandtv"
     compileSdk = 35  // AUDIT FIX #16: Downgraded from 36 (unstable preview). Min 35 required by Leanback 1.2.0
+
+    // BC-H4: compileSdk=35 but targetSdk=34 is intentional
+    // Reason: Use latest APIs (compileSdk 35) but stable runtime behavior (targetSdk 34)
+    // This allows using new features while avoiding breaking changes in Android 15
+
+    // Signing configurations
+    // Release: Create keystore.properties file in project root with:
+    //   storeFile=path/to/keystore.jks
+    //   storePassword=your_store_password
+    //   keyAlias=your_key_alias
+    //   keyPassword=your_key_password
+    signingConfigs {
+        // Debug uses default Android debug keystore (auto-generated)
+        // BC-H6: Explicitly configured for consistent builds across machines
+
+        create("release") {
+            val keystorePropertiesFile = rootProject.file("keystore.properties")
+            if (keystorePropertiesFile.exists()) {
+                val keystoreProperties = Properties().apply {
+                    load(keystorePropertiesFile.inputStream())
+                }
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.example.farsilandtv"
@@ -24,6 +56,10 @@ android {
         ndk {
             abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
         }
+
+        // UT-H4 FIX: CDN domains in BuildConfig for runtime access
+        buildConfigField("String[]", "CDN_MIRRORS", "{\"d1.flnd.buzz\", \"d2.flnd.buzz\"}")
+        buildConfigField("String[]", "TRUSTED_DOMAINS", "{\"farsiland.com\", \"farsiplex.com\", \"flnd.buzz\", \"d1.flnd.buzz\", \"d2.flnd.buzz\", \"namakade.com\", \"wp.farsiland.com\", \"negahestan.com\", \"media.negahestan.com\"}")
     }
 
     buildTypes {
@@ -36,6 +72,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
+            // Use release signing config if keystore.properties exists
+            val keystorePropertiesFile = rootProject.file("keystore.properties")
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
 
             // AUDIT FIX M3.4: Remove x86/x64 from release builds (50% smaller native libs)
             // Android TV devices are exclusively ARM-based (x86/x64 only for emulator)
@@ -58,6 +100,8 @@ android {
     // Feature #16: Enable Jetpack Compose
     buildFeatures {
         compose = true
+        buildConfig = true   // EXTERNAL AUDIT FIX SN-L2: Enable BuildConfig generation
+        viewBinding = false  // BC-M6: Explicitly disabled (not used in project)
     }
 
     lint {
@@ -75,6 +119,9 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.leanback)
 
+    // Security - Encrypted SharedPreferences for IMVBox credentials
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // HTTP & Networking - Stage 1
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
@@ -88,13 +135,23 @@ dependencies {
 
     // Video Player (upgraded to Media3)
     implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)  // HLS streaming support for IMVBox
     implementation(libs.media3.ui)
     implementation(libs.media3.ui.leanback)
+    implementation(libs.media3.datasource.okhttp)  // OkHttp datasource for custom SSL handling
 
-    // Database
+    // Chromecast Support (Feature: Cast to TV) - BC-H5: Now using version catalog
+    implementation(libs.media3.cast)
+    implementation(libs.cast.framework)
+
+    // YouTube Player (for IMVBox YouTube content + Chromecast)
+    implementation(libs.youtube.player.core)
+    implementation(libs.youtube.player.chromecast)
+
+    // Database - BC-H5: Now using version catalog
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
-    implementation("androidx.room:room-paging:2.6.1") // Feature #18: Paging support
+    implementation(libs.room.paging) // Feature #18: Paging support
     kapt(libs.room.compiler)
 
     // Image Loading - Using Coil (modern, async, Kotlin-first)
@@ -114,9 +171,16 @@ dependencies {
     // WorkManager (for background sync)
     implementation(libs.work.runtime)
 
-    // Paging 3 (Feature #18 - Database Query Optimization)
-    implementation("androidx.paging:paging-runtime-ktx:3.2.1")
-    implementation("androidx.paging:paging-compose:3.2.1") // Paging for Compose
+    // Hilt DI
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+    implementation(libs.hilt.navigation.compose)
+    implementation(libs.hilt.work)
+    ksp(libs.hilt.work.compiler)
+
+    // Paging 3 (Feature #18 - Database Query Optimization) - BC-H5: Now using version catalog
+    implementation(libs.paging.runtime)
+    implementation(libs.paging.compose) // Paging for Compose
 
     // Firebase Cloud Messaging (Feature #9 - Push Notifications)
     // Firebase Crashlytics (M4 - Production Error Tracking)
@@ -127,8 +191,8 @@ dependencies {
     // implementation("com.google.firebase:firebase-analytics-ktx")  // DISABLED
     // implementation("com.google.firebase:firebase-crashlytics-ktx")  // DISABLED
 
-    // Shimmer effect for skeleton screens (Feature #20)
-    implementation("com.facebook.shimmer:shimmer:0.5.0")
+    // Shimmer effect for skeleton screens (Feature #20) - BC-H5: Now using version catalog
+    implementation(libs.shimmer)
 
     // Feature #16: Jetpack Compose for TV
     implementation(platform(libs.compose.bom))
@@ -138,36 +202,38 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.navigation.compose)
     implementation(libs.lifecycle.viewmodel.compose)
-    implementation("androidx.compose.runtime:runtime-livedata:1.5.4") // For observeAsState()
+    implementation(libs.compose.runtime.livedata) // BC-H5: For observeAsState()
     implementation(libs.tv.foundation)
     implementation(libs.tv.material)
     // Coil for Compose images (implementation already added above)
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
 
-    // Testing - Phase 7: Comprehensive Test Suite
+    // Testing - Phase 7: Comprehensive Test Suite - BC-H5: Now using version catalog
     // Unit tests (JUnit)
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.22") // For kotlin.test assertions
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
-    testImplementation("androidx.arch.core:core-testing:2.2.0") // For InstantTaskExecutorRule
-    testImplementation("org.mockito:mockito-core:5.7.0")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:5.1.0")
-    testImplementation("app.cash.turbine:turbine:1.0.0") // For testing Flow
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test) // For kotlin.test assertions
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.arch.core.testing) // For InstantTaskExecutorRule
+    testImplementation(libs.mockito.core)
+    testImplementation(libs.mockito.kotlin)
+    testImplementation(libs.turbine) // For testing Flow
 
     // Phase 9: Additional test dependencies for M2, M6, M9 tests
-    testImplementation("org.robolectric:robolectric:4.11.1") // For Android framework mocking
-    testImplementation("androidx.test:core:1.5.0") // For ApplicationProvider
-    testImplementation("androidx.lifecycle:lifecycle-runtime-testing:2.6.2") // For lifecycle testing
+    testImplementation(libs.robolectric) // For Android framework mocking
+    testImplementation(libs.androidx.test.core) // For ApplicationProvider
+    testImplementation(libs.lifecycle.runtime.testing) // For lifecycle testing
 
     // Android instrumentation tests
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test:runner:1.5.2")
-    androidTestImplementation("androidx.test:rules:1.5.0")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation("androidx.room:room-testing:2.6.1")
-    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
-    androidTestImplementation("androidx.arch.core:core-testing:2.2.0")
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.espresso.core)
+    androidTestImplementation(libs.room.testing)
+    androidTestImplementation(libs.coroutines.test)
+    androidTestImplementation(libs.arch.core.testing)
+    // BC-M3: Compose UI testing
+    androidTestImplementation(libs.compose.ui.test.junit4)
 }
 
 /**

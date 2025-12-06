@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import androidx.hilt.work.HiltWorker
 import com.example.farsilandtv.R
 import com.example.farsilandtv.data.database.CachedMovie
 import com.example.farsilandtv.data.database.CachedSeries
@@ -16,12 +17,17 @@ import com.example.farsilandtv.data.database.CachedEpisode
 import com.example.farsilandtv.data.database.CachedGenre
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.api.RetrofitClient
+import com.example.farsilandtv.data.health.ScraperHealthTracker
 import com.example.farsilandtv.data.repository.ContentRepository
 import com.example.farsilandtv.utils.SyncPreferences
 import com.example.farsilandtv.utils.NotificationHelper
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -39,17 +45,23 @@ import java.util.Locale
  *
  * Sync frequency: Every 10 minutes
  */
-class ContentSyncWorker(
-    context: Context,
-    params: WorkerParameters
+@HiltWorker
+class ContentSyncWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val repository: ContentRepository,
+    private val healthTracker: ScraperHealthTracker
 ) : CoroutineWorker(context, params) {
 
+    // H4 NOTE: ContentDatabase uses singleton pattern which is acceptable
+    // Hilt injection would require providing ContentDatabase in DatabaseModule
+    // Keeping singleton for now as it's thread-safe and efficient
     private val contentDb = ContentDatabase.getDatabase(context)
     private val wordPressApi = RetrofitClient.wordPressApi
-    private val repository = ContentRepository.getInstance(context)
     private val syncPrefs = SyncPreferences(context)
     private val prefs = context.getSharedPreferences("sync_state", Context.MODE_PRIVATE)
 
+    // H5 FIX: Cache is now cleared at start of doWork() to prevent stale data
     // Cache for genre ID to name mapping
     private var genreCache: Map<Int, String>? = null
 
@@ -100,6 +112,9 @@ class ContentSyncWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
+            // H5 FIX: Clear genre cache at start of each sync to prevent stale data
+            genreCache = null
+
             // Check if sync is enabled
             if (!syncPrefs.syncEnabled) {
                 Log.d(TAG, "Sync disabled by user preference")
@@ -113,7 +128,20 @@ class ContentSyncWorker(
             }
 
             val startTime = System.currentTimeMillis()
-            val lastSyncTimestamp = prefs.getLong("last_sync_timestamp", 0L)
+            var lastSyncTimestamp = prefs.getLong("last_sync_timestamp", 0L)
+
+            // OPTIMIZATION: On first sync with bundled DB, use DB's newest content date
+            // instead of doing a full sync. This prevents re-fetching 200+ items that
+            // are already in the bundled database.
+            if (lastSyncTimestamp == 0L) {
+                val newestInDb = getNewestContentTimestamp()
+                if (newestInDb > 0) {
+                    Log.i(TAG, "First sync detected with bundled DB - using DB timestamp: ${Date(newestInDb)}")
+                    lastSyncTimestamp = newestInDb
+                    // Save it so future syncs are incremental
+                    prefs.edit().putLong("last_sync_timestamp", newestInDb).apply()
+                }
+            }
 
             Log.i(TAG, "=== Farsiland Sync Started ===")
             Log.i(TAG, "Last sync: ${Date(lastSyncTimestamp)}")
@@ -199,11 +227,17 @@ class ContentSyncWorker(
 
             // REFACTOR (2025-11-21): Trigger Paging auto-refresh after successful sync
             // Notifies ContentRepository to invalidate Pagers and refresh UI
-            ContentRepository.getInstance(applicationContext).notifySyncCompleted()
+            repository.notifySyncCompleted()
+
+            // Phase 5: Record health tracker success
+            healthTracker.recordSuccess(ScraperHealthTracker.ScraperSource.FARSILAND)
 
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Sync failed: ${e.message}", e)
+
+            // Phase 5: Record health tracker failure
+            healthTracker.recordFailure(ScraperHealthTracker.ScraperSource.FARSILAND, e.message)
 
             // Check if we've exceeded max retry attempts
             val attemptCount = runAttemptCount
@@ -318,11 +352,14 @@ class ContentSyncWorker(
 
         try {
             // AUDIT FIX C5: Safety check - don't cleanup if ContentDatabase appears empty/corrupted
+            // L3 FIX: Use configurable thresholds from SyncPreferences
             val movieCount = contentDb.movieDao().getMovieCount()
             val seriesCount = contentDb.seriesDao().getSeriesCount()
+            val minMovies = syncPrefs.ghostCleanupMinMovies
+            val minSeries = syncPrefs.ghostCleanupMinSeries
 
-            if (movieCount < 50 || seriesCount < 10) {
-                Log.w(TAG, "Skipping ghost cleanup: ContentDatabase appears empty or incomplete (movies=$movieCount, series=$seriesCount)")
+            if (movieCount < minMovies || seriesCount < minSeries) {
+                Log.w(TAG, "Skipping ghost cleanup: ContentDatabase appears empty or incomplete (movies=$movieCount < $minMovies, series=$seriesCount < $minSeries)")
                 return 0
             }
 
@@ -415,6 +452,11 @@ class ContentSyncWorker(
             var page = 1
             var totalSynced = 0
             do {
+                // EXTERNAL AUDIT FIX SN-M3: Check cancellation at start of each pagination iteration
+                // Issue: Pagination continues after WorkManager cancels, wasting resources
+                // Fix: ensureActive() throws CancellationException if cancelled
+                coroutineContext.ensureActive()
+
                 Log.d(TAG, "Fetching movies page $page...")
 
                 val wpMovies = wordPressApi.getMovies(
@@ -472,6 +514,11 @@ class ContentSyncWorker(
             var page = 1
             var totalSynced = 0
             do {
+                // EXTERNAL AUDIT FIX SN-M3: Check cancellation at start of each pagination iteration
+                // Issue: Pagination continues after WorkManager cancels, wasting resources
+                // Fix: ensureActive() throws CancellationException if cancelled
+                coroutineContext.ensureActive()
+
                 Log.d(TAG, "Fetching series page $page...")
 
                 val wpShows = wordPressApi.getTvShows(
@@ -517,6 +564,10 @@ class ContentSyncWorker(
 
     /**
      * Sync episodes added/updated since last sync
+     *
+     * FIX: Added pagination to sync more than 20 episodes (same pattern as movies/series)
+     * Previous: Only fetched 1 page (20 items) - missed episodes if 21+ updated between syncs
+     * Now: Fetches up to 5 pages (100 items) to catch more updates
      */
     private suspend fun syncEpisodes(lastSyncTimestamp: Long): Int {
         try {
@@ -529,28 +580,58 @@ class ContentSyncWorker(
 
             Log.d(TAG, "Fetching episodes modified after: $modifiedAfter")
 
-            // Fetch only modified items, limit to 20 to avoid timeout
-            // REFACTOR (2025-11-21): Reduced from 100 to 20 to fix API timeout
-            val wpEpisodes = wordPressApi.getEpisodes(
-                perPage = 20,
-                page = 1,
-                modifiedAfter = modifiedAfter,
-                orderBy = "modified",
-                order = "desc"
-            )
+            // FIX: Implement pagination loop to sync ALL modified episodes
+            // Using 20 per page to avoid API timeout, max 5 pages (100 items)
+            var page = 1
+            var totalSynced = 0
+            val allAffectedSeriesIds = mutableSetOf<Int>()
 
-            Log.d(TAG, "API returned ${wpEpisodes.size} episodes")
+            do {
+                // EXTERNAL AUDIT FIX SN-M3: Check cancellation at start of each pagination iteration
+                // Issue: Pagination continues after WorkManager cancels, wasting resources
+                // Fix: ensureActive() throws CancellationException if cancelled
+                coroutineContext.ensureActive()
 
-            val newEpisodes = wpEpisodes.map { it.toCachedEpisode() }
+                Log.d(TAG, "Fetching episodes page $page...")
 
-            if (newEpisodes.isNotEmpty()) {
-                contentDb.episodeDao().insertEpisodes(newEpisodes)
-                Log.i(TAG, "✓ Synced ${newEpisodes.size} episodes")
+                val wpEpisodes = wordPressApi.getEpisodes(
+                    perPage = 20,
+                    page = page,
+                    modifiedAfter = modifiedAfter,
+                    orderBy = "modified",
+                    order = "desc"
+                )
+
+                Log.d(TAG, "API returned ${wpEpisodes.size} episodes on page $page")
+
+                val newEpisodes = wpEpisodes.map { it.toCachedEpisode() }
+
+                if (newEpisodes.isNotEmpty()) {
+                    contentDb.episodeDao().insertEpisodes(newEpisodes)
+                    totalSynced += newEpisodes.size
+                    Log.i(TAG, "✓ Synced ${newEpisodes.size} episodes from page $page (total: $totalSynced)")
+
+                    // Collect affected series IDs for batch update
+                    allAffectedSeriesIds.addAll(newEpisodes.mapNotNull { it.seriesId })
+                }
+
+                page++
+
+                // Continue if we got a full page (indicates more pages may exist)
+            } while (wpEpisodes.size >= 20 && page <= 5) // Safety: max 5 pages (100 items)
+
+            // Update episode counts for all affected series (batch)
+            if (allAffectedSeriesIds.isNotEmpty()) {
+                updateSeriesEpisodeCounts(allAffectedSeriesIds.toList())
+            }
+
+            if (totalSynced > 0) {
+                Log.i(TAG, "✓ Episode sync complete: $totalSynced items across ${page - 1} pages")
             } else {
                 Log.d(TAG, "No new episodes to sync")
             }
 
-            return newEpisodes.size
+            return totalSynced
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing episodes: ${e.message}", e)
             return 0
@@ -566,7 +647,8 @@ class ContentSyncWorker(
         return try {
             // AUDIT FIX C5: WordPress returns local time without 'Z' suffix
             // Append 'Z' if not present to treat as UTC
-            val normalizedDate = if (dateStr.matches(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"))) {
+            // M1 FIX: Use pre-compiled DATE_PATTERN from companion object
+            val normalizedDate = if (dateStr.matches(DATE_PATTERN)) {
                 "${dateStr}Z"
             } else {
                 dateStr
@@ -589,6 +671,52 @@ class ContentSyncWorker(
             dateStr.substring(0, 4).toIntOrNull()
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * Get the newest content timestamp from the database
+     * Used to detect bundled DB and skip full sync on first run
+     */
+    private suspend fun getNewestContentTimestamp(): Long {
+        return try {
+            val newestMovie = contentDb.movieDao().getNewestMovieTimestamp() ?: 0L
+            val newestSeries = contentDb.seriesDao().getNewestSeriesTimestamp() ?: 0L
+            val newestEpisode = contentDb.episodeDao().getNewestEpisodeTimestamp() ?: 0L
+            maxOf(newestMovie, newestSeries, newestEpisode)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting newest content timestamp: ${e.message}")
+            0L
+        }
+    }
+
+    /**
+     * Update episode/season counts for series after syncing new episodes
+     * This ensures series metadata stays in sync with actual episode data
+     */
+    private suspend fun updateSeriesEpisodeCounts(seriesIds: List<Int>) {
+        if (seriesIds.isEmpty()) return
+
+        try {
+            for (seriesId in seriesIds) {
+                // M4 FIX: Safe null handling for counts - default to 0 if null
+                val episodeCount = contentDb.episodeDao().getEpisodeCountForSeries(seriesId) ?: 0
+                val seasonCount = contentDb.episodeDao().getSeasonCount(seriesId) ?: 0
+
+                val series = contentDb.seriesDao().getSeriesById(seriesId)
+                if (series != null && (series.totalEpisodes != episodeCount || series.totalSeasons != seasonCount)) {
+                    val updated = series.copy(
+                        totalEpisodes = episodeCount,
+                        totalSeasons = seasonCount,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+                    contentDb.seriesDao().updateSeries(updated)
+                    Log.d(TAG, "Updated series $seriesId: $seasonCount seasons, $episodeCount episodes")
+                }
+            }
+            Log.i(TAG, "✓ Updated episode counts for ${seriesIds.size} series")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating series episode counts: ${e.message}")
         }
     }
 
@@ -701,22 +829,21 @@ class ContentSyncWorker(
             // "Karnaval EP18 Part 2" -> series: "Karnaval", episode: 18
             val titleText = this.title.rendered
 
+            // M1 FIX: Use pre-compiled patterns from companion object
             // Pattern for "Series Name SE## EP##" or "Series Name S#E##"
-            val seasonEpisodePattern = Regex("(.+?)\\s+S[E]?(\\d+)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
             // Pattern for "Series Name EP##"
-            val episodeOnlyPattern = Regex("(.+?)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+            val seasonMatch = SEASON_EPISODE_PATTERN.find(titleText)
+            val episodeMatch = EPISODE_ONLY_PATTERN.find(titleText)
 
             when {
-                seasonEpisodePattern.matches(titleText) -> {
-                    val match = seasonEpisodePattern.find(titleText)!!
-                    seriesTitle = match.groupValues[1].trim()
-                    seasonNum = match.groupValues[2].toIntOrNull() ?: 1
-                    episodeNum = match.groupValues[3].toIntOrNull() ?: 1
+                seasonMatch != null -> {
+                    seriesTitle = seasonMatch.groupValues.getOrNull(1)?.trim() ?: titleText
+                    seasonNum = seasonMatch.groupValues.getOrNull(2)?.toIntOrNull() ?: 1
+                    episodeNum = seasonMatch.groupValues.getOrNull(3)?.toIntOrNull() ?: 1
                 }
-                episodeOnlyPattern.matches(titleText) -> {
-                    val match = episodeOnlyPattern.find(titleText)!!
-                    seriesTitle = match.groupValues[1].trim()
-                    episodeNum = match.groupValues[2].toIntOrNull() ?: 1
+                episodeMatch != null -> {
+                    seriesTitle = episodeMatch.groupValues.getOrNull(1)?.trim() ?: titleText
+                    episodeNum = episodeMatch.groupValues.getOrNull(2)?.toIntOrNull() ?: 1
                 }
                 else -> {
                     // Can't parse - use full title as series name
@@ -786,12 +913,13 @@ class ContentSyncWorker(
      * Normalize series title for fuzzy matching
      * Removes common variations like "سریال", "Season X", etc.
      */
+    // M1 FIX: Use pre-compiled patterns from companion object
     private fun normalizeSeriesTitle(title: String): String {
         return title
             .replace("سریال", "", ignoreCase = true)  // Remove "Series" in Persian
             .replace("فصل", "", ignoreCase = true)     // Remove "Season" in Persian
-            .replace(Regex("Season \\d+", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("\\s+"), " ")  // Normalize whitespace
+            .replace(SEASON_NUMBER_PATTERN, "")
+            .replace(WHITESPACE_PATTERN, " ")  // Normalize whitespace
             .trim()
     }
 
@@ -800,5 +928,13 @@ class ContentSyncWorker(
         const val WORK_NAME = "content_sync_work"
         private const val MAX_RETRY_ATTEMPTS = 5
         private const val NOTIFICATION_ID = 1001  // Unique ID for sync notification
+
+        // M1 FIX: Pre-compiled regex patterns for performance
+        // Patterns are compiled once at class load, not on every function call
+        private val DATE_PATTERN = Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}")
+        private val SEASON_EPISODE_PATTERN = Regex("(.+?)\\s+S[E]?(\\d+)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+        private val EPISODE_ONLY_PATTERN = Regex("(.+?)\\s+EP?(\\d+)", RegexOption.IGNORE_CASE)
+        private val SEASON_NUMBER_PATTERN = Regex("Season \\d+", RegexOption.IGNORE_CASE)
+        private val WHITESPACE_PATTERN = Regex("\\s+")
     }
 }

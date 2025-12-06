@@ -36,4 +36,88 @@
         android:textSize="18sp"
         android:visibility="gone" />
 
+    <!-- Skip Indicator (shows +10s/-10s feedback) -->
+    <TextView
+        android:id="@+id/skip_indicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#80000000"
+        android:paddingHorizontal="24dp"
+        android:paddingVertical="12dp"
+        android:textColor="@android:color/white"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <!-- Speed Indicator (shows current playback speed) -->
+    <TextView
+        android:id="@+id/speed_indicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:background="#80000000"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="6dp"
+        android:textColor="@android:color/white"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <!-- Info Overlay (shows detailed playback info) -->
+    <LinearLayout
+        android:id="@+id/info_overlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="24dp"
+        android:background="#CC000000"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/info_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/info_position"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#CCCCCC"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/info_quality"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#CCCCCC"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/info_speed"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#CCCCCC"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/info_buffer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#CCCCCC"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
 </FrameLayout>

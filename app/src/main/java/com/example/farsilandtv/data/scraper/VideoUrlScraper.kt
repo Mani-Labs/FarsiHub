@@ -1,8 +1,10 @@
 package com.example.farsilandtv.data.scraper
 
+import com.example.farsilandtv.BuildConfig
 import com.example.farsilandtv.FarsilandApp
 import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.models.VideoUrl
+import com.example.farsilandtv.data.imvbox.IMVBoxApiService
 import com.example.farsilandtv.data.namakade.NamakadeApiService
 import com.example.farsilandtv.utils.RemoteConfig
 import com.example.farsilandtv.utils.SecureRegex
@@ -91,11 +93,81 @@ data class CachedUrls(
  * NO AUTHENTICATION REQUIRED - URLs are publicly accessible in HTML!
  *
  * CACHING: Video URLs are cached for 5 minutes to improve replay and quality switching performance
+ *
+ * ## CH-L1: Cache Invalidation Strategy
+ * The video URL cache uses time-based invalidation:
+ * - TTL: 5 minutes (CACHE_DURATION = 300,000ms)
+ * - On cache hit: Check timestamp, return if fresh, refetch if stale
+ * - Manual clear: Call clearCache() when content source changes
+ * - Auto-evict: LRU evicts oldest entries when limit (100) reached
+ *
+ * Invalidation triggers:
+ * - App restart (cache is in-memory only)
+ * - Content sync worker completion
+ * - User force-refresh on details screen
+ * - Source domain change in settings
+ *
+ * ## CH-L2: Cache Size Monitoring
+ * Cache metrics available via getCacheMetrics():
+ * - currentSize: Number of cached entries (0-100)
+ * - maxSize: LRU cache limit (100 entries)
+ * - hitCount: Successful cache hits since startup
+ * - missCount: Cache misses requiring scrape
+ * - hitRate: hitCount / (hitCount + missCount)
+ *
+ * Memory footprint estimation:
+ * - ~10KB per entry (URL list + metadata)
+ * - Max memory: 100 entries × 10KB = ~1MB
+ * - Actual usage typically 20-50 entries
+ *
+ * Monitoring recommendations:
+ * - Log cache stats in debug builds
+ * - Alert if hitRate < 50% (indicates config issue)
+ * - Monitor eviction rate for capacity tuning
+ *
+ * ## CH-L3: Health Dashboard Integration
+ * Scraper health is tracked via ScraperResult sealed class:
+ * - Success: Parse succeeded, URLs extracted
+ * - NetworkError: HTTP/connection failure
+ * - ParseError: HTML structure changed/unexpected
+ * - NoDataFound: Page valid but no URLs present
+ *
+ * Health metrics to expose:
+ * - Success rate per source (Farsiland/FarsiPlex/Namakade/IMVBox)
+ * - Average response time per source
+ * - Error breakdown by type
+ * - Last successful scrape timestamp per source
+ *
+ * Integration with WorkManager:
+ * - ContentSyncWorker reports health via Result.failure()/success()
+ * - Health data stored in SharedPreferences for dashboard
+ * - Firebase Crashlytics logs scraper exceptions automatically
  */
 object VideoUrlScraper {
 
     private const val TAG = "VideoUrlScraper"
     private val httpClient = RetrofitClient.getHttpClient()
+
+    // EXTERNAL AUDIT FIX SN-L1: Error message constants (non-UI context, not in string resources)
+    // Issue: Hardcoded error strings scattered throughout code
+    // Fix: Centralize error messages in companion object constants
+    private const val ERROR_SECURITY_HTTPS_REQUIRED = "Security: Only HTTPS URLs from trusted domains are allowed"
+    private const val ERROR_NO_SECURE_URLS = "No secure video URLs found. All URLs were HTTP or from untrusted domains."
+    private const val ERROR_NO_URLS_FOUND = "No video URLs found on page. HTML structure may have changed."
+    private const val ERROR_NO_NAMAKADE_URL = "No video URL found on Namakade page"
+    private const val ERROR_NO_IMVBOX_URL = "No video URL found on IMVBox page"
+
+    // EXTERNAL AUDIT FIX SN-L2: Debug logging optimization
+    // Issue: 50+ android.util.Log.d() calls in production
+    // Note: ProGuard strips all Log.d() calls in release builds (see proguard-rules.pro)
+    // Additional safety: inline helper for explicit debug-only logs
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun logDebug(message: String) {
+        if (BuildConfig.DEBUG) {
+            android.util.Log.d(TAG, message)
+        }
+    }
+    // Existing Log.d() calls are kept as-is since ProGuard removes them automatically
 
     // EXTERNAL AUDIT FIX C2: LRU cache with size limit to prevent OOM
     // Previous: ConcurrentHashMap with no size limit → OOM after days of use
@@ -105,6 +177,9 @@ object VideoUrlScraper {
         override fun sizeOf(key: String, value: CachedUrls): Int = 1
     }
     private const val CACHE_DURATION = 5 * 60 * 1000L // 5 minutes in milliseconds
+
+    // N6 FIX: Lazy singleton NamakadeApiService to avoid per-call instantiation
+    private val namakadeService by lazy { com.example.farsilandtv.data.namakade.NamakadeApiService() }
 
     // AUDIT FIX #28: Pre-compiled regex patterns to avoid object churn
     // Issue: Regex objects created in loops/hot paths cause GC pressure
@@ -150,11 +225,9 @@ object VideoUrlScraper {
             val normalizedUrl = SecureUrlValidator.normalizeToHttps(pageUrl)
             if (normalizedUrl == null) {
                 android.util.Log.e(TAG, "SECURITY: Rejected insecure or untrusted URL: $pageUrl")
-                // AUDIT FIX #30: Use localized string resource
+                // EXTERNAL AUDIT FIX SN-L1: Use error constant instead of hardcoded string
                 return@withContext ScraperResult.ParseError(
-                    // Note: Context not available in object, using hardcoded string
-                    // TODO: Refactor VideoUrlScraper to accept Context for proper localization
-                    "Security: Only HTTPS URLs from trusted domains are allowed",
+                    ERROR_SECURITY_HTTPS_REQUIRED,
                     SecurityException("Cleartext HTTP traffic not permitted")
                 )
             }
@@ -186,14 +259,21 @@ object VideoUrlScraper {
             android.util.Log.d(TAG, "Cache MISS - scraping HTML")
 
             // Determine source domain
+            val isImvbox = securePageUrl.contains("imvbox.com", ignoreCase = true)
             val isNamakade = securePageUrl.contains("namakade.com", ignoreCase = true)
             val isFarsiPlex = securePageUrl.contains("farsiplex.com", ignoreCase = true)
             val sourceType = when {
+                isImvbox -> "IMVBox"
                 isNamakade -> "Namakade"
                 isFarsiPlex -> "FarsiPlex"
                 else -> "Farsiland"
             }
             android.util.Log.d(TAG, "Detected source: $sourceType")
+
+            // IMVBox uses its own HLS extraction (IMVBoxApiService)
+            if (isImvbox) {
+                return@withContext extractFromImvbox(securePageUrl)
+            }
 
             // Namakade uses a different scraper (NamakadeApiService)
             if (isNamakade) {
@@ -234,7 +314,8 @@ object VideoUrlScraper {
                 if (secureUrls.isEmpty()) {
                     android.util.Log.e(TAG, "SECURITY: All video URLs failed security validation")
                     android.util.Log.e(TAG, "========================================")
-                    return@withContext ScraperResult.NoDataFound("No secure video URLs found. All URLs were HTTP or from untrusted domains.")
+                    // EXTERNAL AUDIT FIX SN-L1: Use error constant
+                    return@withContext ScraperResult.NoDataFound(ERROR_NO_SECURE_URLS)
                 }
 
                 // Cache the result
@@ -248,7 +329,8 @@ object VideoUrlScraper {
             // No URLs found - page loaded successfully but no video URLs found
             android.util.Log.e(TAG, "FAILED: No video URLs found via any extraction method")
             android.util.Log.e(TAG, "========================================")
-            ScraperResult.NoDataFound("No video URLs found on page. HTML structure may have changed.")
+            // EXTERNAL AUDIT FIX SN-L1: Use error constant
+            ScraperResult.NoDataFound(ERROR_NO_URLS_FOUND)
 
         } catch (e: Exception) {
             android.util.Log.e(TAG, "========================================")
@@ -287,7 +369,7 @@ object VideoUrlScraper {
         android.util.Log.d(TAG, "=== Namakade Extraction ===")
 
         return try {
-            val namakadeService = NamakadeApiService()
+            // N6 FIX: Use lazy singleton instead of creating new instance per-call
             val videoUrl = namakadeService.extractVideoUrl(pageUrl)
 
             if (videoUrl != null) {
@@ -301,7 +383,8 @@ object VideoUrlScraper {
             } else {
                 android.util.Log.w(TAG, "No video URL found from Namakade")
                 android.util.Log.d(TAG, "========================================")
-                ScraperResult.NoDataFound("No video URL found on Namakade page")
+                // EXTERNAL AUDIT FIX SN-L1: Use error constant
+                ScraperResult.NoDataFound(ERROR_NO_NAMAKADE_URL)
             }
         } catch (e: java.io.IOException) {
             android.util.Log.e(TAG, "Network error extracting from Namakade", e)
@@ -311,6 +394,64 @@ object VideoUrlScraper {
             android.util.Log.e(TAG, "Error extracting from Namakade", e)
             android.util.Log.d(TAG, "========================================")
             ScraperResult.ParseError("Failed to parse Namakade page: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Extract video URLs from IMVBox.com (HLS streams)
+     * IMVBox uses HLS adaptive streaming: streaming.imvbox.com/media/{id}/{id}.m3u8
+     *
+     * @param pageUrl IMVBox page URL (movie or episode)
+     * @return ScraperResult with video URLs or error
+     */
+    private suspend fun extractFromImvbox(pageUrl: String): ScraperResult<List<VideoUrl>> {
+        android.util.Log.d(TAG, "=== IMVBox Extraction ===")
+
+        return try {
+            // Safe access to avoid crash if called before Application.onCreate()
+            val appContext = try {
+                FarsilandApp.instance.applicationContext
+            } catch (e: UninitializedPropertyAccessException) {
+                android.util.Log.e(TAG, "FarsilandApp not initialized", e)
+                return ScraperResult.ParseError("App not initialized", e)
+            }
+            val imvboxService = IMVBoxApiService.getInstance(appContext)
+            val result = imvboxService.extractVideoUrl(pageUrl)
+
+            when (result) {
+                is ScraperResult.Success -> {
+                    val urlsList = listOf(result.data)
+                    // Cache the result
+                    urlCache.put(pageUrl, CachedUrls(urlsList, System.currentTimeMillis()))
+                    android.util.Log.d(TAG, "SUCCESS: Found 1 video URL from IMVBox")
+                    android.util.Log.d(TAG, "URL: ${result.data.url}")
+                    android.util.Log.d(TAG, "========================================")
+                    ScraperResult.Success(urlsList)
+                }
+                is ScraperResult.NoDataFound -> {
+                    android.util.Log.w(TAG, "No video URL found from IMVBox")
+                    android.util.Log.d(TAG, "========================================")
+                    ScraperResult.NoDataFound(ERROR_NO_IMVBOX_URL)
+                }
+                is ScraperResult.NetworkError -> {
+                    android.util.Log.e(TAG, "Network error from IMVBox: ${result.message}")
+                    android.util.Log.d(TAG, "========================================")
+                    result
+                }
+                is ScraperResult.ParseError -> {
+                    android.util.Log.e(TAG, "Parse error from IMVBox: ${result.message}")
+                    android.util.Log.d(TAG, "========================================")
+                    result
+                }
+            }
+        } catch (e: java.io.IOException) {
+            android.util.Log.e(TAG, "Network error extracting from IMVBox", e)
+            android.util.Log.d(TAG, "========================================")
+            ScraperResult.NetworkError("Network error: ${e.message}", e)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error extracting from IMVBox", e)
+            android.util.Log.d(TAG, "========================================")
+            ScraperResult.ParseError("Failed to parse IMVBox page: ${e.message}", e)
         }
     }
 
@@ -753,8 +894,8 @@ object VideoUrlScraper {
                     }
 
                     // METHOD 2: Extract M3U8 master playlist (HLS adaptive streaming)
-                    val m3u8Pattern = Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)"""", RegexOption.IGNORE_CASE)
-                    val m3u8Match = m3u8Pattern.find(jwPlayerHtml)
+                    // M1 FIX: Use pre-compiled M3U8_FILE_PATTERN
+                    val m3u8Match = M3U8_FILE_PATTERN.find(jwPlayerHtml)
 
                     if (m3u8Match != null) {
                         val m3u8Url = m3u8Match.groupValues[1].replace("\\/", "/")
@@ -776,12 +917,10 @@ object VideoUrlScraper {
                     }
 
                     // METHOD 3: Fallback to jw.file and jw.file2 (legacy support)
+                    // M1 FIX: Use pre-compiled MP4_FILE_PATTERN and MP4_FILE2_PATTERN
                     if (videoUrls.isEmpty()) {
-                        val filePattern = Regex(""""file"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE)
-                        val file2Pattern = Regex(""""file2"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE)
-
-                        val fileMatch = filePattern.find(jwPlayerHtml)
-                        val file2Match = file2Pattern.find(jwPlayerHtml)
+                        val fileMatch = MP4_FILE_PATTERN.find(jwPlayerHtml)
+                        val file2Match = MP4_FILE2_PATTERN.find(jwPlayerHtml)
 
                         if (fileMatch != null) {
                             val url = fileMatch.groupValues[1].replace("\\/", "/")
@@ -816,9 +955,9 @@ object VideoUrlScraper {
             }
 
             // Fallback: Look for any direct MP4 URLs in the response
+            // M1 FIX: Use pre-compiled MP4_URL_PATTERN
             if (videoUrls.isEmpty()) {
-                val mp4Pattern = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
-                val matches = mp4Pattern.findAll(jsonResponse)
+                val matches = MP4_URL_PATTERN.findAll(jsonResponse)
 
                 for (match in matches) {
                     val url = match.value.trim().replace("\\/", "/")
@@ -876,7 +1015,8 @@ object VideoUrlScraper {
         android.util.Log.d(TAG, "Found ${downloadUrls.size} URLs from download forms")
 
         // Combine results and remove duplicates
-        var allUrls = (microdataUrls + downloadUrls).distinctBy { "${it.quality}-${it.mirror}" }
+        // Prioritize download form URLs (d1, d2) over microdata URLs (p2) - more reliable
+        var allUrls = (downloadUrls + microdataUrls).distinctBy { "${it.quality}-${it.mirror}" }
 
         if (allUrls.isNotEmpty()) {
             // Sort by quality: 1080p → 720p → 480p
@@ -1229,19 +1369,26 @@ object VideoUrlScraper {
             // Method 1: tr[id^=link-]
             downloadRows.addAll(doc.select("tr[id^=link-]"))
 
-            // Method 2: Any form with fileid input
+            // Method 2: Any form with fileid OR id input (Farsiland uses both)
             doc.select("form").forEach { form ->
-                if (form.select("input[name=fileid]").isNotEmpty()) {
+                if (form.select("input[name=fileid], input[name=id]").isNotEmpty()) {
                     downloadRows.add(form)
                 }
             }
 
-            // Method 3: Any element containing fileid input
-            doc.select("input[name=fileid]").forEach { input ->
+            // Method 3: Any element containing fileid or id input
+            doc.select("input[name=fileid], input[name=id]").forEach { input ->
                 input.parent()?.let { parent ->
                     if (!downloadRows.contains(parent)) {
                         downloadRows.add(parent)
                     }
+                }
+            }
+
+            // Method 4: Forms with dlform pattern in id (dlform1, dlform2, etc.)
+            doc.select("form[id^=dlform]").forEach { form ->
+                if (!downloadRows.contains(form)) {
+                    downloadRows.add(form)
                 }
             }
 
@@ -1269,8 +1416,9 @@ object VideoUrlScraper {
                     async {
                         semaphore.withPermit {
                             try {
-                                // Get the fileid from hidden input
+                                // Get the fileid from hidden input (check both fileid and id)
                                 val fileidInput = row.select("input[name=fileid]").firstOrNull()
+                                    ?: row.select("input[name=id]").firstOrNull()
                                     ?: return@async null
 
                                 val fileid = fileidInput.attr("value")
@@ -1367,14 +1515,20 @@ object VideoUrlScraper {
         try {
             android.util.Log.d(TAG, "POSTing fileid to /get/: $fileid")
 
-            // Create form body
+            // Create form body - try both 'id' and 'fileid' parameter names
             val formBody = okhttp3.FormBody.Builder()
+                .add("id", fileid)
                 .add("fileid", fileid)
                 .build()
 
             val request = Request.Builder()
                 .url("https://farsiland.com/get/")
                 .post(formBody)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Referer", "https://farsiland.com/")
+                .header("Origin", "https://farsiland.com")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9,fa;q=0.8")
                 .build()
 
             // AUDIT FIX #12: Use 'use' to ensure response is always closed, even if reading fails
@@ -1427,8 +1581,8 @@ object VideoUrlScraper {
 
                     // Extract ALL MP4 URLs from response (both d1 and d2 mirrors)
                     // SECURITY: Use timeout-protected regex execution
-                    val mp4Regex = Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""", RegexOption.IGNORE_CASE)
-                    val matches = SecureRegex.findAllWithTimeout(mp4Regex, responseBody)
+                    // M1 FIX: Use pre-compiled MP4_URL_PATTERN
+                    val matches = SecureRegex.findAllWithTimeout(MP4_URL_PATTERN, responseBody)
                     val urls = matches.map { it.value }.distinct().toList()
 
                     if (urls.isNotEmpty()) {
@@ -1623,8 +1777,8 @@ object VideoUrlScraper {
 
                 // Look for URLs in JavaScript
                 // SECURITY: Use timeout-protected regex execution
-                val mp4Regex = Regex("""https?://[^\s"']+\.mp4""", RegexOption.IGNORE_CASE)
-                val matches = SecureRegex.findAllWithTimeout(mp4Regex, scriptContent)
+                // M1 FIX: Use pre-compiled MP4_URL_PATTERN
+                val matches = SecureRegex.findAllWithTimeout(MP4_URL_PATTERN, scriptContent)
 
                 for (match in matches) {
                     val url = match.value
@@ -1677,8 +1831,8 @@ object VideoUrlScraper {
         try {
             // Extract series slug and episode number from URL
             // Pattern: https://farsiland.com/series/{slug}/s{season}e{episode}/
-            val regex = Regex("""/series/([^/]+)/s(\d+)e(\d+)""", RegexOption.IGNORE_CASE)
-            val match = regex.find(pageUrl)
+            // M1 FIX: Use pre-compiled SERIES_URL_PATTERN
+            val match = SERIES_URL_PATTERN.find(pageUrl)
 
             if (match != null) {
                 val slug = match.groupValues[1]
@@ -1705,8 +1859,8 @@ object VideoUrlScraper {
             }
 
             // Try movie pattern: https://farsiland.com/movies/{slug}/
-            val movieRegex = Regex("""/movies/([^/]+)""", RegexOption.IGNORE_CASE)
-            val movieMatch = movieRegex.find(pageUrl)
+            // M1 FIX: Use pre-compiled MOVIE_URL_PATTERN
+            val movieMatch = MOVIE_URL_PATTERN.find(pageUrl)
 
             if (movieMatch != null) {
                 val slug = movieMatch.groupValues[1]
@@ -1926,7 +2080,7 @@ object VideoUrlScraper {
     }
 
     /**
-     * Get cache statistics for debugging
+     * Get cache statistics for debugging (string format)
      */
     fun getCacheStats(): String {
         val size = urlCache.size()
@@ -1938,5 +2092,42 @@ object VideoUrlScraper {
         } else 0.0
 
         return "Cache: $size/$100 pages (max 100), $totalUrls URLs, avg age: ${avgAge.toInt()}s"
+    }
+
+    /**
+     * CH-L2: Get structured cache metrics for monitoring
+     * Returns CacheMetrics data class with all cache statistics
+     */
+    fun getCacheMetrics(): CacheMetrics {
+        val size = urlCache.size()
+        val maxSize = urlCache.maxSize()
+        val hitCount = urlCache.hitCount()
+        val missCount = urlCache.missCount()
+        val hitRate = if (hitCount + missCount > 0) {
+            hitCount.toFloat() / (hitCount + missCount)
+        } else 0f
+
+        return CacheMetrics(
+            currentSize = size,
+            maxSize = maxSize,
+            hitCount = hitCount,
+            missCount = missCount,
+            hitRate = hitRate
+        )
+    }
+}
+
+/**
+ * CH-L2: Data class for cache metrics
+ */
+data class CacheMetrics(
+    val currentSize: Int,
+    val maxSize: Int,
+    val hitCount: Int,
+    val missCount: Int,
+    val hitRate: Float
+) {
+    override fun toString(): String {
+        return "CacheMetrics(size=$currentSize/$maxSize, hits=$hitCount, misses=$missCount, hitRate=${(hitRate * 100).toInt()}%)"
     }
 }

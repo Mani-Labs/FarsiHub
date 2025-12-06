@@ -7,7 +7,6 @@ import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.map
-import com.example.farsilandtv.data.api.RetrofitClient
 import com.example.farsilandtv.data.api.WordPressApiService
 import com.example.farsilandtv.data.database.ContentDatabase
 import com.example.farsilandtv.data.database.DatabaseSource
@@ -17,6 +16,8 @@ import com.example.farsilandtv.data.database.CachedSeries
 import com.example.farsilandtv.data.database.CachedEpisode
 import com.example.farsilandtv.data.models.*
 import com.example.farsilandtv.data.models.wordpress.*
+import com.example.farsilandtv.data.imvbox.IMVBoxApiService
+import com.example.farsilandtv.data.imvbox.IMVBoxUrlBuilder
 import com.example.farsilandtv.data.scraper.EpisodeListScraper
 import com.example.farsilandtv.data.scraper.EpisodeMetadataScraper
 import com.example.farsilandtv.data.scraper.VideoUrlScraper
@@ -24,6 +25,7 @@ import com.example.farsilandtv.data.scraper.ScraperResult
 import com.example.farsilandtv.data.scraper.WebSearchScraper
 import com.example.farsilandtv.utils.ErrorHandler
 import com.example.farsilandtv.utils.SqlSanitizer
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -38,31 +40,31 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.jsoup.Jsoup
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Repository for content data (movies, series, episodes)
- * NEW: Database-first with API fallback
+ * Database-first with API fallback
  * - Queries local ContentDatabase first (fast, offline-capable)
  * - Falls back to WordPress API if data not in database
  * - Still uses scraping for video URLs and episode lists
  *
- * EXTERNAL AUDIT FIX S1: Singleton pattern to preserve cache across Activities
- * Previous issue: ContentRepository(context) instantiated in each Activity/ViewModel
- * Result: LruCache reset on every navigation (0% cache effectiveness)
- * Solution: Thread-safe singleton with lazy initialization
+ * Hilt-managed singleton - injected via constructor
+ * Context is required for dynamic database access (source can change via DatabasePreferences)
  */
-class ContentRepository private constructor(context: Context) {
+@Singleton
+class ContentRepository @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val wordPressApi: WordPressApiService
+) {
 
-    private val wordPressApi: WordPressApiService = RetrofitClient.wordPressApi
     private val videoScraper = VideoUrlScraper
     private val episodeScraper = EpisodeListScraper
     private val metadataScraper = EpisodeMetadataScraper
 
-    // Store context to get database dynamically (fixes Bug #4: stale database reference)
-    private val appContext = context.applicationContext
-
     /**
-     * REFACTOR (2025-11-21): Sync completion trigger for auto-refresh
+     * Sync completion trigger for auto-refresh
      * Emits timestamp when WorkManager sync completes
      * Triggers Pager invalidation and UI auto-refresh
      */
@@ -72,49 +74,63 @@ class ContentRepository private constructor(context: Context) {
         private const val TAG = "ContentRepository"
         private const val CACHE_TTL_MS = 30_000L // 30 seconds
 
-        // EXTERNAL AUDIT FIX S1: Singleton instance with double-check locking
-        // EXTERNAL AUDIT VERIFIED C2 (2025-11-21): Database Connection Leak - RESOLVED
-        // Issue: Previous code created new Room instances in searchDatabase() for every search
-        // Result: EMFILE crashes after ~50-100 searches ("Too many open files")
-        // Solution: Singleton pattern ensures single database instance reused across app
-        // Verification: searchCurrentDatabase() uses ContentDatabase.getDatabase() singleton
-        @Volatile
-        private var INSTANCE: ContentRepository? = null
+        // RD-L4: Title normalization for duplicate detection in search
+        private fun normalizeTitle(title: String): String =
+            title.lowercase().trim().replace(Regex("[^a-z0-9\\s]"), "")
 
-        /**
-         * Get singleton instance of ContentRepository
-         * Thread-safe with double-check locking pattern
-         */
-        fun getInstance(context: Context): ContentRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: ContentRepository(context.applicationContext).also {
-                    INSTANCE = it
-                    Log.d(TAG, "Singleton ContentRepository instance created")
-                }
-            }
-        }
-
-        // EXTERNAL AUDIT FIX C3.4: Pre-compiled Regex for title normalization
+        // Pre-compiled Regex for title normalization
         private val TITLE_NORMALIZER_REGEX = Regex("[^\\p{L}\\p{N}]")
 
-        // EXTERNAL AUDIT FIX H2.3 (2025-11-21): Pre-compiled Regex for date parsing
-        // EXTERNAL AUDIT VERIFIED P8 (2025-11-21): Inefficient Date Parsing - RESOLVED
-        // Issue: WordPress date normalization regex created thousands of times in loops
-        //        causing GC pressure and performance degradation
-        // Solution: Pre-compile regex once in companion object (0.1ms vs 20ms per call)
-        // Performance impact: 2000ms → 200ms in loops processing 100 dates (90% improvement)
-        // Verification: parseDateToTimestamp() uses pre-compiled DATE_NORMALIZER_REGEX
+        // Pre-compiled Regex for date parsing (performance optimization)
         private val DATE_NORMALIZER_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}")
 
-        // AUDIT FIX #29: Extract hardcoded source domain logic to constants
+        // Source domain constants
         private const val SOURCE_FARSILAND = "farsiland"
         private const val SOURCE_FARSIPLEX = "farsiplex"
         private const val SOURCE_NAMAKADE = "namakade"
+        private const val SOURCE_IMVBOX = "imvbox"
         private const val SOURCE_UNKNOWN = "unknown"
 
         private const val DOMAIN_FARSILAND = "farsiland.com"
         private const val DOMAIN_FARSIPLEX = "farsiplex.com"
         private const val DOMAIN_NAMAKADE = "namakade.com"
+        private const val DOMAIN_IMVBOX = "imvbox.com"
+
+        /**
+         * Interleave results from different sources in round-robin fashion
+         * Ensures minority sources appear near the top of results instead of being buried
+         *
+         * Example: [F1, F2, F3, N1, P1] → [F1, N1, P1, F2, F3]
+         *
+         * @param items List of items to interleave
+         * @param getSource Function to extract source identifier from item
+         * @return Items interleaved by source
+         */
+        private fun <T> interleaveBySource(items: List<T>, getSource: (T) -> String): List<T> {
+            if (items.size <= 1) return items
+
+            // Group by source, maintaining order within each source
+            val bySource = items.groupBy(getSource).mapValues { it.value.toMutableList() }
+
+            if (bySource.size <= 1) return items // Single source, no interleaving needed
+
+            val result = mutableListOf<T>()
+            val sources = bySource.keys.toList()
+            var roundIndex = 0
+
+            // Round-robin through sources until all items are added
+            while (result.size < items.size) {
+                for (source in sources) {
+                    val sourceItems = bySource[source] ?: continue
+                    if (roundIndex < sourceItems.size) {
+                        result.add(sourceItems[roundIndex])
+                    }
+                }
+                roundIndex++
+            }
+
+            return result
+        }
     }
 
     // Get database instance dynamically to support database switching
@@ -131,6 +147,45 @@ class ContentRepository private constructor(context: Context) {
     // In-memory cache for genres (loaded once)
     // EXTERNAL AUDIT FIX S6: Use AtomicReference for thread-safe lazy initialization
     private val genresCache = AtomicReference<List<Genre>?>(null)
+
+    // RD-L6: Cache metrics for performance monitoring
+    private var cacheHits = 0
+    private var cacheMisses = 0
+
+    /**
+     * RD-L6: Get cache hit rate for performance monitoring
+     * @return Hit rate as float between 0.0 and 1.0
+     */
+    fun getCacheHitRate(): Float =
+        if (cacheHits + cacheMisses > 0) cacheHits.toFloat() / (cacheHits + cacheMisses) else 0f
+
+    /**
+     * RD-L1: Retry wrapper with exponential backoff for transient failures
+     * Retries operation with increasing delays between attempts
+     * @param maxAttempts Maximum number of retry attempts (default: 3)
+     * @param initialDelayMs Initial delay before first retry in milliseconds (default: 1000ms)
+     * @param block Suspending operation to retry
+     * @return Result of successful operation
+     * @throws Exception Last exception if all retries fail
+     */
+    private suspend fun <T> withRetry(
+        maxAttempts: Int = 3,
+        initialDelayMs: Long = 1000,
+        block: suspend () -> T
+    ): T {
+        var currentDelay = initialDelayMs
+        repeat(maxAttempts - 1) { attempt ->
+            try {
+                return block()
+            } catch (e: Exception) {
+                Log.w(TAG, "Retry attempt ${attempt + 1}/$maxAttempts failed: ${e.message}")
+                kotlinx.coroutines.delay(currentDelay)
+                currentDelay *= 2 // Exponential backoff
+            }
+        }
+        // Final attempt (will throw if it fails)
+        return block()
+    }
 
     // ========== Source-Aware Response Cache (Performance Optimization) ==========
 
@@ -238,21 +293,88 @@ class ContentRepository private constructor(context: Context) {
 
         // Combine database source changes + sync completion trigger
         // Recreate Pager when EITHER changes (source switch OR sync completes)
+        // RD-H2 FIX: Add catch{} to handle errors in flatMapLatest
         return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
             source // Only need source, timestamp just triggers recreation
         }.flatMapLatest { source ->
-            val urlPattern = source.urlPattern
+            try {
+                val urlPattern = source.urlPattern
 
-            Pager(
-                config = PagingConfig(
-                    pageSize = 20,
-                    prefetchDistance = 10,
-                    enablePlaceholders = false,
-                    initialLoadSize = 30
-                ),
-                pagingSourceFactory = { getContentDb().movieDao().getMoviesPagedFiltered(urlPattern) }
-            ).flow.map { pagingData ->
-                pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+                Pager(
+                    config = PagingConfig(
+                        pageSize = 20,
+                        prefetchDistance = 10,
+                        enablePlaceholders = false,
+                        initialLoadSize = 30
+                    ),
+                    pagingSourceFactory = { getContentDb().movieDao().getMoviesPagedFiltered(urlPattern) }
+                ).flow.map { pagingData ->
+                    pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in getMoviesPaged flatMapLatest: ${e.message}", e)
+                // Return empty PagingData on error
+                kotlinx.coroutines.flow.flowOf(androidx.paging.PagingData.empty())
+            }
+        }
+    }
+
+    /**
+     * Get movies with Paging 3 + genre filter + sort option
+     * Used by Compose MoviesScreen for filtering/sorting
+     *
+     * @param genre Genre to filter by (null or "All" for no filter)
+     * @param sortBy Sort option: "Recent", "Year", "Rating", "A-Z"
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun getMoviesPagedWithFilter(
+        genre: String?,
+        sortBy: String
+    ): Flow<PagingData<Movie>> {
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        // RD-H2 FIX: Add catch{} to flatMapLatest
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source
+        }.flatMapLatest { source ->
+            try {
+                val urlPattern = source.urlPattern
+                val movieDao = getContentDb().movieDao()
+
+                val pagingSourceFactory = when {
+                    // No genre filter
+                    genre == null || genre == "All" -> when (sortBy) {
+                        "A-Z" -> { { movieDao.getMoviesPagedByTitle(urlPattern) } }
+                        "Year" -> { { movieDao.getMoviesPagedByYear(urlPattern) } }
+                        "Rating" -> { { movieDao.getMoviesPagedByRating(urlPattern) } }
+                        else -> { { movieDao.getMoviesPagedFiltered(urlPattern) } } // Recent (default)
+                    }
+                    // With genre filter
+                    else -> {
+                        val sanitizedGenre = SqlSanitizer.sanitizeLikePattern(genre)
+                        when (sortBy) {
+                            "A-Z" -> { { movieDao.getMoviesPagedByGenreTitle(urlPattern, sanitizedGenre) } }
+                            "Year" -> { { movieDao.getMoviesPagedByGenreYear(urlPattern, sanitizedGenre) } }
+                            "Rating" -> { { movieDao.getMoviesPagedByGenreRating(urlPattern, sanitizedGenre) } }
+                            else -> { { movieDao.getMoviesPagedByGenre(urlPattern, sanitizedGenre) } } // Recent
+                        }
+                    }
+                }
+
+                Pager(
+                    config = PagingConfig(
+                        pageSize = 20,
+                        prefetchDistance = 10,
+                        enablePlaceholders = false,
+                        initialLoadSize = 30
+                    ),
+                    pagingSourceFactory = pagingSourceFactory
+                ).flow.map { pagingData ->
+                    pagingData.map { cachedMovie -> cachedMovie.toMovie() }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in getMoviesPagedWithFilter flatMapLatest: ${e.message}", e)
+                kotlinx.coroutines.flow.flowOf(androidx.paging.PagingData.empty())
             }
         }
     }
@@ -291,6 +413,60 @@ class ContentRepository private constructor(context: Context) {
                     initialLoadSize = 30
                 ),
                 pagingSourceFactory = { getContentDb().seriesDao().getSeriesPagedFiltered(urlPattern) }
+            ).flow.map { pagingData ->
+                pagingData.map { cachedSeries -> cachedSeries.toSeries() }
+            }
+        }
+    }
+
+    /**
+     * Get series with Paging 3 + genre filter + sort option
+     * Used by Compose ShowsScreen for filtering/sorting
+     *
+     * @param genre Genre to filter by (null or "All" for no filter)
+     * @param sortBy Sort option: "Recent", "Year", "Rating", "A-Z"
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun getSeriesPagedWithFilter(
+        genre: String?,
+        sortBy: String
+    ): Flow<PagingData<Series>> {
+        val dbPrefs = DatabasePreferences.getInstance(appContext)
+
+        return dbPrefs.observeCurrentSource().combine(_syncCompletionTrigger) { source, _ ->
+            source
+        }.flatMapLatest { source ->
+            val urlPattern = source.urlPattern
+            val seriesDao = getContentDb().seriesDao()
+
+            val pagingSourceFactory = when {
+                // No genre filter
+                genre == null || genre == "All" -> when (sortBy) {
+                    "A-Z" -> { { seriesDao.getSeriesPagedByTitle(urlPattern) } }
+                    "Year" -> { { seriesDao.getSeriesPagedByYear(urlPattern) } }
+                    "Rating" -> { { seriesDao.getSeriesPagedByRating(urlPattern) } }
+                    else -> { { seriesDao.getSeriesPagedFiltered(urlPattern) } } // Recent (default)
+                }
+                // With genre filter
+                else -> {
+                    val sanitizedGenre = SqlSanitizer.sanitizeLikePattern(genre)
+                    when (sortBy) {
+                        "A-Z" -> { { seriesDao.getSeriesPagedByGenreTitle(urlPattern, sanitizedGenre) } }
+                        "Year" -> { { seriesDao.getSeriesPagedByGenreYear(urlPattern, sanitizedGenre) } }
+                        "Rating" -> { { seriesDao.getSeriesPagedByGenreRating(urlPattern, sanitizedGenre) } }
+                        else -> { { seriesDao.getSeriesPagedByGenre(urlPattern, sanitizedGenre) } } // Recent
+                    }
+                }
+            }
+
+            Pager(
+                config = PagingConfig(
+                    pageSize = 20,
+                    prefetchDistance = 10,
+                    enablePlaceholders = false,
+                    initialLoadSize = 30
+                ),
+                pagingSourceFactory = pagingSourceFactory
             ).flow.map { pagingData ->
                 pagingData.map { cachedSeries -> cachedSeries.toSeries() }
             }
@@ -349,16 +525,23 @@ class ContentRepository private constructor(context: Context) {
      */
     suspend fun getMovies(page: Int = 1, perPage: Int = 20): Result<List<Movie>> =
         withContext(Dispatchers.IO) {
+            // Defensive: Validate pagination parameters
+            val safePage = page.coerceAtLeast(1)
+            val safePerPage = perPage.coerceIn(1, 100)
+
             // Check which database source is active
             val currentSource = com.example.farsilandtv.data.database.ContentDatabase.getCurrentSource(appContext)
 
-            // Check cache first
-            val cacheKey = buildCacheKey(currentSource, page, perPage)
+            // Check cache first - capture entry to avoid race condition
+            // RD-L2: Cache database source at start to avoid multiple calls
+            val cacheKey = buildCacheKey(currentSource, safePage, safePerPage)
             val cachedEntry = moviesCache.get(cacheKey)
-            if (isCacheValid(cachedEntry, currentSource)) {
-                Log.d(TAG, "getMovies() - Returning CACHED data (${cachedEntry!!.data.size} items)")
+            if (cachedEntry != null && isCacheValid(cachedEntry, currentSource)) {
+                cacheHits++ // RD-L6: Track cache hit
+                Log.d(TAG, "getMovies() - Returning CACHED data (${cachedEntry.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
             }
+            cacheMisses++ // RD-L6: Track cache miss
 
             android.util.Log.i("ContentRepository", "getMovies() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
 
@@ -372,12 +555,17 @@ class ContentRepository private constructor(context: Context) {
                 // AUDIT FIX (Second Audit #6): Use efficient OFFSET-based pagination
                 // Previous: Fetch N items, use 20, discard N-20 (quadratic memory usage)
                 // Fixed: Use LIMIT/OFFSET query for constant memory usage
-                val offset = (page - 1) * perPage
-                val cachedMovies = getContentDb().movieDao().getRecentMoviesFilteredWithOffset(urlPattern, perPage, offset).firstOrNull()
+                val offset = (safePage - 1) * safePerPage
+                val cachedMovies = getContentDb().movieDao().getRecentMoviesFilteredWithOffset(urlPattern, safePerPage, offset).firstOrNull()
                 ensureActive()
 
                 if (!cachedMovies.isNullOrEmpty()) {
                     val movies = cachedMovies.map { it.toMovie() }
+
+                    // DEBUG: Log poster URLs for first 3 movies
+                    movies.take(3).forEach { m ->
+                        Log.d(TAG, "DEBUG getMovies() - ${m.title}: posterUrl=${m.posterUrl}")
+                    }
 
                     // Store in cache
                     moviesCache.put(cacheKey, CacheEntry(movies, System.currentTimeMillis(), currentSource))
@@ -430,16 +618,23 @@ class ContentRepository private constructor(context: Context) {
      */
     suspend fun getTvShows(page: Int = 1, perPage: Int = 20): Result<List<Series>> =
         withContext(Dispatchers.IO) {
+            // Defensive: Validate pagination parameters
+            val safePage = page.coerceAtLeast(1)
+            val safePerPage = perPage.coerceIn(1, 100)
+
             // Check which database source is active
+            // RD-L2: Cache database source at start to avoid multiple calls
             val currentSource = com.example.farsilandtv.data.database.ContentDatabase.getCurrentSource(appContext)
 
-            // Check cache first
-            val cacheKey = buildCacheKey(currentSource, page, perPage)
+            // Check cache first - capture entry to avoid race condition
+            val cacheKey = buildCacheKey(currentSource, safePage, safePerPage)
             val cachedEntry = seriesCache.get(cacheKey)
-            if (isCacheValid(cachedEntry, currentSource)) {
-                Log.d(TAG, "getTvShows() - Returning CACHED data (${cachedEntry!!.data.size} items)")
+            if (cachedEntry != null && isCacheValid(cachedEntry, currentSource)) {
+                cacheHits++ // RD-L6: Track cache hit
+                Log.d(TAG, "getTvShows() - Returning CACHED data (${cachedEntry.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
             }
+            cacheMisses++ // RD-L6: Track cache miss
 
             android.util.Log.i("ContentRepository", "getTvShows() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
 
@@ -453,8 +648,8 @@ class ContentRepository private constructor(context: Context) {
                 // AUDIT FIX (Second Audit #6): Use efficient OFFSET-based pagination
                 // Previous: Fetch N items, use 20, discard N-20 (quadratic memory usage)
                 // Fixed: Use LIMIT/OFFSET query for constant memory usage
-                val offset = (page - 1) * perPage
-                val cachedSeries = getContentDb().seriesDao().getRecentSeriesFilteredWithOffset(urlPattern, perPage, offset).firstOrNull()
+                val offset = (safePage - 1) * safePerPage
+                val cachedSeries = getContentDb().seriesDao().getRecentSeriesFilteredWithOffset(urlPattern, safePerPage, offset).firstOrNull()
                 ensureActive()
 
                 if (!cachedSeries.isNullOrEmpty()) {
@@ -481,16 +676,23 @@ class ContentRepository private constructor(context: Context) {
      */
     suspend fun getRecentEpisodes(page: Int = 1, perPage: Int = 20): Result<List<Episode>> =
         withContext(Dispatchers.IO) {
+            // Defensive: Validate pagination parameters
+            val safePage = page.coerceAtLeast(1)
+            val safePerPage = perPage.coerceIn(1, 100)
+
             // Check which database source is active
+            // RD-L2: Cache database source at start to avoid multiple calls
             val currentSource = com.example.farsilandtv.data.database.ContentDatabase.getCurrentSource(appContext)
 
-            // Check cache first
-            val cacheKey = buildCacheKey(currentSource, page, perPage)
+            // Check cache first - capture entry to avoid race condition
+            val cacheKey = buildCacheKey(currentSource, safePage, safePerPage)
             val cachedEntry = episodesCache.get(cacheKey)
-            if (isCacheValid(cachedEntry, currentSource)) {
-                Log.d(TAG, "getRecentEpisodes() - Returning CACHED data (${cachedEntry!!.data.size} items)")
+            if (cachedEntry != null && isCacheValid(cachedEntry, currentSource)) {
+                cacheHits++ // RD-L6: Track cache hit
+                Log.d(TAG, "getRecentEpisodes() - Returning CACHED data (${cachedEntry.data.size} items)")
                 return@withContext Result.success(cachedEntry.data)
             }
+            cacheMisses++ // RD-L6: Track cache miss
 
             android.util.Log.i("ContentRepository", "getRecentEpisodes() - Current source: ${currentSource.displayName} (${currentSource.fileName})")
 
@@ -504,8 +706,8 @@ class ContentRepository private constructor(context: Context) {
                 // AUDIT FIX #12: Use efficient OFFSET-based pagination (not in-memory subList)
                 // Previous: Fetched N items, used subList(start, end), discarded N-20 (O(N) memory leak)
                 // Fixed: Use LIMIT/OFFSET query for constant O(20) memory usage
-                val offset = (page - 1) * perPage
-                val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFilteredWithOffset(urlPattern, perPage, offset).firstOrNull()
+                val offset = (safePage - 1) * safePerPage
+                val cachedEpisodes = getContentDb().episodeDao().getRecentEpisodesFilteredWithOffset(urlPattern, safePerPage, offset).firstOrNull()
                 ensureActive()
                 if (!cachedEpisodes.isNullOrEmpty()) {
                     val episodes = cachedEpisodes.map { it.toEpisode() }
@@ -550,14 +752,17 @@ class ContentRepository private constructor(context: Context) {
     suspend fun getEpisodes(seriesId: Int, seriesUrl: String): Result<Map<Int, List<Episode>>> =
         withContext(Dispatchers.IO) {
             try {
-                android.util.Log.d(TAG, "getEpisodes() - seriesId: $seriesId, URL: $seriesUrl")
+                val currentSource = com.example.farsilandtv.data.database.DatabasePreferences.getInstance(appContext).getCurrentSource()
+                android.util.Log.d(TAG, "getEpisodes() - seriesId: $seriesId, URL: $seriesUrl, source: ${currentSource.displayName}")
 
                 // 1. Load from Database (Fast Path - return immediately)
                 val cachedEpisodes = getContentDb().episodeDao().getEpisodesForSeries(seriesId).firstOrNull()
+                android.util.Log.d(TAG, "getEpisodes() - cachedEpisodes query returned: ${cachedEpisodes?.size ?: 0} episodes")
 
                 // 2. Launch background refresh (don't block UI)
                 // This ensures episodes are always fresh without sacrificing UX
-                launch {
+                // N28 FIX: Explicit Dispatchers.IO to prevent ANR if caller is on Main thread
+                launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         refreshEpisodesFromWeb(seriesId, seriesUrl)
                     } catch (e: Exception) {
@@ -611,8 +816,45 @@ class ContentRepository private constructor(context: Context) {
             android.util.Log.d(TAG, "Scraped ${allEpisodes.size} episodes from web")
 
             // 2. Convert to CachedEpisode and save to database
+            // FIX: Preserve dateAdded for existing episodes (prevents "Latest Episodes" pollution)
+            // - Existing episodes keep their original dateAdded (preserve discovery date)
+            // - New episodes: prefer airDate → series dateAdded → current time (in that order)
+            val currentTime = System.currentTimeMillis()
+
+            // FIX: Get parent series dateAdded as fallback for episodes without airDate
+            // This prevents new episodes from jumping to top of "Latest Episodes" when scraped
+            val seriesDateAdded = getContentDb().seriesDao().getSeriesById(seriesId)?.dateAdded
+
             val cachedEpisodes = allEpisodes.map { episode ->
+                // Check if episode already exists to preserve its dateAdded
+                // FIX: Use composite key (seriesId + season + episode) instead of URL for reliable matching
+                // URL matching fails if HTML hrefs differ slightly (trailing slash, query params, etc.)
+                val existingEpisode = getContentDb().episodeDao().getSpecificEpisode(seriesId, episode.season, episode.episode)
+
+                if (existingEpisode != null) {
+                    android.util.Log.d(TAG, "Episode S${episode.season}E${episode.episode} found, preserving id=${existingEpisode.id}, dateAdded=${existingEpisode.dateAdded}")
+                } else {
+                    android.util.Log.d(TAG, "Episode S${episode.season}E${episode.episode} is NEW")
+                }
+
+                // For new episodes, try to use airDate if available (more accurate than scrape time)
+                // FIX: For sources without air dates (IMVBox), use a default OLD date instead of current time
+                // This prevents newly-scraped episodes from polluting "Latest Episodes" section
+                // Fallback chain: airDate → series dateAdded → default old date (NOT current time)
+                val defaultOldDate = currentTime - (365L * 24 * 60 * 60 * 1000) // 1 year ago
+                val newEpisodeDateAdded = episode.airDate?.let { airDate ->
+                    try {
+                        // Parse airDate (format: "YYYY-MM-DD") to timestamp
+                        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            .parse(airDate)?.time ?: seriesDateAdded ?: defaultOldDate
+                    } catch (e: Exception) {
+                        seriesDateAdded ?: defaultOldDate
+                    }
+                } ?: seriesDateAdded ?: defaultOldDate
+
                 CachedEpisode(
+                    // Use existing ID if available to ensure proper REPLACE behavior
+                    id = existingEpisode?.id ?: 0,
                     episodeId = episode.id,
                     seriesId = seriesId,
                     seriesTitle = episode.seriesTitle ?: "",
@@ -624,14 +866,19 @@ class ContentRepository private constructor(context: Context) {
                     farsilandUrl = episode.farsilandUrl,
                     airDate = episode.airDate,
                     runtime = null,  // Runtime not available from scraper
-                    dateAdded = System.currentTimeMillis(),
-                    lastUpdated = System.currentTimeMillis()
+                    // FIX: Preserve original dateAdded for existing episodes, use airDate for new
+                    dateAdded = existingEpisode?.dateAdded ?: newEpisodeDateAdded,
+                    lastUpdated = currentTime
                 )
             }
 
+            // RD-L3: TODO: Wrap episode sync in transaction for atomicity when Room version supports it
+            // For now, execute sequentially (Room 2.6.1 doesn't have withTransaction suspend function)
             // CRITICAL FIX: Save episodes to database (was missing!)
+            // New episodes have id=0 (autoGenerate), existing episodes have preserved id
+            val newCount = cachedEpisodes.count { it.id == 0L }
             getContentDb().episodeDao().insertEpisodes(cachedEpisodes)
-            android.util.Log.i(TAG, "✓ Saved ${cachedEpisodes.size} episodes to database")
+            android.util.Log.i(TAG, "✓ Saved ${cachedEpisodes.size} episodes ($newCount new, ${cachedEpisodes.size - newCount} updated)")
 
             // 3. Update series metadata (total seasons/episodes)
             val totalSeasons = episodesBySeason.keys.maxOrNull() ?: 0
@@ -776,6 +1023,7 @@ class ContentRepository private constructor(context: Context) {
                 val farsilandWebResults = async { WebSearchScraper.searchFarsiland(query) }
                 val farsiPlexWebResults = async { WebSearchScraper.searchFarsiPlex(query) }
                 val namakadeWebResults = async { WebSearchScraper.searchNamakade(query) }
+                val imvboxWebResults = async { searchIMVBox(query) }
 
                 // P1 FIX: Issue #6 - Collect results with individual error handling
                 // Previous code: If ANY source failed, entire search returned empty (all-or-nothing)
@@ -801,6 +1049,13 @@ class ContentRepository private constructor(context: Context) {
                     allResults.addAll(namakadeWebResults.await())
                 } catch (e: Exception) {
                     Log.w(TAG, "Namakade web search failed: ${e.message}")
+                }
+
+                // Web search: IMVBox
+                try {
+                    allResults.addAll(imvboxWebResults.await())
+                } catch (e: Exception) {
+                    Log.w(TAG, "IMVBox web search failed: ${e.message}")
                 }
 
                 // API search: Farsiland WordPress API
@@ -840,8 +1095,8 @@ class ContentRepository private constructor(context: Context) {
 
                 fun getSource(item: Any): String {
                     val url = when (item) {
-                        is Movie -> item.farsilandUrl
-                        is Series -> item.farsilandUrl
+                        is Movie -> item.farsilandUrl?.takeIf { it.isNotBlank() }
+                        is Series -> item.farsilandUrl?.takeIf { it.isNotBlank() }
                         else -> null
                     } ?: return SOURCE_UNKNOWN
 
@@ -850,28 +1105,63 @@ class ContentRepository private constructor(context: Context) {
                         url.contains(DOMAIN_FARSILAND, ignoreCase = true) -> SOURCE_FARSILAND
                         url.contains(DOMAIN_FARSIPLEX, ignoreCase = true) -> SOURCE_FARSIPLEX
                         url.contains(DOMAIN_NAMAKADE, ignoreCase = true) -> SOURCE_NAMAKADE
+                        url.contains(DOMAIN_IMVBOX, ignoreCase = true) -> SOURCE_IMVBOX
                         else -> SOURCE_UNKNOWN
                     }
                 }
 
+                // Track seen URLs with their index, so we can replace with better version
+                val seenUrlIndex = mutableMapOf<String, Int>()
+
+                // Score function: prefer results with more metadata
+                fun metadataScore(item: Any): Int {
+                    var score = 0
+                    when (item) {
+                        is Movie -> {
+                            if (item.title.contains("(")) score += 10  // Has tag like (reality)
+                            if (!item.posterUrl.isNullOrBlank()) score += 5
+                            if (!item.description.isNullOrBlank() && item.description.length > 50) score += 3
+                            if (item.genres.isNotEmpty()) score += 2
+                        }
+                        is Series -> {
+                            if (item.title.contains("(")) score += 10  // Has tag like (reality)
+                            if (!item.posterUrl.isNullOrBlank()) score += 5
+                            if (!item.description.isNullOrBlank() && item.description.length > 50) score += 3
+                            if (item.genres.isNotEmpty()) score += 2
+                        }
+                    }
+                    return score
+                }
+
                 for (result in allResults) {
-                    val title = when (result) {
-                        is Movie -> result.title
-                        is Series -> result.title
+                    val (title, url) = when (result) {
+                        is Movie -> Pair(result.title, result.farsilandUrl)
+                        is Series -> Pair(result.title, result.farsilandUrl)
                         else -> continue
                     }
                     val normalizedTitle = normalizeTitle(title)
                     val source = getSource(result)
 
-                    // Initialize set for this source if not exists
-                    if (!seenPerSource.containsKey(source)) {
-                        seenPerSource[source] = mutableSetOf()
+                    // BUG FIX: Use getOrPut for atomic initialization instead of containsKey + force unwrap
+                    val seenTitles = seenPerSource.getOrPut(source) { mutableSetOf() }
+
+                    // Check if we've seen this exact URL - keep version with more metadata
+                    if (url != null && url in seenUrlIndex) {
+                        // BUG FIX: Use safe access with continue fallback instead of force unwrap
+                        val existingIndex = seenUrlIndex[url] ?: continue
+                        val existingScore = metadataScore(deduplicated[existingIndex])
+                        val newScore = metadataScore(result)
+                        if (newScore > existingScore) {
+                            // Replace with better version
+                            deduplicated[existingIndex] = result
+                        }
+                        continue
                     }
 
                     // Check if we've seen this title from this source
-                    val seenTitles = seenPerSource[source]!!
                     if (normalizedTitle.isNotEmpty() && normalizedTitle !in seenTitles) {
                         seenTitles.add(normalizedTitle)
+                        url?.let { seenUrlIndex[it] = deduplicated.size }
                         deduplicated.add(result)
                     }
                 }
@@ -880,8 +1170,14 @@ class ContentRepository private constructor(context: Context) {
                 // AUDIT FIX #29: Use constants instead of hardcoded strings
                 val sourceCounts = deduplicated.groupBy { getSource(it) }.mapValues { it.value.size }
                 Log.i(TAG, "Universal search: ${allResults.size} total, ${deduplicated.size} after per-source dedup")
-                Log.i(TAG, "  Per source: Farsiland=${sourceCounts[SOURCE_FARSILAND] ?: 0}, FarsiPlex=${sourceCounts[SOURCE_FARSIPLEX] ?: 0}, Namakade=${sourceCounts[SOURCE_NAMAKADE] ?: 0}")
-                Result.success(deduplicated)
+                Log.i(TAG, "  Per source: Farsiland=${sourceCounts[SOURCE_FARSILAND] ?: 0}, FarsiPlex=${sourceCounts[SOURCE_FARSIPLEX] ?: 0}, Namakade=${sourceCounts[SOURCE_NAMAKADE] ?: 0}, IMVBox=${sourceCounts[SOURCE_IMVBOX] ?: 0}")
+
+                // Interleave results from different sources so minority sources appear near top
+                // Without this, if Farsiland has 22 results and Namakade has 1, Namakade would be at position 23
+                val interleaved = interleaveBySource(deduplicated) { getSource(it) }
+                Log.d(TAG, "Interleaved ${deduplicated.size} results from ${sourceCounts.size} sources")
+
+                Result.success(interleaved)
             } catch (e: Exception) {
                 Log.e(TAG, "Universal search error: ${e.message}", e)
                 e.printStackTrace()
@@ -934,6 +1230,65 @@ class ContentRepository private constructor(context: Context) {
             results
         } catch (e: Exception) {
             Log.e(TAG, "Error searching Farsiland API: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Search IMVBox via web scraping
+     * Converts search results to Movie/Series objects
+     */
+    private suspend fun searchIMVBox(query: String): List<Any> {
+        return try {
+            val imvboxService = IMVBoxApiService.getInstance(appContext)
+            val result = imvboxService.searchWeb(query)
+
+            when (result) {
+                is ScraperResult.Success -> {
+                    val items = mutableListOf<Any>()
+                    for (searchResult in result.data) {
+                        when (searchResult.type) {
+                            "movie" -> {
+                                items.add(
+                                    Movie(
+                                        id = searchResult.url.hashCode(),
+                                        title = searchResult.title,
+                                        posterUrl = searchResult.thumbnailUrl,
+                                        backdropUrl = searchResult.thumbnailUrl,
+                                        farsilandUrl = searchResult.url,
+                                        year = null,
+                                        rating = null,
+                                        genres = emptyList()
+                                    )
+                                )
+                            }
+                            "series" -> {
+                                items.add(
+                                    Series(
+                                        id = searchResult.url.hashCode(),
+                                        title = searchResult.title,
+                                        posterUrl = searchResult.thumbnailUrl,
+                                        backdropUrl = searchResult.thumbnailUrl,
+                                        farsilandUrl = searchResult.url,
+                                        year = null,
+                                        totalSeasons = 0,
+                                        genres = emptyList()
+                                    )
+                                )
+                            }
+                            // Skip "cast" type - we don't display cast in search results
+                        }
+                    }
+                    Log.d(TAG, "Found ${items.size} results from IMVBox")
+                    items
+                }
+                else -> {
+                    Log.w(TAG, "IMVBox search returned no results or error")
+                    emptyList()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error searching IMVBox: ${e.message}", e)
             emptyList()
         }
     }
@@ -1204,10 +1559,14 @@ class ContentRepository private constructor(context: Context) {
                 val allNewMovies = mutableListOf<com.example.farsilandtv.data.models.wordpress.WPMovie>()
                 val allNewSeries = mutableListOf<com.example.farsilandtv.data.models.wordpress.WPTvShow>()
 
+                // M4 FIX: Add safeguards to prevent infinite loops and OOM
+                val MAX_PAGES = 100  // Prevent infinite loops (5000 items max at 50/page)
+                val MAX_ITEMS = 5000 // Prevent OOM on large sync
+
                 // AUDIT FIX 1.1: Paginate movies until reaching old content
                 var moviesPage = 1
                 var keepFetchingMovies = true
-                while (keepFetchingMovies) {
+                while (keepFetchingMovies && moviesPage <= MAX_PAGES && allNewMovies.size < MAX_ITEMS) {
                     ensureActive()
                     val wpMovies = try {
                         ErrorHandler.retryWithExponentialBackoff {
@@ -1233,7 +1592,8 @@ class ContentRepository private constructor(context: Context) {
                 // AUDIT FIX 1.1: Paginate series until reaching old content
                 var seriesPage = 1
                 var keepFetchingSeries = true
-                while (keepFetchingSeries) {
+                // M4 FIX: Apply same safeguards to series loop
+                while (keepFetchingSeries && seriesPage <= MAX_PAGES && allNewSeries.size < MAX_ITEMS) {
                     ensureActive()
                     val wpSeries = try {
                         ErrorHandler.retryWithExponentialBackoff {
@@ -1631,8 +1991,11 @@ class ContentRepository private constructor(context: Context) {
                 .trim()
                 .replace(Regex("\\s+"), " ") // Collapse multiple spaces
         } catch (e: Exception) {
-            // Fallback: Return original string if regex fails
-            html
+            // M3 FIX: Log exception for debugging instead of silent failure
+            Log.w(TAG, "stripHtmlTags: Regex stripper failed, using basic fallback: ${e.message}")
+            // Defensive: Return text with scripts removed (safer than raw html)
+            // Basic fallback: just remove anything that looks like a tag
+            withoutScripts.replace(Regex("<[^>]*>"), " ").trim()
         }
     }
 
