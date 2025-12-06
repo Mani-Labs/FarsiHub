@@ -98,7 +98,8 @@ class NotificationPreferencesRepositoryTest {
             val result = awaitItem()
 
             // ASSERT
-            assertEquals(1, result.id, "Should emit preferences")
+            assertNotNull(result, "Result should not be null")
+            assertEquals(1, result?.id, "Should emit preferences")
 
             cancelAndConsumeRemainingEvents()
         }
@@ -263,7 +264,7 @@ class NotificationPreferencesRepositoryTest {
         val enabled = mockPreferencesDao.isNewEpisodesEnabled()
 
         // ASSERT
-        assertTrue(enabled, "Should return enabled status")
+        assertEquals(true, enabled, "Should return enabled status")
     }
 
     @Test
@@ -286,7 +287,7 @@ class NotificationPreferencesRepositoryTest {
         val enabled = mockPreferencesDao.isNewSeasonsEnabled()
 
         // ASSERT
-        assertTrue(enabled, "Should return enabled status")
+        assertEquals(true, enabled, "Should return enabled status")
     }
 
     @Test
@@ -298,7 +299,7 @@ class NotificationPreferencesRepositoryTest {
         val enabled = mockPreferencesDao.isWeeklyDigestEnabled()
 
         // ASSERT
-        assertFalse(enabled, "Should return disabled status for weekly digest")
+        assertEquals(false, enabled, "Should return disabled status for weekly digest")
     }
 
     // ========== Reset Preferences ==========

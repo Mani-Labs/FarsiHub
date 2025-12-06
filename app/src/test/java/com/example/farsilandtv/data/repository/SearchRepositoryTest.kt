@@ -115,9 +115,9 @@ class SearchRepositoryTest {
     fun `test getRecentSearches returns list of queries only`() = runTest {
         // ARRANGE
         val searchHistories = listOf(
-            SearchHistory("Action Movies", 3000L),
-            SearchHistory("Comedy Series", 2000L),
-            SearchHistory("Drama", 1000L)
+            SearchHistory(query = "Action Movies", timestamp = 3000L),
+            SearchHistory(query = "Comedy Series", timestamp = 2000L),
+            SearchHistory(query = "Drama", timestamp = 1000L)
         )
 
         whenever(mockSearchHistoryDao.getRecentSearches(10)).thenReturn(flowOf(searchHistories))
@@ -138,7 +138,7 @@ class SearchRepositoryTest {
     fun `test getRecentSearches default limit is 10`() = runTest {
         // ARRANGE
         val defaultLimit = 10
-        val searches = (1..5).map { SearchHistory("Query $it", (5 - it).toLong() * 1000) }
+        val searches = (1..5).map { SearchHistory(query = "Query $it", timestamp = (5 - it).toLong() * 1000) }
 
         whenever(mockSearchHistoryDao.getRecentSearches(defaultLimit)).thenReturn(flowOf(searches))
 
@@ -157,9 +157,9 @@ class SearchRepositoryTest {
     fun `test getRecentSearches ordered by recency`() = runTest {
         // ARRANGE
         val searches = listOf(
-            SearchHistory("Oldest", 1000L),
-            SearchHistory("Middle", 2000L),
-            SearchHistory("Newest", 3000L)
+            SearchHistory(query = "Oldest", timestamp = 1000L),
+            SearchHistory(query = "Middle", timestamp = 2000L),
+            SearchHistory(query = "Newest", timestamp = 3000L)
         )
 
         whenever(mockSearchHistoryDao.getRecentSearches(10)).thenReturn(flowOf(searches))
@@ -184,10 +184,8 @@ class SearchRepositoryTest {
     fun `test getSuggestions with valid prefix returns matches`() = runTest {
         // ARRANGE
         val prefix = "act"
-        val suggestions = listOf(
-            SearchHistory("action movies", 3000L),
-            SearchHistory("action series", 2000L)
-        )
+        // searchSuggestions returns Flow<List<String>> - just query strings
+        val suggestions = listOf("action movies", "action series")
 
         whenever(mockSearchHistoryDao.searchSuggestions("%act%", 5)).thenReturn(flowOf(suggestions))
 
@@ -217,22 +215,25 @@ class SearchRepositoryTest {
 
     @Test
     fun `test getSuggestions sanitizes input to prevent SQL injection`() = runTest {
-        // ARRANGE
-        val unsafePrefix = "act%; DROP TABLE--"
+        // ARRANGE - Unsafe input with SQL LIKE wildcards
+        val unsafePrefix = "act%_test"
 
-        // ACT - Mock sanitization
+        // ACT - sanitizeLikePattern escapes LIKE wildcards (%, _, \)
         val sanitized = SqlSanitizer.sanitizeLikePattern(unsafePrefix)
 
-        // ASSERT
+        // ASSERT - Wildcards should be escaped, not stripped
         assertNotNull(sanitized, "Sanitized prefix should not be null")
-        assertFalse(sanitized.contains("DROP"), "Should remove SQL keywords")
+        assertFalse(sanitized.contains("%") && !sanitized.contains("\\%"), "% should be escaped")
+        assertTrue(sanitized.contains("\\%"), "% should be escaped to \\%")
+        assertTrue(sanitized.contains("\\_"), "_ should be escaped to \\_")
     }
 
     @Test
     fun `test getSuggestions limit default is 5`() = runTest {
         // ARRANGE
         val prefix = "test"
-        val suggestions = (1..3).map { SearchHistory("test query $it", it.toLong() * 1000) }
+        // searchSuggestions returns Flow<List<String>> - just query strings
+        val suggestions = (1..3).map { "test query $it" }
 
         whenever(mockSearchHistoryDao.searchSuggestions("%test%", 5)).thenReturn(flowOf(suggestions))
 
